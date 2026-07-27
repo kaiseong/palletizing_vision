@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "camera": {
+    "model": "Intel RealSense D435",
+    "depth": {"width": 640, "height": 480, "fps": 30, "format": "z16"},
+    "color": {"width": 640, "height": 480, "fps": 30, "format": "bgr8"},
+    "front_glass_depth_start_m": -0.0042,
+    "front_glass_depth_start_usage": "mechanical_datum_only_do_not_add_to_sdk_depth"
+  },
+  "frames": {
+    "base": "base",
+    "head_candidate": "link_head_2",
+    "color": "d435_color_optical_frame",
+    "depth": "d435_depth_optical_frame",
+    "transform_convention": "active_column_vector_target_from_source"
+  },
+  "box_model_m": {"long": 0.4, "short": 0.25, "height": 0.15},
+  "calibration": {
+    "state": "nominal",
+    "nominal_T_head_from_color": {
+      "translation_m": [0.049, -0.0115, 0.057],
+      "euler_input_order": ["roll", "pitch", "yaw"],
+      "euler_zyx_deg": [-90.0, 0.0, -90.0],
+      "rotation_formula": "Rz(yaw) @ Ry(pitch) @ Rx(roll)",
+      "origin_status": "uncalibrated_rgb_lens_center_seed"
+    },
+    "factory_extrinsics_source": "active_realsense_stream_profiles",
+    "absolute_base_validated": false
+  },
+  "table_calibration": {
+    "roi_uv": null,
+    "ransac_tolerance_m": 0.006,
+    "ransac_iterations": 300,
+    "ransac_min_inlier_ratio": 0.35,
+    "max_fit_points": 100000,
+    "random_seed": 1729,
+    "accept_min_global_inlier_ratio": 0.6,
+    "accept_max_global_inlier_rms_m": 0.006,
+    "accept_min_frame_inlier_ratio": 0.35,
+    "accept_max_frame_p95_residual_m": 0.015
+  },
+  "estimator": {
+    "min_depth_m": 0.2,
+    "max_depth_m": 2.0,
+    "top_plane_tolerance_m": 0.02,
+    "border_margin_px": 3,
+    "edge_band_m": 0.015,
+    "min_points": 120,
+    "max_points": 6000,
+    "coarse_angle_step_deg": 2.0,
+    "fine_angle_step_deg": 0.2,
+    "outlier_quantile": 0.95,
+    "min_candidate_margin": 0.03,
+    "min_side_span": 0.35
+  }
+}

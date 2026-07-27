@@ -42,6 +42,12 @@ def _validate_intrinsics(intrinsics: CameraIntrinsics) -> None:
         raise ValueError("camera intrinsics must be finite")
     if float(intrinsics.fx) <= 0.0 or float(intrinsics.fy) <= 0.0:
         raise ValueError("camera focal lengths must be positive")
+    if any(abs(float(value)) > 1e-12 for value in intrinsics.coeffs):
+        raise ValueError(
+            "raw-depth intrinsics contain non-zero distortion coefficients; "
+            "this vectorized D435 path requires the rectified zero-distortion "
+            "depth profile or SDK-equivalent deprojection"
+        )
 
 
 def depth_to_meters(depth: ArrayLike, depth_scale: float | None = None) -> FloatArray:
@@ -145,8 +151,8 @@ def intersect_rays_with_plane(
         & (np.abs(denominators) > float(min_denominator))
         & (distances > 0.0)
     )
-    intersections = origin + distances[:, None] * directions
-    intersections[~valid] = np.nan
+    intersections = np.full_like(directions, np.nan, dtype=np.float64)
+    intersections[valid] = origin + distances[valid, None] * directions[valid]
     return intersections, valid
 
 
@@ -154,7 +160,7 @@ def plane_basis(normal_or_plane: ArrayLike | Plane) -> tuple[FloatArray, FloatAr
     """Return a deterministic right-handed orthonormal basis for a plane."""
 
     raw = normal_or_plane.normal if isinstance(normal_or_plane, Plane) else normal_or_plane
-    normal = np.asarray(raw, dtype=np.float64).reshape(3)
+    normal = np.array(raw, dtype=np.float64, copy=True).reshape(3)
     norm = float(np.linalg.norm(normal))
     if not math.isfinite(norm) or norm <= 1e-12:
         raise ValueError("normal must be finite and non-zero")
@@ -295,4 +301,3 @@ def project_depth_to_plane(
 ray_plane_intersections = intersect_rays_with_plane
 points_to_plane_xy = project_points_to_plane
 plane_xy_to_points = unproject_plane_points
-

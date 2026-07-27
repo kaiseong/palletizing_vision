@@ -46,14 +46,19 @@ Image borders are censored observations, not box edges. A missing box-axis coord
 
 ## Installation
 
-Target runtime is Python 3.12 on JetPack 6.2.2. Core/replay tests require NumPy and OpenCV. `pyrealsense2` is lazy-loaded only for live capture and recording.
+Target runtime is Python 3.12 on JetPack 6.2.2. Connected-component filtering requires OpenCV; if `cv2` is unavailable, the estimator fails closed with `component_filter_unavailable` and cannot mark geometry or a full pose valid. `pyrealsense2` is lazy-loaded only for live capture and recording.
 
 ```bash
 cd /home/kgs/workspace/Palletizing/Codex
-python3.12 -m pip install -e .
+python3.12 -m pip install -e '.[vision]'
 ```
 
-Install the RealSense Python binding using the Jetson/librealsense method appropriate to the target image. The package intentionally does not download or install an architecture-specific wheel automatically.
+The `vision` extra installs a headless PyPI OpenCV build for generic Python 3.12 environments. On Jetson, first check whether the Python 3.12 environment can already import the JetPack-matched OpenCV build; if it can, use `pip install -e .` so pip does not replace that build. Install the RealSense Python binding using the Jetson/librealsense method appropriate to the target image. The package intentionally does not download or install an architecture-specific RealSense wheel automatically.
+
+```bash
+python3.12 -c 'import cv2; print(cv2.__version__)'
+python3.12 -m pip install -e '.[test,vision]'
+```
 
 ## Configuration
 
@@ -71,10 +76,12 @@ The default nominal transform uses the provided `[x,y,z,roll,pitch,yaw]` value `
 ## Record raw D435 evidence
 
 Record an empty-table session first, then full/cropped box sessions. Raw streams are authoritative; aligned color-on-depth is optional debug evidence.
+The complete Python 3.12 command sequence and required capture matrix are in
+[`../RECORDING_GUIDE.md`](../RECORDING_GUIDE.md).
 
 ```bash
-PYTHONPATH=src python -m parcel_pose.cli record \
-  --output recordings \
+PYTHONPATH=src python3.12 -m parcel_pose.cli record \
+  --output ../recordings/codex_640x480 \
   --session-name empty_table \
   --duration-sec 10 \
   --config configs/d435_rby1_nominal.json
@@ -94,42 +101,59 @@ Each session preserves raw Z16/RGB, depth scale, both intrinsics/distortion, fac
 ## Calibrate the table plane
 
 ```bash
-PYTHONPATH=src python -m parcel_pose.cli calibrate-plane \
-  --session recordings/empty_table \
-  --output calibrations/table_plane.json
+PYTHONPATH=src python3.12 -m parcel_pose.cli calibrate-plane \
+  --session ../recordings/codex_640x480/empty_table \
+  --output ../out/calibrations/table_plane.json
 ```
 
-Inspect the reported residual, inlier ratio, normal direction, and per-frame consistency before processing box sessions.
+The calibration uses deterministic RANSAC and stores global/per-frame residuals,
+inlier ratios, normal direction, thresholds, and `quality_passed`. A failed
+quality gate aborts calibration without writing an artifact. If the table does
+not dominate the full image, set `table_calibration.roi_uv` in the config or
+pass a half-open raw-depth ROI, for example `--roi 80 80 560 450`.
 
 ## Replay
 
 ```bash
-PYTHONPATH=src python -m parcel_pose.cli replay \
-  --session recordings/box_pose_01 \
-  --calibration calibrations/table_plane.json \
+PYTHONPATH=src python3.12 -m parcel_pose.cli replay \
+  --session ../recordings/codex_640x480/box_pose_01 \
+  --calibration ../out/calibrations/table_plane.json \
   --config configs/d435_rby1_nominal.json \
-  --output-jsonl results/box_pose_01.jsonl
+  --output-jsonl ../out/results/box_pose_01.jsonl
 ```
+
+Add `--burst-size 5 --burst-min-valid 3` to emit every single-frame result plus
+a `result_kind=stationary_burst` record after each fresh five-frame window.
 
 ## Live perception
 
 ```bash
-PYTHONPATH=src python -m parcel_pose.cli live \
-  --calibration calibrations/table_plane.json \
+PYTHONPATH=src python3.12 -m parcel_pose.cli live \
+  --calibration ../out/calibrations/table_plane.json \
   --config configs/d435_rby1_nominal.json
 ```
 
-Live output remains perception-only JSON. Stationary 5-10 frame bursts are the initial acceptance path; moving-base continuous visual-servo timing is outside this phase.
+Live output remains perception-only JSON. It captures five frames by default,
+emits each single-frame result, then emits a stationary burst result. Set
+`--frames`/`--burst-size` to 5-10 for the initial acceptance path, or
+`--burst-size 0` for single-frame diagnostics only. Moving-base continuous
+visual-servo timing is outside this phase.
 
 ## Verification
 
 ```bash
-python -m compileall -q src tests
-pytest -q
-PYTHONPATH=src python -m parcel_pose.cli --help
+python3.12 -m compileall -q src tests
+python3.12 -m pytest -q
+PYTHONPATH=src python3.12 -m parcel_pose.cli --help
 ```
 
 Local verification covers synthetic tilted planes, fixed-size fitting, holes/outliers, crops, long/short ambiguity, angle boundaries, transform composition, output safety, raw recording round-trip, deterministic replay, and SDK-free imports.
+
+The default fitter caps deterministic plane support at 6,000 points. This keeps
+more geometric support than the faster 4,000-point setting, which proved brittle
+on a full-chain synthetic regression. Development-host timing is configuration
+evidence, not a Jetson latency claim; profile again on the Orin before selecting
+a visual-servo update rate.
 
 The real labeled targets are p95 center error `<=20 mm` and yaw error modulo 180 `<=4 degrees`, but these remain unverified until an independent base-referenced calibration/ground-truth source exists. Unlabeled recordings can establish repeatability, residuals, coverage, and correct abstention only.
 

@@ -138,7 +138,19 @@ def estimate_box_orientation(
     sub = even_subsample(points.shape[0], cfg.plane_sample)
     used_plane = plane
     if used_plane is None:
-        used_plane = discover_support_plane(points[sub], box_height_m, cfg, rng)
+        # The desk/pallet is the dominant (largest) plane in the working-distance
+        # ROI, so take the most-inlier plane. A box that fills the frame instead
+        # yields its own top as the dominant plane, which segment() handles via
+        # its top_plane_direct fallback. (discover_support_plane, kept for
+        # cluttered scenes, could latch a tilted plane that rakes a big desk
+        # swath, so it is not the default.)
+        used_plane = fit_support_plane(
+            points[sub],
+            iterations=cfg.ransac_iterations,
+            tolerance_m=cfg.ransac_tolerance_m,
+            min_inliers=cfg.plane_min_inliers,
+            rng=rng,
+        )
         if used_plane is None:
             return _fail("no_support_plane", {})
     if cfg.refine_plane:
@@ -147,6 +159,8 @@ def estimate_box_orientation(
     seg = segment_box_top(
         points, rows, cols, used_plane, depth_m.shape,
         box_height_m=box_height_m,
+        box_long_m=box_long_m,
+        box_short_m=box_short_m,
         top_margin_m=cfg.top_margin_m,
         top_inlier_m=cfg.top_inlier_m,
         band_m=cfg.band_m,

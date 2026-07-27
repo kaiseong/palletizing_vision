@@ -24,7 +24,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .geometry import SupportPlane, even_subsample, fit_support_plane
+from .geometry import SupportPlane, even_subsample, fit_support_plane, plane_basis
 
 
 @dataclass
@@ -47,6 +47,8 @@ def segment_box_top(
     image_shape: tuple[int, int],
     *,
     box_height_m: float = 0.150,
+    box_long_m: float | None = None,
+    box_short_m: float | None = None,
     top_margin_m: float = 0.060,
     top_inlier_m: float = 0.012,
     band_m: float = 0.035,
@@ -99,10 +101,34 @@ def segment_box_top(
     if ncomp <= 1:
         return _fail(selector, top_plane, "no_connected_component", {"n_above": n_above}, mode)
     areas = stats[1:, cv2.CC_STAT_AREA]
-    keep_label = int(np.argmax(areas)) + 1
-
     sel_idx = np.nonzero(selector)[0]
-    keep = labels[rows[sel_idx], cols[sel_idx]] == keep_label
+    sel_labels = labels[rows[sel_idx], cols[sel_idx]]
+
+    # Pick the component whose metric footprint best matches the known box, not
+    # merely the largest -- this rejects the robot arm / a hand / other objects
+    # lying at box height, and is the basis for multi-box selection. Falls back
+    # to the largest component when box dims are not given.
+    e1, e2 = plane_basis(top_plane.normal)
+    origin = top_plane.point
+    candidates = [lab for lab in range(1, ncomp) if areas[lab - 1] >= min_top_pixels] or [int(np.argmax(areas)) + 1]
+    best_label, best_score, best_dims = candidates[0], -1e18, None
+    for lab in candidates:
+        member = sel_labels == lab
+        if int(np.count_nonzero(member)) < min_top_pixels:
+            continue
+        cpts = points[sel_idx[member]]
+        coords = np.column_stack(((cpts - origin) @ e1, (cpts - origin) @ e2)).astype(np.float32)
+        (_, (w, hgt), _) = cv2.minAreaRect(coords)
+        long_dim, short_dim = max(w, hgt), min(w, hgt)
+        if box_long_m and box_short_m:
+            score = -(abs(long_dim - box_long_m) + abs(short_dim - box_short_m))
+        else:
+            score = float(np.count_nonzero(member))
+        if score > best_score:
+            best_score, best_label, best_dims = score, lab, (long_dim, short_dim)
+    keep_label = best_label
+
+    keep = sel_labels == keep_label
     final_selector = np.zeros_like(selector)
     final_selector[sel_idx[keep]] = True
     final_mask = np.where(labels == keep_label, 255, 0).astype(np.uint8)
