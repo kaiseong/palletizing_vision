@@ -67,16 +67,18 @@ python run.py --live --camera d435 --box 400x250x150 --yaw-frame ref --smooth 5
 
 `ref_zero`(기본 = 참조 프레임 x축)가 0° 방향. 경계(45°)는 `OrientConfig.boundary_deg`.
 
-## 오프라인 검증 결과 (기존 D405 녹화, 박스 505×335×195)
+## 검증 결과 (D435IF, 새 박스 400×250×150)
 
-| 녹화 | yaw 중앙값 | 크기 L×S | 확인 |
-|---|---|---|---|
-| center_visible | ~89° (ref 90) | 516×332mm | 축 정렬 ✓ |
-| yaw_plus | ~102° | | +12° 회전 감지 ✓ |
-| yaw_minus | ~69° | 479×300mm | −21° 회전 감지 ✓ |
-| left_crop / right_crop | ~89° / ~93° | ~490×340mm | 크롭에도 정확 ✓ |
+실제 팔레타이징 셋업(헤드 D435IF, 박스 top ~0.6m·책상 ~0.75m, `z 0.3~1.0`) 녹화로:
 
-회전에 민감하고, 크롭에 강건하며, 실측 크기를 정확히 복원(best conf 0.94).
+- **정적 8자세(box_0~7)**: 전부 **ok 100%**, 크기 400~413 × 260~274mm, 8자세 모두 구분
+  (0°, +22°, ref90 −38°, +44°(경계) …). 정지 시 dev 안정 ±1°.
+- **연속 회전(box_rotation, 244f)**: yaw가 끊김 없이 추적, **0↔90 전환이 45°/135° 경계에서
+  정확**. conf 0.78~0.97.
+- **빈 책상(box_empty, 68f)**: 오검출 **0/68** (size 검증으로 거름).
+- 오버레이: 초록 사각형·장축이 닫힌 박스 top에 정확히 정렬(conf 0.95).
+
+이전 D405 데이터(다른 박스 505×335×195)에서도 회전 감지·크롭 강건성 확인.
 
 ## D435로 스왑 시 체크리스트
 
@@ -97,7 +99,7 @@ python run.py --live --camera d435 --box 400x250x150 --yaw-frame ref --smooth 5
 - `z_min/z_max`: 작업거리 근처로 ROI 제한(고정 거리이므로 강력).
 - `normal_hint` + `normal_hint_tol_deg`: 고정 카메라의 예상 테이블 법선(카메라 프레임)을 주면
   벽/바닥 평면을 배제. extrinsic이 있으면 자동 계산 가능.
-- `clearance_m / top_margin_m / top_inlier_m / band_m`: 높이 게이팅.
+- `top_margin_m / top_inlier_m / band_m`: top면 높이 게이팅(밴드를 box_height에 중심 맞춤).
 - `size_tol_m`, `min_aspect`: 크기/종횡비 검증(confidence·ok에 반영).
 
 ## 데이터 녹화 (self-contained)

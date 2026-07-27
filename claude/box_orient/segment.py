@@ -4,9 +4,9 @@ Replaces the old yellow-HSV mask. Works for any box colour because it uses only
 the depth-derived geometry of the scene.
 
 Two stages make it robust to a slightly tilted support-plane fit:
-  1. gate to "above the table" points (clearance .. box_height + margin) -- a
-     wide, forgiving band that captures the whole box top even if the table
-     normal is a little off;
+  1. gate to a slab centred on the known box-top height (box_height +/- margin)
+     above the table -- high enough that table noise leaking a few cm above the
+     plane cannot be mistaken for the top;
   2. RANSAC the top face *itself* among those points. The top face is a large
      clean plane, so this recovers its true (horizontal) plane accurately; its
      inliers are exactly the top face rather than a thin height-contour strip.
@@ -47,7 +47,6 @@ def segment_box_top(
     image_shape: tuple[int, int],
     *,
     box_height_m: float = 0.150,
-    clearance_m: float = 0.030,
     top_margin_m: float = 0.060,
     top_inlier_m: float = 0.012,
     band_m: float = 0.035,
@@ -59,7 +58,9 @@ def segment_box_top(
     rng = rng or np.random.default_rng(0)
     height = plane.signed_height(points)
 
-    lo, hi = clearance_m, box_height_m + top_margin_m
+    # Candidate slab centred on the *known* box-top height above the table, so
+    # table noise leaking a few cm above the plane can't be mistaken for the top.
+    lo, hi = box_height_m - top_margin_m, box_height_m + top_margin_m
     above = (height > lo) & (height < hi)
     n_above = int(np.count_nonzero(above))
 

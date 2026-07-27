@@ -47,7 +47,6 @@ class OrientConfig:
     refine_plane: bool = True
     plane_refine_band_m: float = 0.010
     band_m: float = 0.035
-    clearance_m: float = 0.030
     top_margin_m: float = 0.060
     top_inlier_m: float = 0.012
     min_top_pixels: int = 400
@@ -148,7 +147,6 @@ def estimate_box_orientation(
     seg = segment_box_top(
         points, rows, cols, used_plane, depth_m.shape,
         box_height_m=box_height_m,
-        clearance_m=cfg.clearance_m,
         top_margin_m=cfg.top_margin_m,
         top_inlier_m=cfg.top_inlier_m,
         band_m=cfg.band_m,
