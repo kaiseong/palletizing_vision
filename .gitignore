@@ -1,0 +1,15 @@
+# recordings & outputs (large / generated — move via scp/rsync, not git)
+recordings/
+out/
+*.jpg
+*.png
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# os
+.DS_Store
