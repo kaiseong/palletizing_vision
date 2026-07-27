@@ -2,6 +2,7 @@
 recordings/
 recordings_/
 out/
+.omx/
 *.jpg
 *.png
 

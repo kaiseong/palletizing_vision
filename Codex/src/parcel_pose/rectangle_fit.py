@@ -203,8 +203,10 @@ def _even_sample(points: FloatArray, pixels: FloatArray | None, limit: int) -> t
 def _densest_fixed_window(values: FloatArray, width: float) -> tuple[NDArray[np.bool_], float, float]:
     """Select the deterministic maximum-cardinality 1D fixed-width window."""
 
-    order = np.argsort(values, kind="mergesort")
-    sorted_values = values[order]
+    # Candidate scoring calls this twice for every searched angle. Sorting
+    # scalar values directly avoids building and gathering through an index
+    # permutation. Equal-value source order cannot change the chosen interval.
+    sorted_values = np.sort(values, kind="quicksort")
     right = np.searchsorted(sorted_values, sorted_values + width, side="right")
     counts = right - np.arange(sorted_values.size)
     start_index = int(np.argmax(counts))
@@ -214,6 +216,7 @@ def _densest_fixed_window(values: FloatArray, width: float) -> tuple[NDArray[np.
     mask = (values >= low) & (values <= high)
     # Guard against floating point disagreement with searchsorted.
     if int(np.count_nonzero(mask)) < stop_index - start_index:
+        order = np.argsort(values, kind="mergesort")
         chosen = order[start_index:stop_index]
         mask[chosen] = True
     return mask, low, high

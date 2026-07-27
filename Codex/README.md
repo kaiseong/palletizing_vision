@@ -167,6 +167,54 @@ validated registration from FK-plus-nominal-mount output. Without independent
 ground truth, its summary reports availability, continuity, and latency—not
 center/yaw accuracy.
 
+## Estimator-only performance gate
+
+Use the benchmark runner when changing hot-path geometry. It preloads all depth
+frames, runs one full warmup, measures five full passes of the estimator only,
+and refuses comparisons across different fixtures, runtime environments, or
+settings. Capture the baseline before editing the estimator:
+
+```bash
+env PYTHONPATH=src PYTHONHASHSEED=0 \
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  NUMEXPR_NUM_THREADS=1 \
+taskset -c 2-5 python3.12 -m parcel_pose.benchmark capture \
+  --session ../recordings_/codex_640x480/box_complex \
+  --calibration ../out/box_complex_eval/calibration_fk_nominal.json \
+  --config configs/d435_rby1_nominal.json \
+  --warmup-passes 1 --repeats 5 \
+  --output ../out/perf/baseline.json
+```
+
+Run the candidate under exactly the same power, affinity, dependency, and
+thermal conditions:
+
+```bash
+env PYTHONPATH=src PYTHONHASHSEED=0 \
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  NUMEXPR_NUM_THREADS=1 \
+taskset -c 2-5 python3.12 -m parcel_pose.benchmark compare \
+  --baseline ../out/perf/baseline.json \
+  --session ../recordings_/codex_640x480/box_complex \
+  --calibration ../out/box_complex_eval/calibration_fk_nominal.json \
+  --config configs/d435_rby1_nominal.json \
+  --warmup-passes 1 --repeats 5 \
+  --output ../out/perf/candidate.json
+```
+
+The default gate requires identical availability, abstention, observability,
+and canonical decisions; center/yaw/confidence must remain within tight numeric
+tolerances. It also requires at least 8% better p50, 10% better p95, and 8%
+higher estimator throughput. A timing comparison does not establish physical
+accuracy because `box_complex` has no independent ground truth.
+
+On the development host (x86_64, Python 3.13.12), direct scalar sorting in the
+fixed-window search changed p50 from `112.29` to `79.83 ms`, p95 from `117.26`
+to `82.12 ms`, and throughput from `8.97` to `12.55 FPS`, with zero numeric or
+decision differences across all 547 frames. These are not Jetson measurements.
+Capture a fresh baseline on the Orin with a fixed `nvpmodel`/clock/thermal state
+before using the result to select a servo update rate.
+
 ## Live perception
 
 ```bash

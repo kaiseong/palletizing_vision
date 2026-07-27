@@ -5,13 +5,71 @@ import math
 import numpy as np
 import pytest
 
-from parcel_pose.rectangle_fit import fit_fixed_rectangle
+from parcel_pose.rectangle_fit import _densest_fixed_window, fit_fixed_rectangle
 
 from .synthetic_scene import (
     line_angle_error_deg,
     orthographic_image_observation,
     rectangle_support_points,
 )
+
+
+def _reference_densest_fixed_window(
+    values: np.ndarray,
+    width: float,
+) -> tuple[np.ndarray, float, float]:
+    order = np.argsort(values, kind="mergesort")
+    sorted_values = values[order]
+    right = np.searchsorted(sorted_values, sorted_values + width, side="right")
+    counts = right - np.arange(sorted_values.size)
+    start = int(np.argmax(counts))
+    stop = int(right[start])
+    low = float(sorted_values[start])
+    high = low + width
+    mask = (values >= low) & (values <= high)
+    if int(np.count_nonzero(mask)) < stop - start:
+        mask[order[start:stop]] = True
+    return mask, low, high
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_direct_value_sort_matches_reference_window(seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    values = np.round(rng.normal(0.0, 0.18, 6_000), decimals=4)
+    width = float(rng.uniform(0.20, 0.45))
+
+    actual = _densest_fixed_window(values, width)
+    expected = _reference_densest_fixed_window(values, width)
+
+    np.testing.assert_array_equal(actual[0], expected[0])
+    assert actual[1:] == expected[1:]
+
+
+def test_direct_value_sort_preserves_boundary_ties() -> None:
+    values = np.array([-0.2, -0.2, 0.0, 0.2, 0.2, 0.4], dtype=np.float64)
+
+    actual = _densest_fixed_window(values, 0.4)
+    expected = _reference_densest_fixed_window(values, 0.4)
+
+    np.testing.assert_array_equal(actual[0], expected[0])
+    assert actual[1:] == expected[1:]
+
+
+def test_direct_value_sort_floating_guard_reconstructs_source_indices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = np.array([-0.2, -0.1, 0.0, 0.1, 0.2], dtype=np.float64)
+    original_count_nonzero = np.count_nonzero
+
+    def undercount_once(value: object) -> int:
+        return max(0, int(original_count_nonzero(value)) - 1)
+
+    monkeypatch.setattr("parcel_pose.rectangle_fit.np.count_nonzero", undercount_once)
+    mask, low, high = _densest_fixed_window(values, 0.2)
+
+    assert int(original_count_nonzero(mask)) >= 3
+    assert low == -0.2
+    assert high == 0.0
 
 
 @pytest.mark.parametrize("yaw_deg", [-80.0, -47.0, -5.0, 0.0, 23.0, 44.0, 68.0, 89.0])
