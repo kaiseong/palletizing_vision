@@ -80,12 +80,12 @@ The complete Python 3.12 command sequence and required capture matrix are in
 [`../RECORDING_GUIDE.md`](../RECORDING_GUIDE.md).
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli record \
-  --output ../recordings/codex_640x480 \
-  --session-name empty_table \
-  --duration-sec 10 \
-  --config configs/d435_rby1_nominal.json
+python record.py --session-name empty_table --duration-sec 10
 ```
+
+The wrapper fixes raw Depth/RGB at `640x480 @ 30 FPS`, uses the nominal config,
+and stores sessions below `../recordings/codex_640x480/`. Advanced users can
+still call `python3.12 -m parcel_pose.cli record ...` directly.
 
 Recommended capture set:
 

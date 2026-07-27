@@ -41,13 +41,11 @@ python3.12 -m pip install -e .
 박스, 팔, 손, 공구를 모두 치우고 책상만 보이는 상태에서 10초 녹화한다.
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli record \
-  --output ../recordings/codex_640x480 \
-  --session-name empty_table \
-  --duration-sec 10 \
-  --config configs/d435_rby1_nominal.json \
-  --annotation '{"scene":"empty_table","stationary":true}'
+python record.py --session-name empty_table --duration-sec 10
 ```
+
+`record.py`가 `640x480 @ 30 FPS`, 기본 config, 저장 위치
+`../recordings/codex_640x480/`를 자동으로 적용한다.
 
 책상 평면 캘리브레이션:
 
@@ -63,20 +61,14 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli calibrate-plane \
 
 ## 3. 정지 박스 녹화 명령
 
-한 pose마다 박스를 완전히 멈춘 뒤 5초 또는 최대 30프레임을 녹화한다.
-`SESSION_NAME`과 annotation의 `pose_label`을 같은 의미로 기록한다.
+한 pose마다 박스를 완전히 멈춘 뒤 10초 녹화한다.
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli record \
-  --output ../recordings/codex_640x480 \
-  --session-name static_center_yaw_000 \
-  --duration-sec 5 \
-  --max-frames 30 \
-  --config configs/d435_rby1_nominal.json \
-  --annotation '{"scene":"static_box","pose_label":"center_yaw_000","stationary":true}'
+python record.py --session-name box_0 --duration-sec 10
 ```
 
-다른 pose는 `--session-name`과 `pose_label`만 바꿔 같은 명령을 반복한다.
+다른 pose는 `--session-name`만 바꿔 같은 명령을 반복한다. 필요할 때만
+`--annotation '{"pose_label":"center_yaw_000"}'`을 추가한다.
 표기 각도는 측정 Ground Truth가 아니라 작업자가 배치한 대략적인 라벨이다.
 
 ## 4. 필수 녹화 세트
