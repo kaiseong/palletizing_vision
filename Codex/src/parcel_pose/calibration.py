@@ -244,6 +244,7 @@ def calibrate_table_plane_from_session(
     min_depth_m: float = 0.2,
     max_depth_m: float = 2.0,
     roi_uv: tuple[int, int, int, int] | None = None,
+    robot_state_override: Mapping[str, Any] | None = None,
 ) -> Calibration:
     reader = SessionReader(session_root)
     intrinsics = reader.metadata.depth_profile.intrinsics
@@ -321,7 +322,23 @@ def calibrate_table_plane_from_session(
             "table-plane calibration quality gate failed: "
             + ", ".join(failed_checks)
         )
-    robot_transform = reader.metadata.robot_state.get("T_base_from_head")
+    recorded_robot_state = dict(reader.metadata.robot_state)
+    if robot_state_override is None:
+        robot_state = recorded_robot_state
+        robot_state_source = "recording_manifest"
+    else:
+        robot_state = dict(robot_state_override)
+        robot_state_source = "post_recording_cli_override"
+    robot_transform = robot_state.get("T_base_from_head")
+    if robot_state_override is not None and robot_transform is None:
+        raise ValueError("robot-state override requires T_base_from_head")
+    base_registration_input = {
+        "source": robot_state_source,
+        "robot_model": robot_state.get("robot_model"),
+        "head_joints": robot_state.get("head_joints"),
+        "torso_joints": robot_state.get("torso_joints"),
+        "registration_status": robot_state.get("registration_status"),
+    }
     extrinsic = factory_extrinsics_to_transform(reader.metadata.depth_to_color)
     return nominal_calibration_from_config(
         nominal_config,
@@ -329,7 +346,10 @@ def calibrate_table_plane_from_session(
         T_base_from_head=robot_transform,
         table_plane=fit_result.plane,
         state=CalibrationState.PLANE_CALIBRATED_PARTIAL,
-        diagnostics={"table_plane_fit": diagnostics},
+        diagnostics={
+            "table_plane_fit": diagnostics,
+            "base_registration_input": base_registration_input,
+        },
     )
 
 

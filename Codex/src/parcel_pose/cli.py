@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--output", type=Path, required=True)
     calibrate.add_argument("--stride", type=int, default=4)
     calibrate.add_argument(
+        "--robot-state-json",
+        type=Path,
+        help="optional fixed robot-state/FK override for recordings that omitted it",
+    )
+    calibrate.add_argument(
         "--roi",
         type=int,
         nargs=4,
@@ -55,6 +60,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay.add_argument("--burst-min-valid", type=int, default=3)
     replay.set_defaults(handler=_run_replay)
+
+    evaluate = subparsers.add_parser(
+        "evaluate-video",
+        help="measure a recorded session and render a base-pose diagnostic MP4",
+    )
+    evaluate.add_argument("session_pos", type=Path, nargs="?")
+    evaluate.add_argument("--session", dest="session_opt", type=Path)
+    evaluate.add_argument("--config", type=Path, default=_default_config_path())
+    evaluate.add_argument("--calibration", type=Path, required=True)
+    evaluate.add_argument("--output-mp4", type=Path, required=True)
+    evaluate.add_argument("--output-summary", type=Path)
+    evaluate.add_argument("--output-jsonl", type=Path)
+    evaluate.add_argument("--overwrite", action="store_true")
+    evaluate.set_defaults(handler=_run_evaluate_video)
 
     record = subparsers.add_parser("record", help="record authoritative raw D435 RGB-D evidence")
     record.add_argument("--output", type=Path, required=True)
@@ -143,12 +162,16 @@ def _run_calibrate_plane(args: argparse.Namespace) -> int:
     from .calibration import calibrate_table_plane_from_session, load_json, save_calibration
 
     config = load_json(args.config)
+    robot_state = (
+        None if args.robot_state_json is None else load_json(args.robot_state_json)
+    )
     session = _resolve_session_arg(args)
     calibration = calibrate_table_plane_from_session(
         session,
         config,
         stride=args.stride,
         roi_uv=None if args.roi is None else tuple(args.roi),
+        robot_state_override=robot_state,
     )
     save_calibration(args.output, calibration)
     print(dumps_strict({"calibration": calibration.to_dict(), "output": args.output}, indent=2))
@@ -202,6 +225,24 @@ def _run_replay(args: argparse.Namespace) -> int:
     else:
         for line in lines:
             print(line)
+    return 0
+
+
+def _run_evaluate_video(args: argparse.Namespace) -> int:
+    from .calibration import load_calibration, load_json
+    from .evaluation import evaluate_session_video
+
+    session = _resolve_session_arg(args)
+    summary = evaluate_session_video(
+        session,
+        load_calibration(args.calibration),
+        _estimator_config(load_json(args.config)),
+        args.output_mp4,
+        output_summary=args.output_summary,
+        output_jsonl=args.output_jsonl,
+        overwrite=args.overwrite,
+    )
+    print(dumps_strict(summary, indent=2))
     return 0
 
 

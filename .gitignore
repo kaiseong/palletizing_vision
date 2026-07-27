@@ -1,5 +1,6 @@
 # recordings & outputs (large / generated — move via scp/rsync, not git)
 recordings/
+recordings_/
 out/
 *.jpg
 *.png

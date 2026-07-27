@@ -7,7 +7,9 @@ import pytest
 from parcel_pose.cli import build_parser, main
 
 
-@pytest.mark.parametrize("subcommand", ["calibrate-plane", "replay", "record", "live"])
+@pytest.mark.parametrize(
+    "subcommand", ["calibrate-plane", "replay", "evaluate-video", "record", "live"]
+)
 def test_all_subcommand_help_runs_without_realsense(subcommand, capsys):
     parser = build_parser()
     with pytest.raises(SystemExit) as exit_info:

@@ -42,6 +42,8 @@ def test_strict_json_rejects_nonfinite_values():
 def test_missing_base_registration_strips_all_coordinate_base_fields():
     estimate = PoseEstimate(
         center_base_xy_m=(0.5, -0.1),
+        top_center_base_xyz_m=(0.5, -0.1, 0.9),
+        box_center_base_xyz_m=(0.5, -0.1, 0.825),
         long_axis_base_xy=(1.0, 0.0),
         yaw_mod_180_deg=12.0,
         geometry_valid=True,
@@ -51,6 +53,8 @@ def test_missing_base_registration_strips_all_coordinate_base_fields():
     )
     output = pose_estimate_to_dict(estimate)
     assert "center_base_xy_m" not in output
+    assert "top_center_base_xyz_m" not in output
+    assert "box_center_base_xyz_m" not in output
     assert "long_axis_base_xy" not in output
     assert "long_axis_yaw_base_deg" not in output
     assert output["confidence"]["reasons"] == ["missing_transform"]
@@ -59,6 +63,8 @@ def test_missing_base_registration_strips_all_coordinate_base_fields():
 def test_base_fields_and_absolute_validity_are_independent():
     estimate = PoseEstimate(
         center_base_xy_m=(0.5, -0.1),
+        top_center_base_xyz_m=(0.5, -0.1, 0.9),
+        box_center_base_xyz_m=(0.5, -0.1, 0.825),
         long_axis_base_xy=(1.0, 0.0),
         short_axis_base_xy=(0.0, 1.0),
         yaw_mod_180_deg=12.0,
@@ -71,6 +77,8 @@ def test_base_fields_and_absolute_validity_are_independent():
     )
     output = pose_estimate_to_dict(estimate)
     assert output["center_base_xy_m"] == [0.5, -0.1]
+    assert output["top_center_base_xyz_m"] == [0.5, -0.1, 0.9]
+    assert output["box_center_base_xyz_m"] == [0.5, -0.1, 0.825]
     assert not output["confidence"]["absolute_base_pose_valid"]
     validate_perception_only_keys(output)
     json.dumps(output, allow_nan=False)

@@ -41,11 +41,16 @@ python3.12 -m pip install -e .
 박스, 팔, 손, 공구를 모두 치우고 책상만 보이는 상태에서 10초 녹화한다.
 
 ```bash
-python record.py --session-name empty_table --duration-sec 10
+python record.py --session-name empty_table --duration-sec 10 \
+  --robot-state-json configs/rby1m_v1_2_fixed_pose.json
 ```
 
 `record.py`가 `640x480 @ 30 FPS`, 기본 config, 저장 위치
 `../recordings/codex_640x480/`를 자동으로 적용한다.
+
+기본 config의 책상 ROI `[120, 190, 420, 360]`는 현재 고정된 카메라와
+책상 배치에서 검증한 값이다. 카메라, head, torso 또는 책상을 움직였다면
+빈 책상 영상에서 ROI부터 다시 확인한다.
 
 책상 평면 캘리브레이션:
 
@@ -53,6 +58,7 @@ python record.py --session-name empty_table --duration-sec 10
 PYTHONPATH=src python3.12 -m parcel_pose.cli calibrate-plane \
   --session ../recordings/codex_640x480/empty_table \
   --config configs/d435_rby1_nominal.json \
+  --robot-state-json configs/rby1m_v1_2_fixed_pose.json \
   --output ../out/calibrations/table_plane.json
 ```
 
@@ -64,7 +70,8 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli calibrate-plane \
 한 pose마다 박스를 완전히 멈춘 뒤 10초 녹화한다.
 
 ```bash
-python record.py --session-name box_0 --duration-sec 10
+python record.py --session-name box_0 --duration-sec 10 \
+  --robot-state-json configs/rby1m_v1_2_fixed_pose.json
 ```
 
 다른 pose는 `--session-name`만 바꿔 같은 명령을 반복한다. 필요할 때만
@@ -153,6 +160,12 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli replay \
 `record --robot-state-json PATH`를 추가한다. 이 정보가 없거나 독립 검증되지
 않았으면 Depth/table-plane 좌표 결과만 사용하며 `*_base` 출력은 유효 처리하지
 않는다.
+
+현재 확정된 RB-Y1 M v1.2 고정 자세(torso
+`[0,55,-59.988,6.532,0,0] deg`, head `[0,49.846] deg`)의 SDK FK 결과는
+`Codex/configs/rby1m_v1_2_fixed_pose.json`에 있다. 이 FK를 사용해도 nominal
+head-camera mount가 독립 검증되기 전까지 base pose는
+`nominal_unverified`로 취급한다.
 
 카메라, 마운트, head/torso 자세, 책상 높이 또는 stream profile이 바뀌면
 `empty_table`부터 다시 녹화하고 재보정한다.

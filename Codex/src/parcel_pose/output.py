@@ -132,6 +132,8 @@ def pose_estimate_to_dict(estimate: PoseEstimate) -> dict[str, Any]:
         result.update(
             {
                 "center_base_xy_m": estimate.center_base_xy_m,
+                "top_center_base_xyz_m": estimate.top_center_base_xyz_m,
+                "box_center_base_xyz_m": estimate.box_center_base_xyz_m,
                 "long_axis_base_xy": estimate.long_axis_base_xy,
                 "short_axis_base_xy": estimate.short_axis_base_xy,
                 "long_axis_yaw_base_deg": estimate.yaw_mod_180_deg,

@@ -156,6 +156,16 @@ def aggregate_pose_burst(
     center_plane_values = [item.center_plane_xy_m for item in unique if item.center_plane_xy_m is not None]
     center_depth_values = [item.center_depth_m for item in unique if item.center_depth_m is not None]
     center_base_values = [item.center_base_xy_m for item in unique if item.center_base_xy_m is not None]
+    top_center_base_values = [
+        item.top_center_base_xyz_m
+        for item in unique
+        if item.top_center_base_xyz_m is not None
+    ]
+    box_center_base_values = [
+        item.box_center_base_xyz_m
+        for item in unique
+        if item.box_center_base_xyz_m is not None
+    ]
     center_plane = (
         _tuple_median(center_plane_values, 2)
         if len(center_plane_values) >= settings.min_valid_frames
@@ -171,6 +181,16 @@ def aggregate_pose_burst(
         if len(center_base_values) >= settings.min_valid_frames
         else None
     )
+    top_center_base = (
+        _tuple_median(top_center_base_values, 3)
+        if len(top_center_base_values) >= settings.min_valid_frames
+        else None
+    )
+    box_center_base = (
+        _tuple_median(box_center_base_values, 3)
+        if len(box_center_base_values) >= settings.min_valid_frames
+        else None
+    )
     center_values_for_jitter: Sequence[Sequence[float]]
     center_for_jitter: Sequence[float] | None
     if center_base is not None:
@@ -182,6 +202,8 @@ def aggregate_pose_burst(
         center_plane = None
         center_depth = None
         center_base = None
+        top_center_base = None
+        box_center_base = None
         reasons.append("temporal_jitter_too_large")
         reasons.append("center_temporal_jitter_too_large")
     elif center_for_jitter is None:
@@ -281,6 +303,8 @@ def aggregate_pose_burst(
         center_plane_xy_m=center_plane,
         center_depth_m=center_depth,
         center_base_xy_m=center_base,
+        top_center_base_xyz_m=top_center_base,
+        box_center_base_xyz_m=box_center_base,
         yaw_rad=yaw_mean,
         yaw_mod_180_deg=yaw_deg,
         canonical_reference_deg=canonical.reference_deg,

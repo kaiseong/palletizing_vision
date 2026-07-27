@@ -1,0 +1,33 @@
+{
+  "robot_model": {
+    "name": "M",
+    "version": "1.2"
+  },
+  "head_joints": {
+    "names": ["head_0", "head_1"],
+    "positions_deg": [0.0, 49.846]
+  },
+  "torso_joints": {
+    "names": ["torso_0", "torso_1", "torso_2", "torso_3", "torso_4", "torso_5"],
+    "positions_deg": [0.0, 55.0, -59.988, 6.532, 0.0, 0.0]
+  },
+  "base_state": {
+    "fixed_during_recording": true,
+    "source": "user_supplied_joint_pose"
+  },
+  "T_base_from_head": [
+    [0.624015988261, 0.0, 0.781411572985, 0.291992028529],
+    [0.0, 1.0, 0.0, 0.0],
+    [-0.781411572985, 0.0, 0.624015988261, 1.354648511246],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "transform_convention": "active_column_vector_target_from_source",
+  "fk": {
+    "source": "rby1_sdk_dynamics_with_rby1m_model_v1.2_urdf",
+    "joint_input_unit": "degree",
+    "sdk_state_unit": "radian",
+    "target_frame": "base",
+    "source_frame": "link_head_2"
+  },
+  "registration_status": "kinematic_fk_with_nominal_unvalidated_camera_mount"
+}

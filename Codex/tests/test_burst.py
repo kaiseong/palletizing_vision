@@ -76,6 +76,42 @@ def test_line_angle_wrap_aggregates_179_0_1_near_zero_not_sixty() -> None:
     assert aggregate.diagnostics["burst"]["valid_yaw_frames"] == 5
 
 
+def test_validated_base_xyz_centers_survive_stationary_aggregation() -> None:
+    estimates = []
+    for frame_id, offset in enumerate((-0.001, 0.0, 0.001), start=1):
+        estimates.append(
+            PoseEstimate(
+                timestamp_ms=10.0 * frame_id,
+                frame_id=frame_id,
+                frame="base",
+                center_base_xy_m=(0.70 + offset, -0.05),
+                top_center_base_xyz_m=(0.70 + offset, -0.05, 0.90),
+                box_center_base_xyz_m=(0.70 + offset, -0.05, 0.825),
+                yaw_rad=math.radians(12.0),
+                yaw_mod_180_deg=12.0,
+                long_axis_base_xy=(math.cos(math.radians(12.0)), math.sin(math.radians(12.0))),
+                observability={
+                    "center_long": "both_edges",
+                    "center_short": "both_edges",
+                    "yaw": "constrained",
+                    "reference": "constrained",
+                },
+                calibration_state=CalibrationState.BASE_VALIDATED,
+                base_registration="validated",
+                geometry_valid=True,
+                full_pose_valid=True,
+                base_registration_valid=True,
+                absolute_valid=True,
+            )
+        )
+
+    aggregate = aggregate_pose_burst(estimates, min_valid_frames=3)
+
+    np.testing.assert_allclose(aggregate.top_center_base_xyz_m, [0.70, -0.05, 0.90])
+    np.testing.assert_allclose(aggregate.box_center_base_xyz_m, [0.70, -0.05, 0.825])
+    assert aggregate.absolute_valid
+
+
 def test_stale_duplicate_and_field_invalid_frames_do_not_vote_in_fresh_burst() -> None:
     estimates = [
         _pose(1, timestamp_ms=90.0, yaw_deg=80.0),  # before freshness barrier

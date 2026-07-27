@@ -22,6 +22,9 @@ Calibration states are deliberately separate:
 - `base_validated`: an independent base-referenced source validates the full transform.
 
 Without a complete base transform, the package returns depth/table-plane coordinates and does not populate `*_base` fields.
+When base registration is validated, `top_center_base_xyz_m` names the fitted
+top-surface center and `box_center_base_xyz_m` names the physical volume center
+75 mm below it along the table normal; the two z meanings are never conflated.
 
 ## Geometry pipeline
 
@@ -64,6 +67,11 @@ python3.12 -m pip install -e '.[test,vision]'
 
 Start from `configs/d435_rby1_nominal.json`.
 
+The default raw-Depth table calibration ROI is `[120, 190, 420, 360]`. It was
+validated against the fixed RB-Y1/D435/table view in the supplied recordings
+and deliberately excludes the background and right-side robot structure. Refit
+the ROI after any camera, head, torso, or table movement.
+
 Before using base-frame output:
 
 1. Resolve the actual robot frame name (`link_head_2` versus any robot-model alias).
@@ -72,6 +80,13 @@ Before using base-frame output:
 4. Verify the transformed table normal and mounting convention.
 
 The default nominal transform uses the provided `[x,y,z,roll,pitch,yaw]` value `[0.049,-0.0115,0.057,-90,0,-90]` with provisional `Rz(yaw) @ Ry(pitch) @ Rx(roll)` interpretation.
+
+For the fixed recording pose on the confirmed RB-Y1 **M v1.2**, the supplied
+torso/head joints and SDK-FK result are stored in
+`configs/rby1m_v1_2_fixed_pose.json`. Pass that file to future recordings with
+`--robot-state-json`. Because the camera mount is still a nominal seed and no
+independent ground truth exists, post-hoc base coordinates from this transform
+remain `nominal_unverified`; they are never relabelled as absolute/validated.
 
 ## Record raw D435 evidence
 
@@ -103,7 +118,8 @@ Each session preserves raw Z16/RGB, depth scale, both intrinsics/distortion, fac
 ```bash
 PYTHONPATH=src python3.12 -m parcel_pose.cli calibrate-plane \
   --session ../recordings/codex_640x480/empty_table \
-  --output ../out/calibrations/table_plane.json
+  --robot-state-json configs/rby1m_v1_2_fixed_pose.json \
+  --output ../out/calibrations/table_plane_with_fk.json
 ```
 
 The calibration uses deterministic RANSAC and stores global/per-frame residuals,
@@ -111,6 +127,9 @@ inlier ratios, normal direction, thresholds, and `quality_passed`. A failed
 quality gate aborts calibration without writing an artifact. If the table does
 not dominate the full image, set `table_calibration.roi_uv` in the config or
 pass a half-open raw-depth ROI, for example `--roi 80 80 560 450`.
+`--robot-state-json` is also the explicit post-recording FK override for older
+sessions whose manifest contains null robot state; it does not promote a
+nominal camera mount to `base_validated`.
 
 ## Replay
 
@@ -124,6 +143,29 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli replay \
 
 Add `--burst-size 5 --burst-min-valid 3` to emit every single-frame result plus
 a `result_kind=stationary_burst` record after each fresh five-frame window.
+
+## Performance video
+
+Render every recorded frame on raw RGB while measuring estimator latency and
+pose availability:
+
+```bash
+PYTHONPATH=src python3.12 -m parcel_pose.cli evaluate-video \
+  --session ../recordings/codex_640x480/box_complex \
+  --calibration ../out/calibrations/table_plane_with_fk.json \
+  --config configs/d435_rby1_nominal.json \
+  --output-mp4 ../out/box_complex_base_pose.mp4 \
+  --output-summary ../out/box_complex_summary.json \
+  --output-jsonl ../out/box_complex_poses.jsonl
+```
+
+The displayed `box center base [m]` is the physical box-volume center. The
+fitted rectangle lies on the top plane, so the evaluator moves its center
+downward by half the known height (`75 mm`) along the calibrated table normal.
+The video preserves the recording's total timestamp duration and distinguishes
+validated registration from FK-plus-nominal-mount output. Without independent
+ground truth, its summary reports availability, continuity, and latency—not
+center/yaw accuracy.
 
 ## Live perception
 

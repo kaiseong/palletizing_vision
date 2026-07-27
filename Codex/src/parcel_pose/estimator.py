@@ -297,6 +297,8 @@ class ParcelPoseEstimator:
 
         center_depth: tuple[float, float, float] | None = None
         center_base: tuple[float, float] | None = None
+        top_center_base: tuple[float, float, float] | None = None
+        box_center_base: tuple[float, float, float] | None = None
         long_base: tuple[float, float] | None = None
         short_base: tuple[float, float] | None = None
         nominal_base: dict[str, Any] | None = None
@@ -334,7 +336,16 @@ class ParcelPoseEstimator:
             }
             if center_3d is not None:
                 center_base_3d = transform_points(center_3d, base_transform)
+                table_normal_base = base_transform[:3, :3] @ table_depth.normal
+                table_normal_base /= max(float(np.linalg.norm(table_normal_base)), 1e-12)
+                box_center_base_3d = (
+                    center_base_3d
+                    - 0.5 * float(self.config.box_model.height_m) * table_normal_base
+                )
                 nominal_base["center_xy_m"] = center_base_3d[:2].tolist()
+                nominal_base["center_xyz_m"] = center_base_3d.tolist()
+                nominal_base["top_center_xyz_m"] = center_base_3d.tolist()
+                nominal_base["box_center_xyz_m"] = box_center_base_3d.tolist()
             if self.calibration.absolute_base_validated:
                 yaw_output = yaw_base
                 long_base = tuple(float(value) for value in long_xy_raw)
@@ -342,6 +353,8 @@ class ParcelPoseEstimator:
                 if center_3d is not None:
                     center_base_3d = transform_points(center_3d, base_transform)
                     center_base = tuple(float(value) for value in center_base_3d[:2])
+                    top_center_base = tuple(float(value) for value in center_base_3d)
+                    box_center_base = tuple(float(value) for value in box_center_base_3d)
                 output_frame = self.calibration.base_frame
 
         yaw_degrees = None if yaw_output is None else math.degrees(yaw_output) % 180.0
@@ -401,6 +414,8 @@ class ParcelPoseEstimator:
             center_plane_xy_m=rectangle.center_xy_m,
             center_depth_m=center_depth,
             center_base_xy_m=center_base,
+            top_center_base_xyz_m=top_center_base,
+            box_center_base_xyz_m=box_center_base,
             yaw_rad=yaw_output,
             yaw_mod_180_deg=yaw_degrees,
             canonical_reference_deg=canonical.reference_deg,

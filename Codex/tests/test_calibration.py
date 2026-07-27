@@ -20,6 +20,22 @@ from .synthetic_scene import noisy_plane_points
 from .test_recording import make_metadata
 
 
+def test_rby1m_v1_2_fixed_pose_fk_artifact_is_rigid_and_versioned() -> None:
+    path = Path(__file__).resolve().parents[1] / "configs" / "rby1m_v1_2_fixed_pose.json"
+    robot_state = load_json(path)
+    transform = np.asarray(robot_state["T_base_from_head"], dtype=np.float64)
+
+    assert robot_state["robot_model"] == {"name": "M", "version": "1.2"}
+    np.testing.assert_allclose(
+        transform[:3, 3],
+        [0.291992028529, 0.0, 1.354648511246],
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(transform[:3, :3].T @ transform[:3, :3], np.eye(3), atol=1e-12)
+    assert np.linalg.det(transform[:3, :3]) == pytest.approx(1.0, abs=1e-12)
+    np.testing.assert_allclose(transform[3], [0.0, 0.0, 0.0, 1.0])
+
+
 def test_empty_table_ransac_rejects_non_table_planes_and_reports_evidence() -> None:
     points, truth_normal, truth_d, _ = noisy_plane_points(
         inlier_count=1_000,
@@ -64,10 +80,12 @@ def test_session_calibration_persists_global_and_per_frame_quality(tmp_path: Pat
     frames = [_flat_table_frame(index) for index in range(4)]
     write_session(session, make_metadata(width=64, height=48), frames)
     config_path = Path(__file__).resolve().parents[1] / "configs" / "d435_rby1_nominal.json"
+    config = load_json(config_path)
+    config["table_calibration"]["roi_uv"] = None
 
     calibration = calibrate_table_plane_from_session(
         session,
-        load_json(config_path),
+        config,
         stride=2,
     )
     save_calibration(artifact, calibration)
@@ -91,6 +109,41 @@ def test_session_calibration_persists_global_and_per_frame_quality(tmp_path: Pat
     }
 
 
+def test_session_calibration_accepts_explicit_post_recording_fk_override(
+    tmp_path: Path,
+) -> None:
+    session = tmp_path / "empty_table"
+    write_session(
+        session,
+        make_metadata(width=64, height=48),
+        [_flat_table_frame(index) for index in range(3)],
+    )
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "d435_rby1_nominal.json"
+    config = load_json(config_path)
+    config["table_calibration"]["roi_uv"] = None
+    transform = np.eye(4)
+    transform[:3, 3] = [0.2, -0.1, 1.3]
+
+    calibration = calibrate_table_plane_from_session(
+        session,
+        config,
+        stride=2,
+        robot_state_override={
+            "robot_model": {"name": "M", "version": "1.2"},
+            "head_joints": {"positions_deg": [0.0, 49.846]},
+            "torso_joints": {"positions_deg": [0.0, 55.0, -59.988, 6.532, 0.0, 0.0]},
+            "T_base_from_head": transform.tolist(),
+            "registration_status": "kinematic_fk_with_nominal_unvalidated_camera_mount",
+        },
+    )
+
+    np.testing.assert_allclose(calibration.T_base_from_head, transform)
+    assert calibration.state is CalibrationState.PLANE_CALIBRATED_PARTIAL
+    registration = calibration.diagnostics["base_registration_input"]
+    assert registration["source"] == "post_recording_cli_override"
+    assert registration["robot_model"] == {"name": "M", "version": "1.2"}
+
+
 def test_session_calibration_rejects_inconsistent_table_planes(tmp_path: Path) -> None:
     session = tmp_path / "inconsistent_empty_table"
     frames = []
@@ -107,10 +160,12 @@ def test_session_calibration_rejects_inconsistent_table_planes(tmp_path: Path) -
         )
     write_session(session, make_metadata(width=64, height=48), frames)
     config_path = Path(__file__).resolve().parents[1] / "configs" / "d435_rby1_nominal.json"
+    config = load_json(config_path)
+    config["table_calibration"]["roi_uv"] = None
 
     with pytest.raises(SessionValidationError, match="quality gate failed"):
         calibrate_table_plane_from_session(
             session,
-            load_json(config_path),
+            config,
             stride=2,
         )

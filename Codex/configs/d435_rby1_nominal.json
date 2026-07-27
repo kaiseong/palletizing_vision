@@ -28,7 +28,7 @@
     "absolute_base_validated": false
   },
   "table_calibration": {
-    "roi_uv": null,
+    "roi_uv": [120, 190, 420, 360],
     "ransac_tolerance_m": 0.006,
     "ransac_iterations": 300,
     "ransac_min_inlier_ratio": 0.35,

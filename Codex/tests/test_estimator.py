@@ -83,6 +83,8 @@ def test_full_view_depth_frame_estimator_meets_clean_targets(yaw_deg: float) -> 
     assert estimate.base_registration_valid is False
     assert estimate.absolute_valid is False
     assert estimate.center_base_xy_m is None
+    assert estimate.top_center_base_xyz_m is None
+    assert estimate.box_center_base_xyz_m is None
     assert "absolute_base_transform_unvalidated" in estimate.reasons
 
 
@@ -217,6 +219,16 @@ def test_partial_calibration_with_complete_nominal_chain_keeps_base_output_diagn
     assert estimate.base_registration_valid is False
     assert estimate.absolute_valid is False
     assert "nominal_unverified_base" in estimate.diagnostics
+    np.testing.assert_allclose(
+        estimate.diagnostics["nominal_unverified_base"]["center_xyz_m"],
+        scene.center_depth_m,
+        atol=0.010,
+    )
+    np.testing.assert_allclose(
+        estimate.diagnostics["nominal_unverified_base"]["box_center_xyz_m"],
+        scene.center_depth_m - 0.5 * 0.150 * scene.table_normal,
+        atol=0.010,
+    )
 
 
 def test_base_validated_complete_chain_emits_metric_base_center_and_yaw() -> None:
@@ -249,6 +261,16 @@ def test_base_validated_complete_chain_emits_metric_base_center_and_yaw() -> Non
     assert estimate.base_registration == "validated"
     assert estimate.frame == "base"
     np.testing.assert_allclose(estimate.center_base_xy_m, scene.center_depth_m[:2], atol=0.010)
+    np.testing.assert_allclose(
+        estimate.top_center_base_xyz_m,
+        scene.center_depth_m,
+        atol=0.010,
+    )
+    np.testing.assert_allclose(
+        estimate.box_center_base_xyz_m,
+        scene.center_depth_m - 0.5 * 0.150 * scene.table_normal,
+        atol=0.010,
+    )
     assert line_angle_error_deg(estimate.yaw_rad, true_base_yaw) <= 1.5
     assert estimate.long_axis_base_xy is not None
     assert estimate.short_axis_base_xy is not None

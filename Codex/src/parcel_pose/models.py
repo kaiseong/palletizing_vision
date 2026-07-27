@@ -375,6 +375,8 @@ class PoseEstimate:
     center_plane_xy_m: tuple[float, float] | None = None
     center_depth_m: tuple[float, float, float] | None = None
     center_base_xy_m: tuple[float, float] | None = None
+    top_center_base_xyz_m: tuple[float, float, float] | None = None
+    box_center_base_xyz_m: tuple[float, float, float] | None = None
     yaw_rad: float | None = None
     yaw_mod_180_deg: float | None = None
     canonical_reference_deg: int | None = None
@@ -404,6 +406,8 @@ class PoseEstimate:
             ("center_plane_xy_m", 2),
             ("center_depth_m", 3),
             ("center_base_xy_m", 2),
+            ("top_center_base_xyz_m", 3),
+            ("box_center_base_xyz_m", 3),
             ("long_axis_plane_xy", 2),
             ("short_axis_plane_xy", 2),
             ("long_axis_base_xy", 2),
