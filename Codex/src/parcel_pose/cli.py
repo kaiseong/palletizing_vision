@@ -99,6 +99,18 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--burst-size", type=int, default=5)
     live.add_argument("--burst-min-valid", type=int, default=3)
     live.set_defaults(handler=_run_live)
+
+    live_view = subparsers.add_parser(
+        "live-view",
+        help="show live D435 top edges and base x/y/z/yaw/latency",
+    )
+    live_view.add_argument("--config", type=Path, default=_default_config_path())
+    live_view.add_argument("--calibration", type=Path, required=True)
+    live_view.add_argument("--warmup-frames", type=int, default=30)
+    live_view.add_argument("--max-frames", type=int)
+    live_view.add_argument("--fullscreen", action="store_true")
+    live_view.add_argument("--window-name", default="RB-Y1 Parcel Pose")
+    live_view.set_defaults(handler=_run_live_view)
     return parser
 
 
@@ -369,6 +381,35 @@ def _run_live(args: argparse.Namespace) -> int:
                 else:
                     print(dumps_strict(pose_estimate_to_dict(estimate)))
     except RealSenseUnavailableError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def _run_live_view(args: argparse.Namespace) -> int:
+    from .calibration import load_calibration, load_json
+    from .realsense_adapter import RealSenseUnavailableError
+    from .realtime import LiveViewUnavailableError, run_live_view
+
+    config = load_json(args.config)
+    calibration = load_calibration(args.calibration)
+    if not calibration.absolute_base_validated:
+        print(
+            "warning: displayed base coordinates use nominal_unverified camera "
+            "registration; validate the camera-to-base transform before robot use",
+            file=sys.stderr,
+        )
+    try:
+        run_live_view(
+            calibration,
+            _estimator_config(config),
+            _recording_context(config, {}),
+            warmup_frames=args.warmup_frames,
+            max_frames=args.max_frames,
+            fullscreen=args.fullscreen,
+            window_name=args.window_name,
+        )
+    except (LiveViewUnavailableError, RealSenseUnavailableError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     return 0

@@ -53,15 +53,27 @@ Target runtime is Python 3.12 on JetPack 6.2.2. Connected-component filtering re
 
 ```bash
 cd /home/kgs/workspace/Palletizing/Codex
-python3.12 -m pip install -e '.[vision]'
-```
-
-The `vision` extra installs a headless PyPI OpenCV build for generic Python 3.12 environments. On Jetson, first check whether the Python 3.12 environment can already import the JetPack-matched OpenCV build; if it can, use `pip install -e .` so pip does not replace that build. Install the RealSense Python binding using the Jetson/librealsense method appropriate to the target image. The package intentionally does not download or install an architecture-specific RealSense wheel automatically.
-
-```bash
-python3.12 -c 'import cv2; print(cv2.__version__)'
+# Generic/headless development host only:
 python3.12 -m pip install -e '.[test,vision]'
 ```
+
+The `vision` extra installs a headless PyPI OpenCV build for generic Python 3.12
+development hosts. Do not use that command for the Jetson live viewer because
+headless OpenCV cannot open an `imshow` window.
+
+On Jetson, retain or install a GUI-capable OpenCV build, then install the
+package without the `vision` extra. For JetPack 6.2.2, the `live` extra requires
+a RealSense binding with JetPack 6.2.2 support (`pyrealsense2>=2.58.1`):
+
+```bash
+python3.12 -c 'import cv2; print(cv2.__version__, cv2.currentUIFramework())'
+python3.12 -m pip install -e '.[test,live]'
+```
+
+`live-view` needs a non-empty UI framework in the first command. A blank value
+means that the active Python 3.12 environment still has a headless OpenCV
+build. The package intentionally does not install a replacement GUI OpenCV
+wheel automatically because that can replace the JetPack-matched build.
 
 ## Configuration
 
@@ -228,6 +240,58 @@ emits each single-frame result, then emits a stationary burst result. Set
 `--frames`/`--burst-size` to 5-10 for the initial acceptance path, or
 `--burst-size 0` for single-frame diagnostics only. Moving-base continuous
 visual-servo timing is outside this phase.
+
+## Real-time visualized perception on Jetson
+
+Run the continuous viewer from the Jetson desktop session with the D435
+connected over USB 3:
+
+```bash
+cd /home/nvidia/palletizing_vision/Codex
+python3.12 live_view.py
+```
+
+The wrapper uses the tracked fixed-setup artifact
+`configs/rby1m_v1_2_fixed_table_nominal.json` and the nominal estimator config
+by default. It also refuses a D435 serial that does not match that calibration.
+Override either path when a newly fitted or independently validated calibration
+is available:
+
+```bash
+python3.12 live_view.py \
+  --calibration ../out/calibrations/table_plane_with_fk.json \
+  --config configs/d435_rby1_nominal.json
+```
+
+The native RGB window shows only the fitted four-edge top rectangle and these
+five fields:
+
+```text
+x=... m   y=... m   z=... m
+yaw=... deg   latency=... ms
+```
+
+`x/y/z` are the physical box-volume center in the RB-Y1 base frame; the fitted
+top center is shifted down by 75 mm along the calibrated table normal. `yaw` is
+the signed long-axis line angle in `[-90, 90)` degrees. `latency` measures only
+`ParcelPoseEstimator.estimate()` on the host, matching the saved evaluation
+video; camera blocking and GUI rendering are excluded. If a frame is
+underconstrained, x/y/z/yaw display `--`, and prior-frame rectangle evidence is
+not reused.
+
+Press `q`, `Q`, `Esc`, or `Ctrl-C` to exit. Useful runtime options are
+`--fullscreen`, `--max-frames N`, `--warmup-frames N`, and `--window-name NAME`.
+The viewer uses raw RGB plus the active D435 Depth-to-RGB factory extrinsic and
+therefore disables the unused color-to-depth aligned image copy. The numeric
+pose remains depth-derived; during robot motion, the D435 rolling-shutter RGB
+image can momentarily misalign with the projected edge even when the numeric
+pose is current.
+
+The default `rby1m_v1_2_fixed_table_nominal.json` is explicitly
+`nominal_unverified`. The command warns once on stderr and displays its base
+coordinates for diagnostics, but they must not be treated as independently
+validated robot-control coordinates until camera-to-base registration is
+validated.
 
 ## Verification
 

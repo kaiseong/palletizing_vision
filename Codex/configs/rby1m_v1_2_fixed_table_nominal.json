@@ -1,0 +1,86 @@
+{
+  "state": "plane_calibrated_partial",
+  "table_plane": {
+    "normal": [
+      0.0003654551734250967,
+      -0.6093932988301803,
+      -0.7928680052716132
+    ],
+    "d": -0.59976286081594,
+    "frame": "d435_depth_optical_frame"
+  },
+  "T_base_from_head": [
+    [0.624015988261, 0.0, 0.781411572985, 0.291992028529],
+    [0.0, 1.0, 0.0, 0.0],
+    [-0.781411572985, 0.0, 0.624015988261, 1.354648511246],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "T_head_from_color": [
+    [6.123233995736766e-17, 6.123233995736766e-17, 1.0, 0.049],
+    [-1.0, 3.749399456654644e-33, 6.123233995736766e-17, -0.0115],
+    [0.0, -1.0, 6.123233995736766e-17, 0.057],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "E_color_from_depth": [
+    [
+      0.9999751448631287,
+      0.003511840244755149,
+      0.00611736997961998,
+      0.014867995865643024
+    ],
+    [
+      -0.0034803308080881834,
+      0.9999806880950928,
+      -0.005153866484761238,
+      0.00010203145211562514
+    ],
+    [
+      -0.006135351490229368,
+      0.005132447928190231,
+      0.9999679923057556,
+      0.0002396116469753906
+    ],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "T_head_from_depth": null,
+  "frames": {
+    "base": "base",
+    "head": "link_head_2",
+    "color": "d435_color_optical_frame",
+    "depth": "d435_depth_optical_frame"
+  },
+  "notes": [
+    "RB-Y1 M v1.2 fixed torso/head pose and fixed table",
+    "table plane fit passed its recording quality gates",
+    "RGB-centered mount and base-plane XY/yaw remain nominal_unverified"
+  ],
+  "diagnostics": {
+    "camera_profile": {
+      "serial": "250122079439",
+      "firmware": "5.15.0.2",
+      "depth_resolution": [640, 480],
+      "color_resolution": [640, 480],
+      "fps": 30
+    },
+    "base_registration_input": {
+      "robot_model": {
+        "name": "M",
+        "version": "1.2"
+      },
+      "torso_positions_deg": [0.0, 55.0, -59.988, 6.532, 0.0, 0.0],
+      "head_positions_deg": [0.0, 49.846],
+      "registration_status": "kinematic_fk_with_nominal_unvalidated_camera_mount"
+    },
+    "table_plane_fit": {
+      "sample_count": 100000,
+      "inlier_count": 99152,
+      "inlier_ratio": 0.99152,
+      "inlier_rms_m": 0.001798130395898464,
+      "median_inlier_residual_m": 0.0011552716439847677,
+      "p95_inlier_residual_m": 0.0036659133894387796,
+      "quality_passed": true,
+      "roi_uv": [120, 190, 420, 360],
+      "stride": 4
+    }
+  }
+}

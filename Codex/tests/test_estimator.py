@@ -161,6 +161,22 @@ def test_no_valid_depth_fails_cleanly_without_pose_fields() -> None:
     assert estimate.diagnostics["projected_points"] == 0
 
 
+def test_failed_frame_clears_previous_rectangle_evidence() -> None:
+    scene = tilted_scene(yaw_deg=18.0, depth_noise_std_m=0.0005, seed=190)
+    estimator = _partial_estimator(scene)
+
+    first = estimator.estimate(scene.depth_z16, depth_scale=DEPTH_SCALE_M)
+    assert first.full_pose_valid
+    assert estimator.last_evidence is not None
+
+    second = estimator.estimate(
+        np.zeros_like(scene.depth_z16),
+        depth_scale=DEPTH_SCALE_M,
+    )
+    assert not second.full_pose_valid
+    assert estimator.last_evidence is None
+
+
 @pytest.mark.parametrize(
     "calibration",
     [

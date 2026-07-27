@@ -339,6 +339,14 @@ def calibrate_table_plane_from_session(
         "torso_joints": robot_state.get("torso_joints"),
         "registration_status": robot_state.get("registration_status"),
     }
+    color_intrinsics = reader.metadata.color_profile.intrinsics
+    camera_profile = {
+        "serial": reader.metadata.camera_serial,
+        "firmware": reader.metadata.camera_firmware,
+        "depth_resolution": [intrinsics.width, intrinsics.height],
+        "color_resolution": [color_intrinsics.width, color_intrinsics.height],
+        "fps": intrinsics.fps,
+    }
     extrinsic = factory_extrinsics_to_transform(reader.metadata.depth_to_color)
     return nominal_calibration_from_config(
         nominal_config,
@@ -349,6 +357,7 @@ def calibrate_table_plane_from_session(
         diagnostics={
             "table_plane_fit": diagnostics,
             "base_registration_input": base_registration_input,
+            "camera_profile": camera_profile,
         },
     )
 

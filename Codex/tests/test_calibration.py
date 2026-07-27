@@ -107,6 +107,13 @@ def test_session_calibration_persists_global_and_per_frame_quality(tmp_path: Pat
         "minimum_frame_inlier_ratio",
         "maximum_frame_p95_residual_m",
     }
+    assert restored.diagnostics["camera_profile"] == {
+        "serial": "D435-test-001",
+        "firmware": "5.16.test",
+        "depth_resolution": [64, 48],
+        "color_resolution": [64, 48],
+        "fps": 30,
+    }
 
 
 def test_session_calibration_accepts_explicit_post_recording_fk_override(

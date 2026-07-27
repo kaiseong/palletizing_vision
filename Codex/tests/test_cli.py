@@ -8,7 +8,8 @@ from parcel_pose.cli import build_parser, main
 
 
 @pytest.mark.parametrize(
-    "subcommand", ["calibrate-plane", "replay", "evaluate-video", "record", "live"]
+    "subcommand",
+    ["calibrate-plane", "replay", "evaluate-video", "record", "live", "live-view"],
 )
 def test_all_subcommand_help_runs_without_realsense(subcommand, capsys):
     parser = build_parser()

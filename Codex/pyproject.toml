@@ -14,7 +14,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8"]
 vision = ["opencv-python-headless>=4.10"]
-live = ["pyrealsense2>=2.55"]
+live = ["pyrealsense2>=2.58.1"]
 
 [project.scripts]
 parcel-pose = "parcel_pose.cli:main"

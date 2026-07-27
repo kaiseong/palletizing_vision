@@ -199,6 +199,11 @@ class ParcelPoseEstimator:
     ) -> PoseEstimate:
         """Estimate one pose from raw Z16 or metric raw-depth data."""
 
+        # Evidence belongs to exactly one input frame.  Clearing it before any
+        # early-return path prevents a live viewer from drawing an old parcel
+        # rectangle over a newer failed/empty frame.
+        self.last_evidence = None
+
         if self.calibration.table_plane is None:
             return _failure(
                 "table_plane_missing",
