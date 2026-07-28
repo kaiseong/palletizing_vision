@@ -30,16 +30,20 @@ and true arm/base simultaneity requires one combined whole-body stream.
 2. Keep plain `live-view` perception-only. Enable motion only with
    `--auto-grab`; require `--allow-nominal-registration` while the calibration
    remains unvalidated.
-3. Restrict execution to a controller-reported RB-Y1 Model M v1.2 and verify
-   that torso/head remain within 1 degree of the fixed calibration posture
-   before opening a command stream.
-4. After power/servo/control-manager preparation, move only the two arms to the
-   operator-provided mobile-ready joint targets with a completed Joint Position
-   one-shot. Use 0.5 seconds minimum motion time, a finite 0.5-second hold, and a
-   10-second timeout. Treat SDK handler completion with `FinishCode.Ok` as the
-   ready contract; do not add a second measured joint-tolerance gate. Recheck
-   the fixed torso/head pose before creating the mobility stream. Any command
-   or feedback failure disconnects without base motion.
+3. Restrict execution to a controller-reported RB-Y1 Model M v1.2. After
+   power/servo/control-manager preparation, inspect the calibrated torso/head
+   posture with a 1-degree tolerance. Skip motion when it already matches. On
+   a valid measured mismatch, send exactly one torso/head-only Joint Position
+   command with a fixed 5-second minimum time, require `FinishCode.Ok`, and
+   re-read the joints to verify the calibrated posture before continuing.
+   Invalid, missing, or non-finite joint state fails closed without a command.
+4. Move only the two arms to the operator-provided mobile-ready joint targets
+   with a completed Joint Position one-shot. Use 0.2 seconds minimum motion
+   time, a finite 0.01-second hold, and a 10-second timeout. Treat SDK handler
+   completion with `FinishCode.Ok` as the ready contract; do not add a second
+   measured arm-joint tolerance gate. Recheck the fixed torso/head pose before
+   creating the mobility stream. Any command or feedback failure disconnects
+   without base motion.
 5. Use bounded simultaneous XY+yaw proportional velocity control through one
    SDK SE(2) command stream. The current packaged grasp posture fixes the parcel
    long-axis target to base `90 deg mod 180`, which appears at the live
@@ -73,8 +77,10 @@ and true arm/base simultaneity requires one combined whole-body stream.
 - The user can measure estimator latency with `python live_view.py` without any
   robot-side effect.
 - Automatic execution is deliberately fail-closed and clearly opt-in.
-- No mobility stream exists until the arm-only mobile-ready command has
-  completed with OK feedback. Torso/head are not part of that arm command.
+- No mobility stream exists until any required 5-second torso/head correction
+  and the arm-only mobile-ready command have completed with OK feedback. The
+  measured camera posture is checked after correction and again after the arm
+  command.
 - Mobile and grasp commands cannot overlap. RB-Y1 priority arbitration does
   not provide independent simultaneous mobility/body controllers; failed
   sender join or stream cancellation blocks the grasp.
@@ -94,8 +100,10 @@ and true arm/base simultaneity requires one combined whole-body stream.
 - Fake-SDK integration tests prove `zero pump -> measured stop -> sender join ->
   cancel -> wait -> grasp` ordering on the same robot object and prove every
   failure path omits the grasp.
-- Builder and fake-SDK tests prove the exact arm targets, arm-only Joint
-  Position configuration, and `prepare -> mobile ready -> create stream`
-  ordering; timeout or bad feedback must create no mobility stream.
+- Builder and fake-SDK tests prove the exact camera/arm targets, component-only
+  Joint Position configuration, and `prepare -> optional camera correction ->
+  mobile ready -> create stream` ordering. A matched camera posture must skip
+  its one-shot; timeout, bad feedback, or failed measured recheck must create
+  no mobility stream.
 - No verification step may connect to or command a physical robot outside an
   explicit on-robot operator run.

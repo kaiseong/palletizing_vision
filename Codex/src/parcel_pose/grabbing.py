@@ -65,6 +65,12 @@ MOBILE_READY_MINIMUM_TIME = 0.2
 MOBILE_READY_HOLD_TIME = 0.01
 MOBILE_READY_COMMAND_TIMEOUT_MS = 10_000
 
+# Torso/head-only Joint Position command used to restore the camera pose that
+# the fixed base registration was calibrated against.  The target itself is
+# owned by auto_grab.py so validation and motion cannot drift apart.
+CAMERA_CALIBRATION_MINIMUM_TIME = 5.0
+CAMERA_CALIBRATION_COMMAND_TIMEOUT_MS = 15_000
+
 # Rate (Hz) at which the FT-sensor monitoring callback is invoked.
 FT_MONITOR_RATE = 10.0
 
@@ -197,6 +203,37 @@ def build_mobile_ready_command(
     )
 
 
+def build_camera_calibration_posture_command(
+    torso_position_rad,
+    head_position_rad,
+):
+    """Build the fixed 5-second torso/head Joint Position command."""
+
+    torso = np.asarray(torso_position_rad, dtype=np.float64)
+    head = np.asarray(head_position_rad, dtype=np.float64)
+    if torso.shape != (6,) or not np.all(np.isfinite(torso)):
+        raise ValueError("camera calibration torso target must be 6 finite joints")
+    if head.shape != (2,) or not np.all(np.isfinite(head)):
+        raise ValueError("camera calibration head target must be 2 finite joints")
+
+    def position_command(target):
+        return (
+            rby.JointPositionCommandBuilder()
+            .set_position(target)
+            .set_minimum_time(CAMERA_CALIBRATION_MINIMUM_TIME)
+        )
+
+    return rby.RobotCommandBuilder().set_command(
+        rby.ComponentBasedCommandBuilder()
+        .set_body_command(
+            rby.BodyComponentBasedCommandBuilder().set_torso_command(
+                position_command(torso)
+            )
+        )
+        .set_head_command(rby.HeadCommandBuilder(position_command(head)))
+    )
+
+
 def _cancel_active_command(handler) -> None:
     """Best-effort cancellation that never masks the command's root failure."""
     try:
@@ -258,6 +295,39 @@ def move_arms_to_mobile_ready_pose(robot):
         return False
 
     print("[grabbing] mobile-ready Joint Position command completed with OK feedback.")
+    return True
+
+
+def move_to_camera_calibration_posture(
+    robot,
+    torso_position_rad,
+    head_position_rad,
+):
+    """Restore the fixed torso/head camera posture with one position command."""
+
+    if not robot.is_connected():
+        raise ConnectionError("Robot is not connected")
+
+    print(
+        "[grabbing] moving torso/head to the camera calibration posture "
+        f"(joint position, minimum_time={CAMERA_CALIBRATION_MINIMUM_TIME:.1f}s) ..."
+    )
+    succeeded = send_once(
+        robot,
+        build_camera_calibration_posture_command(
+            torso_position_rad,
+            head_position_rad,
+        ),
+        timeout_ms=CAMERA_CALIBRATION_COMMAND_TIMEOUT_MS,
+    )
+    if not succeeded:
+        print("[grabbing] FAILED while restoring the camera calibration posture.")
+        return False
+
+    print(
+        "[grabbing] camera calibration Joint Position command completed "
+        "with OK feedback."
+    )
     return True
 
 

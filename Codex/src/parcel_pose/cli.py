@@ -114,9 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-grab",
         action="store_true",
         help=(
-            "connect RB-Y1 M v1.2, move both arms to mobile-ready using Joint "
-            "Position, stream SE(2) alignment to x=0.740/y=0 and horizontal "
-            "long-axis yaw=90 deg, then run the packaged grasp sequence once"
+            "connect RB-Y1 M v1.2, restore the fixed camera posture when "
+            "needed, move both arms to mobile-ready using Joint Position, "
+            "stream SE(2) alignment to x=0.740/y=0 and horizontal long-axis "
+            "yaw=90 deg, then run the packaged grasp sequence once"
         ),
     )
     live_view.add_argument(

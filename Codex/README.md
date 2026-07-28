@@ -338,21 +338,26 @@ python live_view.py \
 
 The default controller address is `192.168.30.1:50051`; override it with
 `--robot-address HOST:PORT`. The path is fixed to RB-Y1 Model M v1.2 and fails
-closed on a different reported model/version. Before opening the mobility
-stream it also verifies the calibrated fixed posture within 1 degree: torso
-`[0, 55, -59.988, 6.532, 0, 0]` degrees and head `[0, 49.846]` degrees.
-After robot preparation and before the mobility stream exists, both arms move
-with a 0.5-second minimum time under an arm-only Joint Position command to the mobile-ready
-posture below.
-Torso and head are omitted from this command, then rechecked, so the fixed
-camera transform is preserved.
+closed on a different reported model/version. After robot preparation it reads
+the torso/head posture used by the fixed camera calibration: torso
+`[0, 55, -59.988, 6.532, 0, 0]` degrees and head `[0, 49.846]` degrees. If every
+joint is already within 1 degree, the camera-posture command is skipped. If a
+joint is outside that tolerance, one torso/head-only Joint Position command is
+sent with a fixed 5-second minimum time; the SDK must return `FinishCode.Ok`
+and the measured posture must then pass the same check before startup can
+continue.
+
+Before the mobility stream exists, both arms then move with a 0.2-second
+minimum time under a separate arm-only Joint Position command to the
+mobile-ready posture below. Torso and head are omitted from this command, then
+rechecked, so the fixed camera transform is preserved.
 
 ```text
 right [6.644, -21.489, -17.252, -129.031, -83.302, 53.394, 37.071] deg
 left  [6.644,  21.488,  17.245, -129.036,  83.304, 53.392, -37.070] deg
 ```
 
-The ready command uses a 0.5-second final hold and a 10-second command timeout.
+The ready command uses a 0.01-second final hold and a 10-second command timeout.
 Completion means that the SDK handler finished and returned `FinishCode.Ok`;
 there is no second joint-state tolerance check. Failure, timeout, or
 interruption closes the connection without creating a mobility stream.
@@ -360,9 +365,13 @@ interruption closes the connection without creating a mobility stream.
 The automatic path uses the corrected box-volume center and performs:
 
 ```text
-connect and validate RB-Y1 M v1.2 + fixed torso/head
+connect and validate RB-Y1 M v1.2
   -> prepare power/servos/control manager
+  -> inspect fixed torso/head camera posture
+  -> if needed: torso/head-only Joint Position one-shot (minimum_time=5 s)
+     + OK feedback + measured posture recheck
   -> arm-only mobile-ready Joint Position one-shot + OK feedback
+  -> fixed torso/head posture recheck
   -> create a zeroed mobility stream
   -> acquire 3 valid poses
   -> require horizontal canonical family (reference=90 deg)

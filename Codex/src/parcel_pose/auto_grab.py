@@ -153,8 +153,11 @@ def _validate_robot_identity(robot: Any) -> None:
         )
 
 
-def _validate_fixed_camera_posture(robot: Any, tolerance_deg: float) -> None:
-    """Confirm that FK still matches the posture used by camera calibration."""
+def _fixed_camera_posture_mismatch(
+    robot: Any,
+    tolerance_deg: float,
+) -> str | None:
+    """Return a calibrated-posture mismatch, raising on invalid robot state."""
 
     try:
         model = robot.model()
@@ -176,6 +179,7 @@ def _validate_fixed_camera_posture(robot: Any, tolerance_deg: float) -> None:
             np.deg2rad(np.asarray(EXPECTED_HEAD_POSITION_DEG, dtype=np.float64)),
         ),
     }
+    first_mismatch: str | None = None
     for component, (raw_indices, target) in expected.items():
         if raw_indices is None:
             raise AutoGrabError(
@@ -194,13 +198,66 @@ def _validate_fixed_camera_posture(robot: Any, tolerance_deg: float) -> None:
             )
         delta_deg = np.abs(np.rad2deg(current - target))
         maximum = float(np.max(delta_deg))
-        if maximum > tolerance_deg:
+        if maximum > tolerance_deg and first_mismatch is None:
             joint = int(np.argmax(delta_deg))
-            raise AutoGrabError(
+            first_mismatch = (
                 f"fixed camera calibration requires {component} posture within "
                 f"{tolerance_deg:.1f} deg; {component}[{joint}] differs by "
                 f"{maximum:.3f} deg"
             )
+    return first_mismatch
+
+
+def _validate_fixed_camera_posture(robot: Any, tolerance_deg: float) -> None:
+    """Confirm that FK still matches the posture used by camera calibration."""
+
+    mismatch = _fixed_camera_posture_mismatch(robot, tolerance_deg)
+    if mismatch is not None:
+        raise AutoGrabError(mismatch)
+
+
+def _ensure_fixed_camera_posture(
+    robot: Any,
+    grabbing: ModuleType,
+    tolerance_deg: float,
+) -> bool:
+    """Restore the calibrated torso/head pose only when it is out of tolerance."""
+
+    mismatch = _fixed_camera_posture_mismatch(robot, tolerance_deg)
+    if mismatch is None:
+        print(
+            "[auto-grab] fixed camera posture is already within "
+            f"{tolerance_deg:.1f} deg; skipping calibration position command"
+        )
+        return False
+
+    move_to_calibration = getattr(
+        grabbing,
+        "move_to_camera_calibration_posture",
+        None,
+    )
+    if not callable(move_to_calibration):
+        raise AutoGrabError(
+            "packaged grasp module does not provide the required camera "
+            "calibration posture command"
+        )
+
+    print(f"[auto-grab] {mismatch}; restoring the calibrated torso/head pose")
+    torso_target = np.deg2rad(
+        np.asarray(EXPECTED_TORSO_POSITION_DEG, dtype=np.float64)
+    )
+    head_target = np.deg2rad(
+        np.asarray(EXPECTED_HEAD_POSITION_DEG, dtype=np.float64)
+    )
+    if not bool(move_to_calibration(robot, torso_target, head_target)):
+        raise AutoGrabError(
+            "camera calibration Joint Position command did not finish with OK "
+            "feedback; mobility stream was not started"
+        )
+
+    _validate_fixed_camera_posture(robot, tolerance_deg)
+    print("[auto-grab] fixed camera posture verified after position command")
+    return True
 
 
 def _horizontal_grasp_family_gate_reason(
@@ -417,7 +474,7 @@ class AutoGrabRuntime:
         return self._grasp_invoked
 
     def start(self) -> None:
-        """Connect, validate, prepare, and start one zeroed mobility pump."""
+        """Connect, restore the camera pose, and start one zeroed mobility pump."""
 
         if not self._execute:
             raise AutoGrabError(
@@ -445,11 +502,12 @@ class AutoGrabRuntime:
                     f"failed to connect to RB-Y1 at {self.config.address}"
                 )
             _validate_robot_identity(self._robot)
-            _validate_fixed_camera_posture(
+            self._grabbing.prepare_robot(self._robot, power=self.config.power)
+            _ensure_fixed_camera_posture(
                 self._robot,
+                self._grabbing,
                 self.config.fixed_posture_tolerance_deg,
             )
-            self._grabbing.prepare_robot(self._robot, power=self.config.power)
             move_to_mobile_ready = getattr(
                 self._grabbing,
                 "move_arms_to_mobile_ready_pose",
