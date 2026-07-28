@@ -5,7 +5,11 @@ import math
 import numpy as np
 import pytest
 
-from parcel_pose.rectangle_fit import _densest_fixed_window, fit_fixed_rectangle
+from parcel_pose.rectangle_fit import (
+    _densest_fixed_window,
+    _linear_quantile_pair,
+    fit_fixed_rectangle,
+)
 
 from .synthetic_scene import (
     line_angle_error_deg,
@@ -70,6 +74,21 @@ def test_direct_value_sort_floating_guard_reconstructs_source_indices(
     assert int(original_count_nonzero(mask)) >= 3
     assert low == -0.2
     assert high == 0.0
+
+
+@pytest.mark.parametrize("size", [1, 2, 4, 19, 20, 21, 100, 6_000])
+@pytest.mark.parametrize("quantiles", [(0.004, 0.996), (0.03, 0.97), (0.25, 0.75)])
+def test_linear_quantile_pair_matches_numpy_linear_method(
+    size: int,
+    quantiles: tuple[float, float],
+) -> None:
+    rng = np.random.default_rng(size)
+    values = np.round(rng.normal(0.0, 0.4, size), decimals=4)
+
+    actual = _linear_quantile_pair(values, *quantiles)
+    expected = np.quantile(values, quantiles, method="linear")
+
+    np.testing.assert_array_equal(actual, expected)
 
 
 @pytest.mark.parametrize("yaw_deg", [-80.0, -47.0, -5.0, 0.0, 23.0, 44.0, 68.0, 89.0])

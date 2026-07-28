@@ -169,10 +169,7 @@ class _Candidate:
     theta: float
     score: float
     retained_fraction: float
-    points: FloatArray
-    pixels: FloatArray | None
-    long_values: FloatArray
-    short_values: FloatArray
+    retained_points: int
     long_axis: _Axis
     short_axis: _Axis
     edge_quality: float
@@ -227,8 +224,55 @@ def _robust_bounds(values: FloatArray, quantile: float) -> tuple[float, float]:
         return math.nan, math.nan
     if values.size < 20 or quantile <= 0.0:
         return float(np.min(values)), float(np.max(values))
-    low, high = np.quantile(values, [quantile, 1.0 - quantile], method="linear")
+    low, high = _linear_quantile_pair(values, quantile, 1.0 - quantile)
     return float(low), float(high)
+
+
+def _linear_quantile_pair(
+    values: FloatArray,
+    lower_quantile: float,
+    upper_quantile: float,
+) -> tuple[float, float]:
+    """Return two NumPy-linear quantiles with one order-statistic partition.
+
+    Candidate fitting only needs paired quantiles from finite one-dimensional
+    arrays.  Using the four surrounding order statistics directly avoids the
+    substantial generic ``np.quantile`` dispatch/allocation cost in the inner
+    angle-search loop while preserving its ``method="linear"`` definition.
+    """
+
+    count = int(values.size)
+    if count == 0:
+        return math.nan, math.nan
+
+    lower_index = float(lower_quantile) * (count - 1)
+    upper_index = float(upper_quantile) * (count - 1)
+    lower_floor = int(math.floor(lower_index))
+    lower_ceil = int(math.ceil(lower_index))
+    upper_floor = int(math.floor(upper_index))
+    upper_ceil = int(math.ceil(upper_index))
+    order = np.partition(
+        values,
+        (lower_floor, lower_ceil, upper_floor, upper_ceil),
+    )
+
+    def interpolate(index: float, floor_index: int, ceil_index: int) -> float:
+        lower = float(order[floor_index])
+        if floor_index == ceil_index:
+            return lower
+        upper = float(order[ceil_index])
+        fraction = index - floor_index
+        difference = upper - lower
+        # Match NumPy's stable _lerp evaluation order on both sides of the
+        # midpoint so this specialization is bit-for-bit equivalent too.
+        if fraction >= 0.5:
+            return upper - difference * (1.0 - fraction)
+        return lower + difference * fraction
+
+    return (
+        interpolate(lower_index, lower_floor, lower_ceil),
+        interpolate(upper_index, upper_floor, upper_ceil),
+    )
 
 
 def _near_border(pixels: FloatArray | None, image_shape: tuple[int, int] | None, margin: int) -> NDArray[np.bool_] | None:
@@ -252,7 +296,7 @@ def _side(
     selection = np.abs(values - coordinate) <= config.edge_band_m
     count = int(np.count_nonzero(selection))
     if count >= 4:
-        lo, hi = np.quantile(cross_values[selection], [0.03, 0.97])
+        lo, hi = _linear_quantile_pair(cross_values[selection], 0.03, 0.97)
         span_ratio = float(np.clip((hi - lo) / max(cross_length, 1e-9), 0.0, 1.5))
     else:
         span_ratio = 0.0
@@ -326,8 +370,7 @@ def _axis_observation(
 
 def _candidate(
     points: FloatArray,
-    pixels: FloatArray | None,
-    image_shape: tuple[int, int] | None,
+    near_border: NDArray[np.bool_] | None,
     theta: float,
     long_m: float,
     short_m: float,
@@ -345,16 +388,15 @@ def _candidate(
     long_keep, _, _ = _densest_fixed_window(all_long, long_m + 2.0 * config.containment_tolerance_m)
     short_keep, _, _ = _densest_fixed_window(all_short, short_m + 2.0 * config.containment_tolerance_m)
     keep = long_keep & short_keep
-    if int(np.count_nonzero(keep)) < 3:
+    retained_points = int(np.count_nonzero(keep))
+    if retained_points < 3:
         empty_side = _Side(0.0, 0, 0.0, 0.0, False, False)
         empty_axis = _Axis("underconstrained", 0.0, 0.0, 0.0, empty_side, empty_side, 0.0)
-        return _Candidate(theta, math.inf, 0.0, points[:0], None, all_long[:0], all_short[:0], empty_axis, empty_axis, 0.0)
+        return _Candidate(theta, math.inf, 0.0, 0, empty_axis, empty_axis, 0.0)
 
-    selected_points = points[keep]
-    selected_pixels = None if pixels is None else pixels[keep]
     long_values = all_long[keep]
     short_values = all_short[keep]
-    border = _near_border(selected_pixels, image_shape, config.border_margin_px)
+    border = None if near_border is None else near_border[keep]
     long_axis = _axis_observation(
         long_values,
         short_values,
@@ -378,7 +420,7 @@ def _candidate(
         short_axis.high.span_ratio,
     )
     edge_quality = float(np.mean(np.clip(side_ratios, 0.0, 1.0)))
-    retained_fraction = float(selected_points.shape[0] / points.shape[0])
+    retained_fraction = float(retained_points / points.shape[0])
     long_oversize = max(0.0, long_axis.observed_span_m - long_m)
     short_oversize = max(0.0, short_axis.observed_span_m - short_m)
     scale = max(config.containment_tolerance_m, 1e-6)
@@ -397,10 +439,7 @@ def _candidate(
         theta=theta,
         score=float(score),
         retained_fraction=retained_fraction,
-        points=selected_points,
-        pixels=selected_pixels,
-        long_values=long_values,
-        short_values=short_values,
+        retained_points=retained_points,
         long_axis=long_axis,
         short_axis=short_axis,
         edge_quality=edge_quality,
@@ -409,27 +448,37 @@ def _candidate(
 
 def _search(
     points: FloatArray,
-    pixels: FloatArray | None,
-    image_shape: tuple[int, int] | None,
+    near_border: NDArray[np.bool_] | None,
     long_m: float,
     short_m: float,
     config: RectangleFitConfig,
 ) -> _Candidate:
     coarse_step = math.radians(config.coarse_angle_step_deg)
     coarse_angles = np.arange(0.0, math.pi, coarse_step, dtype=np.float64)
-    coarse = [
-        _candidate(points, pixels, image_shape, float(theta), long_m, short_m, config)
-        for theta in coarse_angles
-    ]
-    best_coarse = min(coarse, key=lambda item: (item.score, item.theta))
+    best_coarse = min(
+        (
+            _candidate(points, near_border, float(theta), long_m, short_m, config)
+            for theta in coarse_angles
+        ),
+        key=lambda item: (item.score, item.theta),
+    )
     fine_step = math.radians(config.fine_angle_step_deg)
     half_width = math.radians(config.fine_half_width_deg)
     offsets = np.arange(-half_width, half_width + 0.5 * fine_step, fine_step)
-    fine = [
-        _candidate(points, pixels, image_shape, best_coarse.theta + float(offset), long_m, short_m, config)
-        for offset in offsets
-    ]
-    return min(fine, key=lambda item: (item.score, item.theta))
+    return min(
+        (
+            _candidate(
+                points,
+                near_border,
+                best_coarse.theta + float(offset),
+                long_m,
+                short_m,
+                config,
+            )
+            for offset in offsets
+        ),
+        key=lambda item: (item.score, item.theta),
+    )
 
 
 def _failure(reason: str, *, count: int = 0) -> RectangleFitResult:
@@ -486,17 +535,17 @@ def fit_fixed_rectangle(
     if points.shape[0] < settings.min_points:
         return _failure("insufficient_rectangle_points", count=points.shape[0])
     points, pixels = _even_sample(points, pixels, settings.max_fit_points)
+    near_border = _near_border(pixels, image_shape, settings.border_margin_px)
 
     long_m = float(model.long_m)
     short_m = float(model.short_m)
     if not (long_m > short_m > 0.0):
         raise ValueError("box model requires long_m > short_m > 0")
 
-    best = _search(points, pixels, image_shape, long_m, short_m, settings)
+    best = _search(points, near_border, long_m, short_m, settings)
     orthogonal = _candidate(
         points,
-        pixels,
-        image_shape,
+        near_border,
         best.theta + math.pi / 2.0,
         long_m,
         short_m,
@@ -504,8 +553,8 @@ def fit_fixed_rectangle(
     )
     assignment_margin = max(0.0, float(orthogonal.score - best.score))
     delta = math.radians(max(0.5, settings.coarse_angle_step_deg * 0.5))
-    left = _candidate(points, pixels, image_shape, best.theta - delta, long_m, short_m, settings)
-    right = _candidate(points, pixels, image_shape, best.theta + delta, long_m, short_m, settings)
+    left = _candidate(points, near_border, best.theta - delta, long_m, short_m, settings)
+    right = _candidate(points, near_border, best.theta + delta, long_m, short_m, settings)
     curvature = max(0.0, float(min(left.score, right.score) - best.score))
 
     reasons: list[str] = []
@@ -589,7 +638,7 @@ def fit_fixed_rectangle(
         reasons=tuple(dict.fromkeys(reasons)),
         diagnostics={
             "input_points": int(points.shape[0]),
-            "retained_points": int(best.points.shape[0]),
+            "retained_points": best.retained_points,
             "edge_quality": best.edge_quality,
             "long_observed_span_m": best.long_axis.observed_span_m,
             "short_observed_span_m": best.short_axis.observed_span_m,
