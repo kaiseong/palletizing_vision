@@ -12,7 +12,7 @@ from parcel_pose.calibration import (
     load_json,
     save_calibration,
 )
-from parcel_pose.models import CalibrationState
+from parcel_pose.models import Calibration, CalibrationState
 from parcel_pose.recording import write_session
 from parcel_pose.session import RecordedFrame, SessionValidationError
 
@@ -34,6 +34,47 @@ def test_rby1m_v1_2_fixed_pose_fk_artifact_is_rigid_and_versioned() -> None:
     np.testing.assert_allclose(transform[:3, :3].T @ transform[:3, :3], np.eye(3), atol=1e-12)
     assert np.linalg.det(transform[:3, :3]) == pytest.approx(1.0, abs=1e-12)
     np.testing.assert_allclose(transform[3], [0.0, 0.0, 0.0, 1.0])
+
+
+def test_live_calibration_applies_operator_observed_y_center_correction() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "rby1m_v1_2_fixed_table_nominal.json"
+    )
+    calibration = load_calibration(path)
+    transform = calibration.T_base_from_depth
+    uncorrected_payload = load_json(path)
+    uncorrected_payload["base_translation_correction_m"] = [0.0, 0.0, 0.0]
+    uncorrected_transform = Calibration.from_dict(
+        uncorrected_payload
+    ).T_base_from_depth
+
+    assert transform is not None
+    assert uncorrected_transform is not None
+    np.testing.assert_allclose(
+        transform[:3, 3] - uncorrected_transform[:3, 3],
+        [0.0, 0.05, 0.0],
+    )
+    assert calibration.base_translation_correction_m == (0.0, 0.05, 0.0)
+    raw_center_y_m = -0.05
+    corrected_center_y_m = raw_center_y_m + calibration.base_translation_correction_m[1]
+    assert corrected_center_y_m == pytest.approx(0.0)
+    assert calibration.state is CalibrationState.PLANE_CALIBRATED_PARTIAL
+    assert not calibration.absolute_base_validated
+
+
+def test_nominal_config_carries_y_correction_into_future_plane_calibration() -> None:
+    from parcel_pose.calibration import nominal_calibration_from_config
+
+    path = Path(__file__).resolve().parents[1] / "configs" / "d435_rby1_nominal.json"
+    calibration = nominal_calibration_from_config(load_json(path))
+
+    assert calibration.base_translation_correction_m == (0.0, 0.05, 0.0)
+    correction = calibration.diagnostics["base_translation_correction"]
+    assert correction["source"] == "operator_visual_alignment_2026-07-28"
+    assert correction["validation"] == "single_pose_visual_observation_nominal_unverified"
+    assert any("empirical" in note for note in calibration.notes)
 
 
 def test_empty_table_ransac_rejects_non_table_planes_and_reports_evidence() -> None:

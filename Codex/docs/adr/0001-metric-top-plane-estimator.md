@@ -46,4 +46,6 @@ RGB is optional support for candidate rejection or boundary weighting after asso
 - Do not add the D435 front-glass `-4.2 mm` value to Z16 or deprojected points.
 - Do not deproject raw depth using color intrinsics.
 - Do not optimize base-plane camera X/Y/yaw from unlabeled arbitrary box recordings.
-- Do not emit robot motion, grasp, power, contact, trajectory, or end-effector command fields from this package.
+- Do not emit robot motion, grasp, power, contact, trajectory, or end-effector
+  command fields from estimator outputs. The separate explicit automation
+  boundary is defined by ADR 0002 and must not leak into default perception.

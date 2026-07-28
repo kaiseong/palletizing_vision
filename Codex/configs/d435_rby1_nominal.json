@@ -44,6 +44,13 @@
       "origin_status": "uncalibrated_rgb_lens_center_seed"
     },
     "factory_extrinsics_source": "active_realsense_stream_profiles",
+    "base_translation_correction_m": [0.0, 0.05, 0.0],
+    "base_translation_correction_status": {
+      "source": "operator_visual_alignment_2026-07-28",
+      "observation": "box visually centered on robot when previous nominal base y was -0.050 m",
+      "application": "corrected_base_y = previous_nominal_base_y + 0.050 m",
+      "validation": "single_pose_visual_observation_nominal_unverified"
+    },
     "absolute_base_validated": false
   },
   "table_calibration": {

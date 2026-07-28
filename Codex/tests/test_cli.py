@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,7 +23,104 @@ def test_all_subcommand_help_runs_without_realsense(subcommand, capsys):
 
 def test_root_help_runs_without_realsense(capsys):
     assert main([]) == 0
-    assert "Perception-only" in capsys.readouterr().out
+    assert "D435 parcel pose tools" in capsys.readouterr().out
+
+
+def test_keyboard_interrupt_returns_shell_interrupt_status(monkeypatch, capsys) -> None:
+    import parcel_pose.cli as cli
+
+    class FakeParser:
+        def parse_args(self, argv):
+            def interrupt(_args):
+                raise KeyboardInterrupt
+
+            return SimpleNamespace(handler=interrupt)
+
+        def print_help(self):  # pragma: no cover - handler is present
+            raise AssertionError("help must not be printed")
+
+        def error(self, message):  # pragma: no cover - interrupt has its own path
+            raise AssertionError(message)
+
+    monkeypatch.setattr(cli, "build_parser", FakeParser)
+
+    assert cli.main([]) == 130
+    assert "interrupted by user" in capsys.readouterr().err
+
+
+def test_live_view_defaults_remain_perception_only() -> None:
+    args = build_parser().parse_args(
+        ["live-view", "--calibration", "calibration.json"]
+    )
+
+    assert not args.auto_grab
+    assert not args.allow_nominal_registration
+    assert args.robot_address == "192.168.30.1:50051"
+
+
+def test_auto_grab_requires_explicit_nominal_registration_acceptance(
+    capsys,
+) -> None:
+    calibration = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "rby1m_v1_2_fixed_table_nominal.json"
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "live-view",
+                "--calibration",
+                str(calibration),
+                "--auto-grab",
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "--allow-nominal-registration" in capsys.readouterr().err
+
+
+def test_auto_grab_builds_opt_in_runtime_and_forwards_it_to_live_loop(
+    monkeypatch,
+) -> None:
+    import parcel_pose.auto_grab as auto_grab
+    import parcel_pose.realtime as realtime
+
+    calibration = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "rby1m_v1_2_fixed_table_nominal.json"
+    )
+    created = []
+    forwarded = []
+
+    class FakeRuntime:
+        def __init__(self, config, *, execute=False) -> None:
+            created.append((config, execute, self))
+
+    def fake_live_view(calibration, estimator_config, metadata_context, **kwargs):
+        forwarded.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(auto_grab, "AutoGrabRuntime", FakeRuntime)
+    monkeypatch.setattr(realtime, "run_live_view", fake_live_view)
+
+    assert main(
+        [
+            "live-view",
+            "--calibration",
+            str(calibration),
+            "--auto-grab",
+            "--allow-nominal-registration",
+            "--robot-address",
+            "10.0.0.7:50051",
+        ]
+    ) == 0
+    config, execute, runtime = created[0]
+    assert execute is True
+    assert config.address == "10.0.0.7:50051"
+    assert forwarded[0]["automation"] is runtime
 
 
 def test_live_without_sdk_returns_actionable_error_no_import_traceback(monkeypatch, capsys):

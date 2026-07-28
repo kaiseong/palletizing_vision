@@ -1,8 +1,9 @@
 """Low-latency D435 live view for the fixed RB-Y1 parcel task.
 
-The estimator remains depth-native.  Only the four fitted top edges are
-projected into the native RGB image using the active RealSense factory
-extrinsics; no aligned RGB frame or robot command is produced.
+The estimator remains depth-native. Only the four fitted top edges are
+projected into native RGB using the active RealSense factory extrinsics. The
+default path is perception-only; an explicitly supplied automation consumer
+may use current base poses without changing estimator or overlay semantics.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -32,6 +33,28 @@ DEFAULT_WINDOW_NAME = "RB-Y1 Parcel Pose"
 
 class LiveViewUnavailableError(RuntimeError):
     """Raised when the camera or OpenCV display path cannot run."""
+
+
+class LivePoseAutomation(Protocol):
+    """Opt-in consumer that owns robot motion and the final grasp handoff."""
+
+    def start(self) -> None:
+        """Connect and prepare without moving the mobile base."""
+
+    def update(
+        self,
+        base_pose: BasePoseDiagnostic | None,
+        *,
+        pose_timestamp_s: float,
+        now_s: float,
+    ) -> bool:
+        """Consume one timestamped pose and return whether handoff is ready."""
+
+    def handoff(self) -> None:
+        """Stop/release the base stream and execute the grasp exactly once."""
+
+    def close(self) -> None:
+        """Fail closed, release resources, and disconnect."""
 
 
 def _cv2() -> Any:
@@ -221,6 +244,7 @@ def run_live_view(
     max_frames: int | None = None,
     fullscreen: bool = False,
     window_name: str = DEFAULT_WINDOW_NAME,
+    automation: LivePoseAutomation | None = None,
 ) -> int:
     """Run the D435/estimator/display loop and return the displayed frame count."""
 
@@ -237,6 +261,9 @@ def run_live_view(
     _require_highgui(cv2)
     displayed_frames = 0
     window_created = False
+    handoff_ready = False
+    handoff_started = False
+    user_cancelled = False
     stream_config = D435StreamConfig(
         align_color_to_depth=False,
         warmup_frames=warmup_frames,
@@ -245,6 +272,8 @@ def run_live_view(
         with RealSenseAdapter(stream_config) as camera:
             metadata = camera.session_metadata(**dict(metadata_context))
             _validate_camera_profile(calibration, metadata)
+            if automation is not None:
+                automation.start()
             estimator = ParcelPoseEstimator(
                 metadata.depth_profile.intrinsics,
                 calibration,
@@ -272,6 +301,7 @@ def run_live_view(
                     raise LiveViewUnavailableError(
                         f"D435 live capture failed: {exc}"
                     ) from exc
+                pose_timestamp_s = time.monotonic()
                 estimate_start = time.perf_counter()
                 estimate = estimator.estimate(
                     frame.raw_depth_z16,
@@ -281,6 +311,13 @@ def run_live_view(
                 )
                 estimator_ms = 1000.0 * (time.perf_counter() - estimate_start)
                 base_pose = base_pose_from_estimate(estimate, calibration)
+                if automation is not None:
+                    now_s = time.monotonic()
+                    handoff_ready = automation.update(
+                        base_pose,
+                        pose_timestamp_s=pose_timestamp_s,
+                        now_s=now_s,
+                    )
                 overlay = draw_live_overlay(
                     frame.raw_color_bgr,
                     base_pose,
@@ -299,9 +336,18 @@ def run_live_view(
                     ) from exc
                 displayed_frames += 1
                 if key in {27, ord("q"), ord("Q")}:
+                    user_cancelled = True
+                    handoff_ready = False
                     break
+                if handoff_ready:
+                    break
+        if handoff_ready and not user_cancelled and automation is not None:
+            handoff_started = True
+            automation.handoff()
     except KeyboardInterrupt:
-        pass
+        user_cancelled = True
+        if handoff_started:
+            raise
     finally:
         if window_created:
             try:
@@ -310,11 +356,14 @@ def run_live_view(
                 destroy_all = getattr(cv2, "destroyAllWindows", None)
                 if callable(destroy_all):
                     destroy_all()
+        if automation is not None:
+            automation.close()
     return displayed_frames
 
 
 __all__ = [
     "DEFAULT_WINDOW_NAME",
+    "LivePoseAutomation",
     "LiveViewUnavailableError",
     "draw_live_overlay",
     "live_overlay_lines",

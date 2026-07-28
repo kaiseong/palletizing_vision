@@ -19,7 +19,7 @@ def _default_config_path() -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="parcel-pose",
-        description="Perception-only D435 parcel center/yaw tools (no robot commands)",
+        description="D435 parcel pose tools with explicit opt-in RB-Y1 auto-grab",
     )
     subparsers = parser.add_subparsers(dest="subcommand")
 
@@ -110,6 +110,32 @@ def build_parser() -> argparse.ArgumentParser:
     live_view.add_argument("--max-frames", type=int)
     live_view.add_argument("--fullscreen", action="store_true")
     live_view.add_argument("--window-name", default="RB-Y1 Parcel Pose")
+    live_view.add_argument(
+        "--auto-grab",
+        action="store_true",
+        help=(
+            "connect RB-Y1 M v1.2, stream XY base alignment to x=0.740/y=0, "
+            "then run grabbing_box.py once"
+        ),
+    )
+    live_view.add_argument(
+        "--allow-nominal-registration",
+        action="store_true",
+        help=(
+            "explicitly permit robot motion with the current nominal_unverified "
+            "camera-to-base registration"
+        ),
+    )
+    live_view.add_argument(
+        "--robot-address",
+        default="192.168.30.1:50051",
+        help="RB-Y1 controller address (default: 192.168.30.1:50051)",
+    )
+    live_view.add_argument(
+        "--robot-power",
+        default=".*",
+        help="power-device regex used while preparing the robot (default: .*)",
+    )
     live_view.set_defaults(handler=_run_live_view)
     return parser
 
@@ -399,12 +425,35 @@ def _run_live_view(args: argparse.Namespace) -> int:
 
     config = load_json(args.config)
     calibration = load_calibration(args.calibration)
-    if not calibration.absolute_base_validated:
-        print(
-            "warning: displayed base coordinates use nominal_unverified camera "
-            "registration; validate the camera-to-base transform before robot use",
-            file=sys.stderr,
+    automation = None
+    auto_grab_errors: tuple[type[BaseException], ...] = ()
+    if args.allow_nominal_registration and not args.auto_grab:
+        raise ValueError("--allow-nominal-registration requires --auto-grab")
+    if args.auto_grab:
+        if not calibration.absolute_base_validated and not args.allow_nominal_registration:
+            raise ValueError(
+                "--auto-grab is blocked because camera-to-base registration is "
+                "nominal_unverified; pass --allow-nominal-registration only after "
+                "accepting the current empirical +50 mm y correction"
+            )
+        from .auto_grab import AutoGrabConfig, AutoGrabError, AutoGrabRuntime
+
+        automation = AutoGrabRuntime(
+            AutoGrabConfig(
+                address=args.robot_address,
+                power=args.robot_power,
+            ),
+            execute=True,
         )
+        auto_grab_errors = (AutoGrabError,)
+    if not calibration.absolute_base_validated:
+        warning = (
+            "warning: base coordinates use nominal_unverified camera registration "
+            "with an empirical +0.050 m y correction"
+        )
+        if args.auto_grab:
+            warning += "; automatic RB-Y1 motion was explicitly enabled"
+        print(warning, file=sys.stderr)
     try:
         run_live_view(
             calibration,
@@ -414,8 +463,13 @@ def _run_live_view(args: argparse.Namespace) -> int:
             max_frames=args.max_frames,
             fullscreen=args.fullscreen,
             window_name=args.window_name,
+            automation=automation,
         )
-    except (LiveViewUnavailableError, RealSenseUnavailableError) as exc:
+    except (
+        LiveViewUnavailableError,
+        RealSenseUnavailableError,
+        *auto_grab_errors,
+    ) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     return 0
@@ -429,6 +483,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     try:
         return int(args.handler(args))
+    except KeyboardInterrupt:
+        print("interrupted by user", file=sys.stderr)
+        return 130
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
         return 2

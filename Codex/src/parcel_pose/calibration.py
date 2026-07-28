@@ -51,11 +51,31 @@ def nominal_calibration_from_config(
         nominal = calibration_config["nominal_T_head_from_color"]
         translation = nominal["translation_m"]
         roll, pitch, yaw = nominal["euler_zyx_deg"]
+        base_translation_correction_m = calibration_config.get(
+            "base_translation_correction_m",
+            (0.0, 0.0, 0.0),
+        )
+        correction_status = calibration_config.get(
+            "base_translation_correction_status"
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"nominal configuration is missing transform fields: {exc}") from exc
     formula = nominal.get("rotation_formula", "")
     if formula != "Rz(yaw) @ Ry(pitch) @ Rx(roll)":
         raise ValueError("unsupported Euler formula; expected Rz(yaw) @ Ry(pitch) @ Rx(roll)")
+    if correction_status is not None and not isinstance(correction_status, Mapping):
+        raise ValueError("base_translation_correction_status must be a mapping")
+    calibration_diagnostics = {} if diagnostics is None else dict(diagnostics)
+    if correction_status is not None:
+        calibration_diagnostics.setdefault(
+            "base_translation_correction",
+            dict(correction_status),
+        )
+    notes = ["nominal RGB-centered transform seed; base-plane XY/yaw unvalidated"]
+    if any(abs(float(value)) > 0.0 for value in base_translation_correction_m):
+        notes.append(
+            "base translation includes an empirical operator alignment correction"
+        )
     return Calibration(
         state=state,
         table_plane=table_plane,
@@ -64,12 +84,13 @@ def nominal_calibration_from_config(
             translation, roll, pitch, yaw, degrees=True
         ),
         E_color_from_depth=E_color_from_depth,
+        base_translation_correction_m=base_translation_correction_m,
         base_frame=str(frames.get("base", "base")),
         head_frame=str(frames.get("head_candidate", "link_head_2")),
         color_frame=str(frames.get("color", "d435_color_optical_frame")),
         depth_frame=str(frames.get("depth", "d435_depth_optical_frame")),
-        notes=("nominal RGB-centered transform seed; base-plane XY/yaw unvalidated",),
-        diagnostics={} if diagnostics is None else dict(diagnostics),
+        notes=tuple(notes),
+        diagnostics=calibration_diagnostics,
     )
 
 

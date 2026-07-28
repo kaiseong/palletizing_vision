@@ -43,6 +43,7 @@
     [0.0, 0.0, 0.0, 1.0]
   ],
   "T_head_from_depth": null,
+  "base_translation_correction_m": [0.0, 0.05, 0.0],
   "frames": {
     "base": "base",
     "head": "link_head_2",
@@ -52,7 +53,8 @@
   "notes": [
     "RB-Y1 M v1.2 fixed torso/head pose and fixed table",
     "table plane fit passed its recording quality gates",
-    "RGB-centered mount and base-plane XY/yaw remain nominal_unverified"
+    "RGB-centered mount and base-plane XY/yaw remain nominal_unverified",
+    "base y includes an empirical +0.050 m correction from operator visual alignment"
   ],
   "diagnostics": {
     "camera_profile": {
@@ -70,6 +72,13 @@
       "torso_positions_deg": [0.0, 55.0, -59.988, 6.532, 0.0, 0.0],
       "head_positions_deg": [0.0, 49.846],
       "registration_status": "kinematic_fk_with_nominal_unvalidated_camera_mount"
+    },
+    "base_translation_correction": {
+      "source": "operator_visual_alignment_2026-07-28",
+      "observed_previous_nominal_y_m": -0.05,
+      "correction_m": [0.0, 0.05, 0.0],
+      "expected_corrected_y_m": 0.0,
+      "validation": "single_pose_visual_observation_nominal_unverified"
     },
     "table_plane_fit": {
       "sample_count": 100000,

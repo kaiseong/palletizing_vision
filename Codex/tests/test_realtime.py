@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from parcel_pose.evaluation import BasePoseDiagnostic
+from parcel_pose.evaluation import BasePoseDiagnostic, base_pose_from_estimate
 from parcel_pose.models import (
     Calibration,
     CalibrationState,
@@ -98,6 +98,35 @@ def test_live_text_uses_placeholders_when_base_pose_is_unavailable() -> None:
         "x=-- m   y=-- m   z=-- m",
         "yaw=-- deg   latency=8.0 ms",
     )
+
+
+def test_live_text_uses_the_same_corrected_y_as_mobile_control() -> None:
+    calibration = Calibration(
+        state=CalibrationState.PLANE_CALIBRATED_PARTIAL,
+        table_plane=Plane(normal=[0.0, 0.0, 1.0], d=0.75, frame="depth"),
+        T_base_from_head=np.eye(4),
+        T_head_from_depth=np.eye(4),
+        base_translation_correction_m=(0.0, 0.05, 0.0),
+    )
+    estimate = _estimate()
+    estimate = PoseEstimate(
+        frame=estimate.frame,
+        center_depth_m=(0.740, -0.05, 0.90),
+        yaw_rad=estimate.yaw_rad,
+        yaw_mod_180_deg=estimate.yaw_mod_180_deg,
+        observability=estimate.observability,
+        diagnostics=estimate.diagnostics,
+        geometry_valid=estimate.geometry_valid,
+        full_pose_valid=estimate.full_pose_valid,
+        calibration_state=estimate.calibration_state,
+        base_registration=estimate.base_registration,
+    )
+
+    base_pose = base_pose_from_estimate(estimate, calibration)
+
+    assert base_pose is not None
+    assert base_pose.box_center_xyz_m[1] == pytest.approx(0.0)
+    assert "x=+0.740 m   y=+0.000 m" in live_overlay_lines(base_pose, 5.0)[0]
 
 
 class _OverlayCv2:
@@ -308,3 +337,301 @@ def test_live_view_rejects_a_camera_that_does_not_match_calibration(
             {},
             max_frames=1,
         )
+
+
+def test_automation_handoff_runs_after_camera_exit_and_closes_once(
+    monkeypatch,
+) -> None:
+    import parcel_pose.realtime as realtime
+
+    metadata = make_metadata()
+    frame = make_frame(aligned=False)
+    cv2 = _WindowCv2(-1)
+    events: list[str] = []
+
+    class FakeCamera:
+        def __init__(self, stream_config) -> None:
+            pass
+
+        def __enter__(self):
+            events.append("camera_enter")
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            events.append("camera_exit")
+
+        def session_metadata(self, **context):
+            return metadata
+
+        def capture(self):
+            return frame
+
+    class FakeEstimator:
+        def __init__(self, intrinsics, calibration, config) -> None:
+            self.last_evidence = None
+
+        def estimate(self, depth, **kwargs):
+            return _estimate()
+
+    class FakeAutomation:
+        def start(self) -> None:
+            events.append("automation_start")
+
+        def update(
+            self,
+            base_pose,
+            *,
+            pose_timestamp_s: float,
+            now_s: float,
+        ) -> bool:
+            assert base_pose is not None
+            assert np.isfinite(pose_timestamp_s)
+            assert np.isfinite(now_s)
+            assert pose_timestamp_s <= now_s
+            events.append("automation_update")
+            return True
+
+        def handoff(self) -> None:
+            events.append("handoff")
+
+        def close(self) -> None:
+            events.append("automation_close")
+
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setattr(realtime, "_cv2", lambda: cv2)
+    monkeypatch.setattr(realtime, "RealSenseAdapter", FakeCamera)
+    monkeypatch.setattr(realtime, "ParcelPoseEstimator", FakeEstimator)
+    monkeypatch.setattr(
+        realtime,
+        "draw_live_overlay",
+        lambda image, base_pose, **kwargs: image.copy(),
+    )
+
+    assert run_live_view(
+        _calibration(),
+        EstimatorConfig(),
+        {},
+        automation=FakeAutomation(),
+    ) == 1
+    assert events == [
+        "camera_enter",
+        "automation_start",
+        "automation_update",
+        "camera_exit",
+        "handoff",
+        "automation_close",
+    ]
+
+
+def test_user_quit_cancels_automation_without_grasp(monkeypatch) -> None:
+    import parcel_pose.realtime as realtime
+
+    metadata = make_metadata()
+    frame = make_frame(aligned=False)
+    cv2 = _WindowCv2(ord("q"))
+    events: list[str] = []
+
+    class FakeCamera:
+        def __init__(self, stream_config) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            events.append("camera_exit")
+
+        def session_metadata(self, **context):
+            return metadata
+
+        def capture(self):
+            return frame
+
+    class FakeEstimator:
+        def __init__(self, intrinsics, calibration, config) -> None:
+            self.last_evidence = None
+
+        def estimate(self, depth, **kwargs):
+            return _estimate()
+
+    class FakeAutomation:
+        def start(self) -> None:
+            events.append("start")
+
+        def update(
+            self,
+            base_pose,
+            *,
+            pose_timestamp_s: float,
+            now_s: float,
+        ) -> bool:
+            assert pose_timestamp_s <= now_s
+            events.append("update_ready")
+            return True
+
+        def handoff(self) -> None:
+            events.append("handoff")
+
+        def close(self) -> None:
+            events.append("close")
+
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setattr(realtime, "_cv2", lambda: cv2)
+    monkeypatch.setattr(realtime, "RealSenseAdapter", FakeCamera)
+    monkeypatch.setattr(realtime, "ParcelPoseEstimator", FakeEstimator)
+    monkeypatch.setattr(
+        realtime,
+        "draw_live_overlay",
+        lambda image, base_pose, **kwargs: image.copy(),
+    )
+
+    assert run_live_view(
+        _calibration(),
+        EstimatorConfig(),
+        {},
+        automation=FakeAutomation(),
+    ) == 1
+    assert events == ["start", "update_ready", "camera_exit", "close"]
+
+
+def test_live_view_preserves_pre_estimation_pose_timestamp(monkeypatch) -> None:
+    import parcel_pose.realtime as realtime
+
+    metadata = make_metadata()
+    frame = make_frame(aligned=False)
+    cv2 = _WindowCv2(ord("q"))
+    observed_times: list[tuple[float, float]] = []
+    monotonic_values = iter((10.0, 10.401))
+
+    class FakeCamera:
+        def __init__(self, stream_config) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            pass
+
+        def session_metadata(self, **context):
+            return metadata
+
+        def capture(self):
+            return frame
+
+    class FakeEstimator:
+        def __init__(self, intrinsics, calibration, config) -> None:
+            self.last_evidence = None
+
+        def estimate(self, depth, **kwargs):
+            return _estimate()
+
+    class FakeAutomation:
+        def start(self) -> None:
+            pass
+
+        def update(
+            self,
+            base_pose,
+            *,
+            pose_timestamp_s: float,
+            now_s: float,
+        ) -> bool:
+            observed_times.append((pose_timestamp_s, now_s))
+            return False
+
+        def handoff(self) -> None:  # pragma: no cover - q prevents handoff
+            raise AssertionError("handoff must not run")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setattr(realtime, "_cv2", lambda: cv2)
+    monkeypatch.setattr(realtime, "RealSenseAdapter", FakeCamera)
+    monkeypatch.setattr(realtime, "ParcelPoseEstimator", FakeEstimator)
+    monkeypatch.setattr(realtime.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        realtime,
+        "draw_live_overlay",
+        lambda image, base_pose, **kwargs: image.copy(),
+    )
+
+    assert run_live_view(
+        _calibration(),
+        EstimatorConfig(),
+        {},
+        automation=FakeAutomation(),
+    ) == 1
+    assert observed_times == [(10.0, 10.401)]
+
+
+def test_keyboard_interrupt_during_handoff_propagates_after_cleanup(monkeypatch) -> None:
+    import parcel_pose.realtime as realtime
+
+    metadata = make_metadata()
+    frame = make_frame(aligned=False)
+    cv2 = _WindowCv2(-1)
+    events: list[str] = []
+
+    class FakeCamera:
+        def __init__(self, stream_config) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            events.append("camera_exit")
+
+        def session_metadata(self, **context):
+            return metadata
+
+        def capture(self):
+            return frame
+
+    class FakeEstimator:
+        def __init__(self, intrinsics, calibration, config) -> None:
+            self.last_evidence = None
+
+        def estimate(self, depth, **kwargs):
+            return _estimate()
+
+    class FakeAutomation:
+        def start(self) -> None:
+            pass
+
+        def update(
+            self,
+            base_pose,
+            *,
+            pose_timestamp_s: float,
+            now_s: float,
+        ) -> bool:
+            return True
+
+        def handoff(self) -> None:
+            events.append("handoff")
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            events.append("close")
+
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setattr(realtime, "_cv2", lambda: cv2)
+    monkeypatch.setattr(realtime, "RealSenseAdapter", FakeCamera)
+    monkeypatch.setattr(realtime, "ParcelPoseEstimator", FakeEstimator)
+    monkeypatch.setattr(
+        realtime,
+        "draw_live_overlay",
+        lambda image, base_pose, **kwargs: image.copy(),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_live_view(
+            _calibration(),
+            EstimatorConfig(),
+            {},
+            automation=FakeAutomation(),
+        )
+    assert events == ["camera_exit", "handoff", "close"]

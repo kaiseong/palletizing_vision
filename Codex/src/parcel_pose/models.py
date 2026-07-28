@@ -405,6 +405,7 @@ class Calibration:
     T_head_from_color: FloatArray | None = None
     E_color_from_depth: FloatArray | None = None
     T_head_from_depth: FloatArray | None = None
+    base_translation_correction_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
     base_frame: str = "base"
     head_frame: str = "link_head_2"
     color_frame: str = "d435_color_optical_frame"
@@ -421,6 +422,15 @@ class Calibration:
             "T_head_from_depth",
         ):
             object.__setattr__(self, name, _matrix4(getattr(self, name), name))
+        object.__setattr__(
+            self,
+            "base_translation_correction_m",
+            _tuple_of_floats(
+                self.base_translation_correction_m,
+                3,
+                "base_translation_correction_m",
+            ),
+        )
         object.__setattr__(self, "notes", tuple(str(v) for v in self.notes))
         object.__setattr__(self, "diagnostics", dict(self.diagnostics))
 
@@ -434,7 +444,11 @@ class Calibration:
             result = self.T_base_from_head @ self.T_head_from_color @ self.E_color_from_depth
         else:
             return None
-        result = np.asarray(result, dtype=np.float64)
+        result = np.array(result, dtype=np.float64, copy=True)
+        result[:3, 3] += np.asarray(
+            self.base_translation_correction_m,
+            dtype=np.float64,
+        )
         result.setflags(write=False)
         return result
 
@@ -457,6 +471,9 @@ class Calibration:
             "T_head_from_color": matrix(self.T_head_from_color),
             "E_color_from_depth": matrix(self.E_color_from_depth),
             "T_head_from_depth": matrix(self.T_head_from_depth),
+            "base_translation_correction_m": list(
+                self.base_translation_correction_m
+            ),
             "frames": {
                 "base": self.base_frame,
                 "head": self.head_frame,
@@ -480,6 +497,9 @@ class Calibration:
             T_head_from_color=value.get("T_head_from_color"),
             E_color_from_depth=value.get("E_color_from_depth"),
             T_head_from_depth=value.get("T_head_from_depth"),
+            base_translation_correction_m=tuple(
+                value.get("base_translation_correction_m", (0.0, 0.0, 0.0))
+            ),
             base_frame=str(frames.get("base", "base")),
             head_frame=str(frames.get("head", "link_head_2")),
             color_frame=str(frames.get("color", "d435_color_optical_frame")),

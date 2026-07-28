@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from parcel_pose.models import BoxDimensionPrior, BoxModel, EstimatorConfig
+from parcel_pose.models import Calibration, BoxDimensionPrior, BoxModel, EstimatorConfig
 
 
 SAMPLES = (
@@ -126,3 +126,27 @@ def test_estimator_config_requires_height_gate_to_cover_measured_population() ->
             box_dimension_prior=_prior(),
             top_plane_tolerance_m=0.003,
         )
+
+
+def test_base_translation_correction_is_applied_once_and_round_trips() -> None:
+    calibration = Calibration(
+        T_base_from_head=np.eye(4),
+        T_head_from_depth=np.eye(4),
+        base_translation_correction_m=(0.0, 0.05, 0.0),
+    )
+
+    transform = calibration.T_base_from_depth
+
+    assert transform is not None
+    np.testing.assert_allclose(transform[:3, 3], [0.0, 0.05, 0.0])
+    np.testing.assert_allclose(
+        Calibration.from_dict(calibration.to_dict()).T_base_from_depth,
+        transform,
+    )
+
+
+def test_base_translation_correction_rejects_non_finite_or_wrong_length() -> None:
+    with pytest.raises(ValueError, match="must contain 3"):
+        Calibration(base_translation_correction_m=(0.0, 0.05))
+    with pytest.raises(ValueError, match="must be finite"):
+        Calibration(base_translation_correction_m=(0.0, np.nan, 0.0))

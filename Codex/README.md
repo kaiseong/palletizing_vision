@@ -1,11 +1,14 @@
 # RB-Y1 D435 parcel pose
 
-Perception-only Python package for estimating the center and long-axis yaw of
-one folded parcel family from an Intel RealSense D435 mounted on RB-Y1. Eight
+Python package for estimating the center and long-axis yaw of one folded parcel
+family from an Intel RealSense D435 mounted on RB-Y1. Eight
 physical samples measured `395-401 x 252-256 x 156-164 mm`; the estimator uses
 their component-wise median `400 x 253 x 160 mm` as its fixed metric prior.
 
-The estimator uses calibrated table/top-plane geometry and a fixed-size metric rectangle. It does not generate base, arm, grasp, power, contact, or end-effector commands.
+The estimator core uses calibrated table/top-plane geometry and a fixed-size
+metric rectangle and remains perception-only. The `live-view` command has a
+separate, explicit `--auto-grab` mode that can stream the RB-Y1 M mobile base
+and hand the same connection to the shared `grabbing_box.py` sequence.
 
 ## Coordinate and calibration contract
 
@@ -14,9 +17,17 @@ All transforms are active, column-vector, target-from-source matrices:
 ```text
 p_target = T_target_from_source @ p_source
 T_base_from_depth = T_base_from_head @ T_head_from_color @ E_color_from_depth
+T_corrected_base_from_depth.translation += [0.000, +0.050, 0.000] m
 ```
 
 `E_color_from_depth` comes from the active RealSense depth profile via `get_extrinsics_to(color_profile)`. The supplied nominal head-to-color pose is an initialization only. D435 `Depth Start Point = -4.2 mm` is a mechanical front-glass datum; it is not added to raw Z16, metric depth, or an SDK-frame transform chain.
+
+The tracked fixed-setup calibration applies an empirical `+0.050 m` base-y
+output correction because the operator observed physical robot/box centering
+when the previous nominal output was `y=-0.050 m`. Thus that same observation
+now displays and controls as `y=0.000 m`. This is a single-pose visual
+correction, not independent base calibration, so the artifact remains
+`plane_calibrated_partial` / `nominal_unverified`.
 
 Calibration states are deliberately separate:
 
@@ -47,6 +58,13 @@ The table plane uses `n dot p = d`, with unit `n` oriented toward the camera/box
 p_top = p_table + 0.160 * n
 d_top = d_table + 0.160
 ```
+
+The empty table must be visible when this plane is calibrated, but table pixels
+do not have to remain visible in every runtime frame. Runtime estimation uses
+the stored plane plus the fixed 160 mm height and the observed box top/rim. The
+assumption remains valid while the camera/head/torso mount, table height and
+tilt, and planar base attitude remain unchanged; changing any of them requires
+recalibration.
 
 Image borders are censored observations, not box edges. A missing box-axis coordinate or a 90-degree long/short ambiguity is returned as invalid/null with a reason, never as a forced high-confidence point.
 
@@ -266,8 +284,8 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli live \
 Live output remains perception-only JSON. It captures five frames by default,
 emits each single-frame result, then emits a stationary burst result. Set
 `--frames`/`--burst-size` to 5-10 for the initial acceptance path, or
-`--burst-size 0` for single-frame diagnostics only. Moving-base continuous
-visual-servo timing is outside this phase.
+`--burst-size 0` for single-frame diagnostics only. This JSON command never
+controls the robot; opt-in motion exists only on `live-view`.
 
 ## Real-time visualized perception on Jetson
 
@@ -276,7 +294,7 @@ connected over USB 3:
 
 ```bash
 conda activate lerobot
-cd ~/kgs_ws/palletizing_vision/Codex
+cd ~/palletizing_vision/Codex
 python live_view.py
 ```
 
@@ -321,9 +339,72 @@ pose is current.
 
 The default `rby1m_v1_2_fixed_table_nominal.json` is explicitly
 `nominal_unverified`. The command warns once on stderr and displays its base
-coordinates for diagnostics, but they must not be treated as independently
-validated robot-control coordinates until camera-to-base registration is
-validated.
+coordinates for diagnostics. Plain `python live_view.py` never imports the
+RB-Y1 SDK, connects to the robot, or creates a command stream.
+
+## Opt-in mobile alignment and automatic grasp
+
+The following command **moves the real RB-Y1**. It is intentionally blocked
+unless both the automatic mode and acceptance of the current nominal
+registration are explicit:
+
+```bash
+python live_view.py \
+  --auto-grab \
+  --allow-nominal-registration
+```
+
+The default controller address is `192.168.30.1:50051`; override it with
+`--robot-address HOST:PORT`. The path is fixed to RB-Y1 Model M v1.2 and fails
+closed on a different reported model/version. Before opening the mobility
+stream it also verifies the calibrated fixed posture within 1 degree: torso
+`[0, 55, -59.988, 6.532, 0, 0]` degrees and head `[0, 49.846]` degrees.
+
+The automatic path uses the corrected box-volume center and performs:
+
+```text
+acquire 3 valid poses
+  -> XY-only mobile stream toward x=0.740 m, y=0.000 m
+  -> stable arrival hold
+  -> repeated zero velocity
+  -> stream cancel + completion wait
+  -> measured mobility-joint stop confirmation
+  -> existing start_pose -> impedance grab -> impedance lift
+```
+
+The mobile command is proportional XY control with `wz=0`, a vector speed cap
+of `0.08 m/s`, a `0.15 m/s^2` slew/SDK acceleration limit, a three-frame
+median, and a 30 mm jump gate. Pose age starts immediately after D435 capture,
+before estimator execution; a result older than 0.30 seconds is rejected
+instead of receiving a fresh post-inference timestamp. Missing/invalid/stale
+pose sends zero velocity; continuous pose loss for 2 seconds or a 30-second
+approach timeout aborts without grasping. Arrival requires both current and
+filtered positions inside 10 mm, then at least five valid frames and 0.35
+seconds inside a 15 mm outer band. At handoff, yaw must have a valid 0- or
+90-degree canonical reference with at most 8 degrees residual. The controller
+does not rotate the base; an incompatible yaw aborts instead of forcing a
+grasp. The grasp is invoked exactly once and only after the mobility stream
+has ended and measured wheel speeds remain at or below 0.05 rad/s throughout
+at least 0.35 seconds of continuous 20 Hz state updates. All mobility
+joints must report ready and the state stream must remain fresh. Failure to
+settle within 2 seconds blocks the arms; that state subscription is stopped
+before the grasp FT monitor starts. The same robot connection is used for a
+continuous handoff.
+
+Pressing `q`, `Esc`, or `Ctrl-C` before handoff, a camera/stream exception, a
+posture/identity mismatch, an incompatible yaw, or failure to confirm stream
+cancellation stops/disconnects without calling `grabbing_box`. If `Ctrl-C`
+or an SDK/feedback exception arrives after an arm command has begun, the
+one-shot SDK handler is explicitly cancelled and awaited before the error is
+propagated; Ctrl-C cleanup exits with status 130. Partial physical arm motion
+may already have occurred.
+
+The shared grasp motion itself is inherited and has not been contact-validated
+by these camera recordings: it uses a 300 mm inward target, a 150 mm continuing
+lift squeeze, 100 Nm per-arm-joint torque limits, and a 100 s lift hold. Its FT
+monitor reports force but does not autonomously abort on a threshold. Run the
+first physical trials supervised with an accessible emergency stop and tune
+those values independently before unattended operation.
 
 ## Verification
 
@@ -343,4 +424,6 @@ a visual-servo update rate.
 
 The real labeled targets are p95 center error `<=20 mm` and yaw error modulo 180 `<=4 degrees`, but these remain unverified until an independent base-referenced calibration/ground-truth source exists. Unlabeled recordings can establish repeatability, residuals, coverage, and correct abstention only.
 
-See [ADR 0001](docs/adr/0001-metric-top-plane-estimator.md) for the design decision and rejected alternatives.
+See [ADR 0001](docs/adr/0001-metric-top-plane-estimator.md) for the estimator
+decision and [ADR 0002](docs/adr/0002-opt-in-mobile-auto-grab.md) for the
+robot-control boundary and handoff contract.
