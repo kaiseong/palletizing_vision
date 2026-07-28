@@ -45,7 +45,7 @@ import numpy as np
 import rby1_sdk as rby
 
 # Time (seconds) the robot takes to reach the start pose. Larger = slower/safer.
-MINIMUM_TIME = 2.0
+MINIMUM_TIME = 0.5
 
 # Arm-only posture used while the mobile base approaches the box.  These are
 # measured RB-Y1 M v1.2 joint angles supplied in degrees; the SDK receives
@@ -61,8 +61,8 @@ MOBILE_READY_LEFT_ARM_DEG = np.asarray(
 )
 MOBILE_READY_RIGHT_ARM_RAD = np.deg2rad(MOBILE_READY_RIGHT_ARM_DEG)
 MOBILE_READY_LEFT_ARM_RAD = np.deg2rad(MOBILE_READY_LEFT_ARM_DEG)
-MOBILE_READY_MINIMUM_TIME = 0.5
-MOBILE_READY_HOLD_TIME = 0.5
+MOBILE_READY_MINIMUM_TIME = 0.2
+MOBILE_READY_HOLD_TIME = 0.01
 MOBILE_READY_COMMAND_TIMEOUT_MS = 10_000
 
 # Rate (Hz) at which the FT-sensor monitoring callback is invoked.
@@ -86,7 +86,7 @@ IMPEDANCE_TRANSLATION_WEIGHT = [1000.0, 200.0, 1000.0]
 IMPEDANCE_ROTATION_WEIGHT = [50.0, 50.0, 50.0]
 # control_hold_time [s] for the grab: short settle time only, because the lift
 # command that follows keeps holding the box (see LIFT_HOLD_TIME).
-GRAB_HOLD_TIME = 1.0
+GRAB_HOLD_TIME = 0.5
 
 # ---- Cartesian IMPEDANCE lift: raise along each EEF's LOCAL +z axis ----
 # The lift target is computed per hand: current EEF pose offset by
@@ -102,12 +102,12 @@ LIFT_DISTANCE = 0.15
 # that the error never reaches zero during the lift. Larger = firmer squeeze.
 LIFT_SQUEEZE_DISTANCE = 0.15
 # Trajectory time [s] for the lift. Larger = slower / smoother rise.
-LIFT_MINIMUM_TIME = 1.0
+LIFT_MINIMUM_TIME = 0.5
 # Cartesian velocity / acceleration caps for the lift trajectory (safety bounds;
 # with LIFT_MINIMUM_TIME large, the time governs and these rarely bind).
-LIFT_LINEAR_VELOCITY_LIMIT = 0.1                # m/s
-LIFT_ANGULAR_VELOCITY_LIMIT = float(np.pi / 4)  # rad/s
-LIFT_LINEAR_ACCELERATION_LIMIT = 0.5            # m/s^2
+LIFT_LINEAR_VELOCITY_LIMIT = 0.5                # m/s
+LIFT_ANGULAR_VELOCITY_LIMIT = float(np.pi / 2)  # rad/s
+LIFT_LINEAR_ACCELERATION_LIMIT = 0.9            # m/s^2
 LIFT_ANGULAR_ACCELERATION_LIMIT = float(np.pi)  # rad/s^2
 # Per-arm (7-joint) joint-space impedance that holds the box while lifting.
 # TUNE for your robot/payload: stiffness firm enough to hold, torque above load.
