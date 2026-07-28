@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import inspect
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -10,25 +11,79 @@ import numpy as np
 import pytest
 
 
-GRABBING_BOX_PATH = Path(__file__).resolve().parents[2] / "grabbing_box.py"
-
-
 @pytest.fixture
 def grabbing_box(monkeypatch: pytest.MonkeyPatch):
-    """Load the standalone script without importing a real robot SDK."""
+    """Load the packaged sequence without importing a real robot SDK."""
     fake_sdk = types.ModuleType("rby1_sdk")
     fake_sdk.RobotCommandFeedback = types.SimpleNamespace(
         FinishCode=types.SimpleNamespace(Ok=object())
     )
     monkeypatch.setitem(sys.modules, "rby1_sdk", fake_sdk)
 
-    module_name = "_test_grabbing_box"
-    spec = importlib.util.spec_from_file_location(module_name, GRABBING_BOX_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, module_name, module)
-    spec.loader.exec_module(module)
-    return module
+    monkeypatch.delitem(sys.modules, "parcel_pose.grabbing", raising=False)
+    import parcel_pose
+
+    parcel_pose.__dict__.pop("grabbing", None)
+    module = importlib.import_module("parcel_pose.grabbing")
+    try:
+        yield module
+    finally:
+        sys.modules.pop("parcel_pose.grabbing", None)
+        parcel_pose.__dict__.pop("grabbing", None)
+
+
+def test_root_compatibility_import_resolves_to_packaged_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_sdk = types.ModuleType("rby1_sdk")
+    fake_sdk.RobotCommandFeedback = types.SimpleNamespace(
+        FinishCode=types.SimpleNamespace(Ok=object())
+    )
+    monkeypatch.setitem(sys.modules, "rby1_sdk", fake_sdk)
+    monkeypatch.delitem(sys.modules, "parcel_pose.grabbing", raising=False)
+    monkeypatch.delitem(sys.modules, "grabbing_box", raising=False)
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2]))
+
+    compatibility_module = importlib.import_module("grabbing_box")
+
+    assert compatibility_module is sys.modules["parcel_pose.grabbing"]
+    assert Path(compatibility_module.__file__).name == "grabbing.py"
+
+
+def test_root_wrapper_bootstraps_package_in_isolated_python() -> None:
+    palletizing_root = Path(__file__).resolve().parents[2]
+    program = """
+import importlib
+import runpy
+import sys
+import types
+
+root = sys.argv[1]
+sys.path.insert(0, root)
+sys.modules['rby1_sdk'] = types.ModuleType('rby1_sdk')
+compatibility = importlib.import_module('grabbing_box')
+packaged = importlib.import_module('parcel_pose.grabbing')
+assert compatibility is packaged
+marker = object()
+compatibility.send_once = marker
+assert packaged.send_once is marker
+sys.argv = [root + '/grabbing_box.py', '--help']
+try:
+    runpy.run_path(sys.argv[0], run_name='__main__')
+except SystemExit as exc:
+    assert exc.code == 0
+else:
+    raise AssertionError('the CLI help path must exit with status 0')
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", program, str(palletizing_root)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_start_pose_matches_latest_recorded_grasp_posture(grabbing_box):

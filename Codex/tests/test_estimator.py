@@ -16,6 +16,7 @@ from parcel_pose.models import (
     EstimatorConfig,
     Plane,
 )
+from parcel_pose.output import pose_estimate_to_dict
 from parcel_pose.projection import project_points_to_plane, unproject_plane_points
 from parcel_pose.visualization import project_points_to_pixels
 
@@ -61,6 +62,75 @@ def _partial_estimator(scene, config: EstimatorConfig | None = None) -> ParcelPo
         table_plane=_table_plane(scene),
     )
     return ParcelPoseEstimator(_intrinsics(scene), calibration, config)
+
+
+def test_estimator_reuses_fixed_top_plane_geometry_across_frames() -> None:
+    scene = tilted_scene(yaw_deg=23.0, seed=132)
+    estimator = _partial_estimator(scene)
+    projector = estimator._top_projector
+
+    first = estimator.estimate(scene.depth_z16, depth_scale=DEPTH_SCALE_M)
+    second = estimator.estimate(scene.depth_z16, depth_scale=DEPTH_SCALE_M)
+
+    assert estimator._top_projector is projector
+    assert pose_estimate_to_dict(first) == pose_estimate_to_dict(second)
+
+
+@pytest.mark.parametrize(
+    ("intrinsics_factory", "plane_frame", "expected_reason"),
+    [
+        (lambda intr: intr, "unknown_frame", "table_plane_frame_unresolved"),
+        (
+            lambda intr: CameraIntrinsics(
+                width=intr.width,
+                height=intr.height,
+                fx=intr.fx,
+                fy=intr.fy,
+                cx=intr.cx,
+                cy=intr.cy,
+                coeffs=(0.01, 0.0, 0.0, 0.0, 0.0),
+            ),
+            "depth",
+            "invalid_depth_or_metadata",
+        ),
+    ],
+)
+def test_cached_geometry_failure_preserves_per_frame_metadata_and_clears_evidence(
+    intrinsics_factory,
+    plane_frame: str,
+    expected_reason: str,
+) -> None:
+    scene = tilted_scene(yaw_deg=9.0, seed=811)
+    intrinsics = intrinsics_factory(_intrinsics(scene))
+    calibration = Calibration(
+        state=CalibrationState.PLANE_CALIBRATED_PARTIAL,
+        table_plane=Plane(
+            normal=scene.table_normal,
+            d=scene.table_d,
+            frame=plane_frame,
+        ),
+    )
+    estimator = ParcelPoseEstimator(intrinsics, calibration)
+
+    first = estimator.estimate(
+        scene.depth_z16,
+        depth_scale=DEPTH_SCALE_M,
+        timestamp_ms=10.0,
+        frame_id=1,
+    )
+    estimator.last_evidence = object()  # type: ignore[assignment]
+    second = estimator.estimate(
+        scene.depth_z16,
+        depth_scale=DEPTH_SCALE_M,
+        timestamp_ms=20.0,
+        frame_id=2,
+    )
+
+    assert first.reasons == (expected_reason,)
+    assert second.reasons == (expected_reason,)
+    assert (first.timestamp_ms, first.frame_id) == (10.0, 1)
+    assert (second.timestamp_ms, second.frame_id) == (20.0, 2)
+    assert estimator.last_evidence is None
 
 
 @pytest.mark.parametrize("yaw_deg", [-72.0, -31.0, 0.0, 27.0, 76.0])

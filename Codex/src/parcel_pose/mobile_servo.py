@@ -69,7 +69,7 @@ class ServoState(str, Enum):
 class ServoConfig:
     """Safety and convergence parameters for parcel SE(2) servoing.
 
-    The current shared grasp posture is valid only when the parcel long axis is
+    The current packaged grasp posture is valid only when the parcel long axis is
     parallel to base +Y.  Since a rectangle axis is an unoriented line,
     ``+90`` and ``-90`` degrees represent the same target.
     """

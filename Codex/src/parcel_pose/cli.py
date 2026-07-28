@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "connect RB-Y1 M v1.2, move both arms to mobile-ready using Joint "
             "Position, stream SE(2) alignment to x=0.740/y=0 and horizontal "
-            "long-axis yaw=90 deg, then run grabbing_box.py once"
+            "long-axis yaw=90 deg, then run the packaged grasp sequence once"
         ),
     )
     live_view.add_argument(

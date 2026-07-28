@@ -23,7 +23,7 @@ from .models import (
     PoseEstimate,
 )
 from .plane import offset_plane
-from .projection import PlaneProjection, project_depth_to_plane, unproject_plane_points
+from .projection import DepthPlaneProjector, PlaneProjection, unproject_plane_points
 from .rectangle_fit import RectangleFitConfig, RectangleFitResult, fit_fixed_rectangle
 from .transforms import transform_directions, transform_points
 
@@ -216,6 +216,37 @@ class ParcelPoseEstimator:
         self.calibration = calibration
         self.config = EstimatorConfig() if config is None else config
         self.last_evidence: EstimationEvidence | None = None
+        self._rectangle_fit_config = _rectangle_config(self.config)
+        self._table_depth: Plane | None = None
+        self._top_depth: Plane | None = None
+        self._top_projector: DepthPlaneProjector | None = None
+        self._static_geometry_failure: tuple[str, str] | None = None
+        if self.calibration.table_plane is not None:
+            try:
+                self._table_depth = _plane_in_depth(
+                    self.calibration,
+                    self.calibration.table_plane,
+                )
+            except ValueError as exc:
+                self._static_geometry_failure = (
+                    "table_plane_frame_unresolved",
+                    str(exc),
+                )
+            else:
+                self._top_depth = offset_plane(
+                    self._table_depth,
+                    self.config.box_model.height_m,
+                )
+                try:
+                    self._top_projector = DepthPlaneProjector(
+                        self.intrinsics,
+                        self._top_depth,
+                    )
+                except ValueError as exc:
+                    self._static_geometry_failure = (
+                        "invalid_depth_or_metadata",
+                        str(exc),
+                    )
 
     def estimate(
         self,
@@ -241,23 +272,32 @@ class ParcelPoseEstimator:
                 timestamp_ms=timestamp_ms,
                 frame_id=frame_id,
             )
-        try:
-            table_depth = _plane_in_depth(self.calibration, self.calibration.table_plane)
-        except ValueError as exc:
+        if self._static_geometry_failure is not None:
+            reason, detail = self._static_geometry_failure
             return _failure(
-                "table_plane_frame_unresolved",
+                reason,
                 calibration=self.calibration,
                 config=self.config,
                 timestamp_ms=timestamp_ms,
                 frame_id=frame_id,
-                diagnostics={"detail": str(exc)},
+                diagnostics={"detail": detail},
             )
-        top_depth = offset_plane(table_depth, self.config.box_model.height_m)
+        if (
+            self._table_depth is None
+            or self._top_depth is None
+            or self._top_projector is None
+        ):
+            return _failure(
+                "invalid_depth_or_metadata",
+                calibration=self.calibration,
+                config=self.config,
+                timestamp_ms=timestamp_ms,
+                frame_id=frame_id,
+                diagnostics={"detail": "fixed top-plane projector is unavailable"},
+            )
         try:
-            projection = project_depth_to_plane(
+            projection = self._top_projector.project(
                 depth,
-                self.intrinsics,
-                top_depth,
                 depth_scale=depth_scale,
                 slab_tolerance_m=self.config.top_plane_tolerance_m,
                 min_depth_m=self.config.min_depth_m,
@@ -315,7 +355,7 @@ class ParcelPoseEstimator:
             self.config.box_model,
             pixels_uv=pixels,
             image_shape=(self.intrinsics.height, self.intrinsics.width),
-            config=_rectangle_config(self.config),
+            config=self._rectangle_fit_config,
         )
         self.last_evidence = EstimationEvidence(
             projection=projection,
@@ -349,7 +389,7 @@ class ParcelPoseEstimator:
         if rectangle.center_xy_m is not None:
             center_3d = unproject_plane_points(
                 [rectangle.center_xy_m],
-                top_depth,
+                self._top_depth,
                 origin=projection.origin_3d_m,
                 basis=(projection.basis_u_3d, projection.basis_v_3d),
             )[0]
@@ -370,7 +410,7 @@ class ParcelPoseEstimator:
             }
             if center_3d is not None:
                 center_base_3d = transform_points(center_3d, base_transform)
-                table_normal_base = base_transform[:3, :3] @ table_depth.normal
+                table_normal_base = base_transform[:3, :3] @ self._table_depth.normal
                 table_normal_base /= max(float(np.linalg.norm(table_normal_base)), 1e-12)
                 box_center_base_3d = (
                     center_base_3d
@@ -385,7 +425,6 @@ class ParcelPoseEstimator:
                 long_base = tuple(float(value) for value in long_xy_raw)
                 short_base = tuple(float(value) for value in short_xy_raw)
                 if center_3d is not None:
-                    center_base_3d = transform_points(center_3d, base_transform)
                     center_base = tuple(float(value) for value in center_base_3d[:2])
                     top_center_base = tuple(float(value) for value in center_base_3d)
                     box_center_base = tuple(float(value) for value in box_center_base_3d)

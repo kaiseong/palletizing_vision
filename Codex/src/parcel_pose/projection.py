@@ -10,7 +10,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from .models import CameraIntrinsics, Plane
-from .plane import point_on_plane, signed_distances
+from .plane import point_on_plane
 
 
 FloatArray = NDArray[np.float64]
@@ -220,6 +220,123 @@ def unproject_plane_points(
     )
 
 
+class DepthPlaneProjector:
+    """Project many depth frames through one fixed camera/plane geometry.
+
+    Intrinsics and the calibrated top plane do not change while the RB-Y1
+    torso/head and camera mount remain fixed.  Cache their pixel rays and
+    plane terms once, then build 3D points only for the selected slab pixels.
+    """
+
+    def __init__(self, intrinsics: CameraIntrinsics, plane: Plane) -> None:
+        _validate_intrinsics(intrinsics)
+        self.intrinsics = intrinsics
+        self.plane = plane
+
+        cols = np.arange(int(intrinsics.width), dtype=np.float64)
+        rows = np.arange(int(intrinsics.height), dtype=np.float64)
+        self._ray_x = (cols - float(intrinsics.cx)) / float(intrinsics.fx)
+        self._ray_y = (rows - float(intrinsics.cy)) / float(intrinsics.fy)
+        normal = np.asarray(plane.normal, dtype=np.float64)
+        self._plane_ray_denominator = (
+            self._ray_x[None, :] * normal[0]
+            + self._ray_y[:, None] * normal[1]
+            + normal[2]
+        )
+        self._origin = point_on_plane(plane)
+        self._basis_u, self._basis_v = plane_basis(plane)
+        for cached in (
+            self._ray_x,
+            self._ray_y,
+            self._plane_ray_denominator,
+            self._origin,
+            self._basis_u,
+            self._basis_v,
+        ):
+            cached.setflags(write=False)
+
+    def project(
+        self,
+        depth: ArrayLike,
+        *,
+        depth_scale: float | None = None,
+        slab_tolerance_m: float = 0.020,
+        min_depth_m: float = 0.20,
+        max_depth_m: float = 2.0,
+        support_mask: ArrayLike | None = None,
+        max_points: int | None = 50_000,
+    ) -> PlaneProjection:
+        """Gate and intersect one frame using the cached fixed geometry."""
+
+        tolerance = float(slab_tolerance_m)
+        if not math.isfinite(tolerance) or tolerance <= 0.0:
+            raise ValueError("slab_tolerance_m must be positive and finite")
+        depth_m = depth_to_meters(depth, depth_scale)
+        expected_shape = (self.intrinsics.height, self.intrinsics.width)
+        if depth_m.shape != expected_shape:
+            raise ValueError(
+                "depth shape does not match raw-depth intrinsics: "
+                f"{depth_m.shape} vs {expected_shape}"
+            )
+        valid_depth = (
+            np.isfinite(depth_m)
+            & (depth_m >= float(min_depth_m))
+            & (depth_m <= float(max_depth_m))
+        )
+        distances = depth_m * self._plane_ray_denominator - float(self.plane.d)
+        mask = valid_depth & np.isfinite(distances) & (np.abs(distances) <= tolerance)
+        if support_mask is not None:
+            support = np.asarray(support_mask, dtype=np.bool_)
+            if support.shape != mask.shape:
+                raise ValueError(
+                    f"support_mask shape {support.shape} does not match depth {mask.shape}"
+                )
+            mask &= support
+
+        rows, cols = np.nonzero(mask)
+        raw_count = int(rows.size)
+        if max_points is not None and rows.size > int(max_points):
+            indices = np.linspace(0, rows.size - 1, int(max_points), dtype=np.int64)
+            rows = rows[indices]
+            cols = cols[indices]
+        pixels = np.column_stack((cols, rows)).astype(np.float64)
+        rays = np.column_stack(
+            (
+                self._ray_x[cols],
+                self._ray_y[rows],
+                np.ones(rows.size, dtype=np.float64),
+            )
+        )
+        intersections, ray_valid = intersect_rays_with_plane(rays, self.plane)
+        pixels = pixels[ray_valid]
+        intersections = intersections[ray_valid]
+        selected_depth = depth_m[rows, cols][ray_valid]
+        coordinates = project_points_to_plane(
+            intersections,
+            self.plane,
+            origin=self._origin,
+            basis=(self._basis_u, self._basis_v),
+        )
+        return PlaneProjection(
+            points_3d_m=intersections,
+            points_xy_m=coordinates,
+            pixels_uv=pixels,
+            source_depth_m=selected_depth,
+            mask=mask,
+            plane=self.plane,
+            origin_3d_m=self._origin,
+            basis_u_3d=self._basis_u,
+            basis_v_3d=self._basis_v,
+            diagnostics={
+                "valid_depth_pixels": int(np.count_nonzero(valid_depth)),
+                "slab_pixels": raw_count,
+                "projected_points": int(coordinates.shape[0]),
+                "slab_tolerance_m": tolerance,
+                "depth_range_m": [float(min_depth_m), float(max_depth_m)],
+            },
+        )
+
+
 def project_depth_to_plane(
     depth: ArrayLike,
     intrinsics: CameraIntrinsics,
@@ -239,61 +356,14 @@ def project_depth_to_plane(
     depth, scale, or the final projective geometry.
     """
 
-    tolerance = float(slab_tolerance_m)
-    if not math.isfinite(tolerance) or tolerance <= 0.0:
-        raise ValueError("slab_tolerance_m must be positive and finite")
-    depth_m = depth_to_meters(depth, depth_scale)
-    points_grid = deproject_depth(depth_m, intrinsics)
-    valid_depth = (
-        np.isfinite(depth_m)
-        & (depth_m >= float(min_depth_m))
-        & (depth_m <= float(max_depth_m))
-    )
-    distances = signed_distances(points_grid, plane)
-    mask = valid_depth & np.isfinite(distances) & (np.abs(distances) <= tolerance)
-    if support_mask is not None:
-        support = np.asarray(support_mask, dtype=np.bool_)
-        if support.shape != mask.shape:
-            raise ValueError(f"support_mask shape {support.shape} does not match depth {mask.shape}")
-        mask &= support
-
-    rows, cols = np.nonzero(mask)
-    raw_count = int(rows.size)
-    if max_points is not None and rows.size > int(max_points):
-        indices = np.linspace(0, rows.size - 1, int(max_points), dtype=np.int64)
-        rows = rows[indices]
-        cols = cols[indices]
-    pixels = np.column_stack((cols, rows)).astype(np.float64)
-    rays = pixel_rays(pixels, intrinsics)
-    intersections, ray_valid = intersect_rays_with_plane(rays, plane)
-    pixels = pixels[ray_valid]
-    intersections = intersections[ray_valid]
-    selected_depth = depth_m[rows, cols][ray_valid]
-    origin = point_on_plane(plane)
-    basis_u, basis_v = plane_basis(plane)
-    coordinates = project_points_to_plane(
-        intersections,
-        plane,
-        origin=origin,
-        basis=(basis_u, basis_v),
-    )
-    return PlaneProjection(
-        points_3d_m=intersections,
-        points_xy_m=coordinates,
-        pixels_uv=pixels,
-        source_depth_m=selected_depth,
-        mask=mask,
-        plane=plane,
-        origin_3d_m=origin,
-        basis_u_3d=basis_u,
-        basis_v_3d=basis_v,
-        diagnostics={
-            "valid_depth_pixels": int(np.count_nonzero(valid_depth)),
-            "slab_pixels": raw_count,
-            "projected_points": int(coordinates.shape[0]),
-            "slab_tolerance_m": tolerance,
-            "depth_range_m": [float(min_depth_m), float(max_depth_m)],
-        },
+    return DepthPlaneProjector(intrinsics, plane).project(
+        depth,
+        depth_scale=depth_scale,
+        slab_tolerance_m=slab_tolerance_m,
+        min_depth_m=min_depth_m,
+        max_depth_m=max_depth_m,
+        support_mask=support_mask,
+        max_points=max_points,
     )
 
 

@@ -1,18 +1,71 @@
 from __future__ import annotations
 
+from pathlib import Path
+import subprocess
+import sys
 import time
 from types import SimpleNamespace
+import types
 
 import numpy as np
 import pytest
 
-from parcel_pose.auto_grab import AutoGrabConfig, AutoGrabError, AutoGrabRuntime
+from parcel_pose.auto_grab import (
+    AutoGrabConfig,
+    AutoGrabError,
+    AutoGrabRuntime,
+    _load_grabbing_box,
+)
 from parcel_pose.evaluation import BasePoseDiagnostic
 from parcel_pose.mobile_servo import RBY1CommandPumpConfig, ServoConfig
 
 
 CALIBRATED_TORSO_DEG = (0.0, 55.0, -59.988, 6.532, 0.0, 0.0)
 CALIBRATED_HEAD_DEG = (0.0, 49.846)
+
+
+def test_importing_auto_grab_keeps_robot_sdk_lazy_in_isolated_python() -> None:
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    program = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import parcel_pose.auto_grab
+assert 'rby1_sdk' not in sys.modules
+assert 'parcel_pose.grabbing' not in sys.modules
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", program, str(source_root)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_default_grasp_sequence_is_packaged_inside_codex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_sdk = types.ModuleType("rby1_sdk")
+    fake_sdk.RobotCommandFeedback = SimpleNamespace(
+        FinishCode=SimpleNamespace(Ok=object())
+    )
+    monkeypatch.setitem(sys.modules, "rby1_sdk", fake_sdk)
+    monkeypatch.delitem(sys.modules, "parcel_pose.grabbing", raising=False)
+
+    try:
+        module = _load_grabbing_box()
+
+        module_path = Path(module.__file__).resolve()
+        assert module_path.name == "grabbing.py"
+        assert module_path.parent.name == "parcel_pose"
+        assert module_path.parents[2].name == "Codex"
+    finally:
+        sys.modules.pop("parcel_pose.grabbing", None)
+        import parcel_pose
+
+        parcel_pose.__dict__.pop("grabbing", None)
 
 
 def _mobility_feedback(*, status: int = 2, finish_code: int = 0):

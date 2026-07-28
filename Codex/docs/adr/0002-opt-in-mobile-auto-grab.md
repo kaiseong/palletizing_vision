@@ -10,7 +10,7 @@ Accepted and amended for horizontal-yaw alignment and pre-mobile arm posture,
 The operator observed that the box and robot were physically centered when the
 previous nominal base output reported `y=-0.050 m`. The operational grasp pose
 is a box-volume center at `x=0.740 m`, corrected `y=0.000 m`. After alignment,
-the existing `Palletizing/grabbing_box.py` start/grab/lift sequence must run
+the packaged `parcel_pose.grabbing` start/grab/lift sequence must run
 without reconnecting or competing with a live mobile command stream.
 
 The camera-to-base registration still lacks independent ground truth. Robot
@@ -35,13 +35,13 @@ and true arm/base simultaneity requires one combined whole-body stream.
    before opening a command stream.
 4. After power/servo/control-manager preparation, move only the two arms to the
    operator-provided mobile-ready joint targets with a completed Joint Position
-   one-shot. Use 5 seconds minimum motion time, a finite 1-second hold, and a
+   one-shot. Use 0.5 seconds minimum motion time, a finite 0.5-second hold, and a
    10-second timeout. Treat SDK handler completion with `FinishCode.Ok` as the
    ready contract; do not add a second measured joint-tolerance gate. Recheck
    the fixed torso/head pose before creating the mobility stream. Any command
    or feedback failure disconnects without base motion.
 5. Use bounded simultaneous XY+yaw proportional velocity control through one
-   SDK SE(2) command stream. The current shared grasp posture fixes the parcel
+   SDK SE(2) command stream. The current packaged grasp posture fixes the parcel
    long-axis target to base `90 deg mod 180`, which appears at the live
    overlay's `+90/-90` signed seam. Compute yaw error as the shortest
    unoriented-line difference, and add `wz * [box_y, -box_x]` orbit
@@ -63,7 +63,7 @@ and true arm/base simultaneity requires one combined whole-body stream.
    state with low wheel velocity continuously for at least 0.35 seconds while
    the stream remains alive. Join the sole sender, cancel the stream, and
    confirm completion before any arm command.
-8. Refactor `grabbing_box.py` so its motion sequence accepts the already
+8. Keep `parcel_pose.grabbing` able to accept the already
    connected/prepared robot. The standalone CLI continues to own its own
    connection, while auto-grab reuses one connection through alignment and
    lift.

@@ -8,7 +8,7 @@ their component-wise median `400 x 253 x 160 mm` as its fixed metric prior.
 The estimator core uses calibrated table/top-plane geometry and a fixed-size
 metric rectangle and remains perception-only. The `live-view` command has a
 separate, explicit `--auto-grab` mode that can stream the RB-Y1 M mobile base
-and hand the same connection to the shared `grabbing_box.py` sequence.
+and hand the same connection to the packaged `parcel_pose.grabbing` sequence.
 
 ## Coordinate and calibration contract
 
@@ -119,6 +119,33 @@ PYTHONPATH=src python -c 'import pyrealsense2 as rs; print(rs.__file__)'
 The build is self-contained under `.runtime/`; the resulting extension is
 copied to `src/` and both paths are ignored by Git. The script does not use
 `sudo` or install into `/usr` or conda.
+
+## Sharing only the Codex implementation
+
+Copying the whole `Codex/` directory is the safest distribution unit. The
+minimum source set for live pose tracking and `--auto-grab` is:
+
+```text
+Codex/
+├── src/parcel_pose/    # estimator, live loop, mobile servo, packaged grasp
+├── configs/            # D435 model and fixed RB-Y1 calibration artifacts
+├── live_view.py        # short live/auto-grab entrypoint
+└── pyproject.toml      # Python 3.12 package/install metadata
+```
+
+The root `Palletizing/grabbing_box.py`, `robot.py`, `claude/`, recordings, and
+generated `out/` videos are not runtime dependencies. `tests/`, `docs/`, and
+most of `scripts/` are optional verification/development material. Keep
+`scripts/build_jetson_pyrealsense2.sh` only when the target Jetson still needs
+the RealSense Python binding built locally. The comparison-only
+`scripts/render_algorithm_comparison.py` is intentionally not standalone
+because it also loads the Claude implementation.
+
+Python packages and hardware bindings are installed on the robot PC rather
+than copied as project folders: NumPy, GUI-capable OpenCV, `pyrealsense2`, and
+for `--auto-grab`, `rby1_sdk`. The bundled nominal calibration is tied to the
+recorded D435 serial and fixed torso/head pose; distribute a replacement JSON
+inside `configs/` after a different camera or mount is calibrated.
 
 ## Configuration
 
@@ -360,7 +387,7 @@ closed on a different reported model/version. Before opening the mobility
 stream it also verifies the calibrated fixed posture within 1 degree: torso
 `[0, 55, -59.988, 6.532, 0, 0]` degrees and head `[0, 49.846]` degrees.
 After robot preparation and before the mobility stream exists, both arms move
-for 5 seconds under an arm-only Joint Position command to the mobile-ready
+with a 0.5-second minimum time under an arm-only Joint Position command to the mobile-ready
 posture below.
 Torso and head are omitted from this command, then rechecked, so the fixed
 camera transform is preserved.
@@ -370,7 +397,7 @@ right [6.644, -21.489, -17.252, -129.031, -83.302, 53.394, 37.071] deg
 left  [6.644,  21.488,  17.245, -129.036,  83.304, 53.392, -37.070] deg
 ```
 
-The ready command uses a 1-second final hold and a 10-second command timeout.
+The ready command uses a 0.5-second final hold and a 10-second command timeout.
 Completion means that the SDK handler finished and returned `FinishCode.Ok`;
 there is no second joint-state tolerance check. Failure, timeout, or
 interruption closes the connection without creating a mobility stream.
@@ -436,7 +463,7 @@ joints must report ready and the state stream must remain fresh. Failure to
 settle within 2 seconds blocks the arms. After settling, the sender thread is
 joined and the mobility stream is cancelled and awaited before any body
 command. RB-Y1 controller arbitration does not allow the active navigation
-stream and the separate `grabbing_box.py` body one-shots to execute in
+stream and the packaged grasp body one-shots to execute in
 parallel: keeping both streams alive could cause the body command to be
 refused or silently not execute. The state subscription is stopped before the
 grasp FT monitor starts, and the same robot connection is reused throughout.
@@ -448,13 +475,13 @@ impedance control.
 
 Pressing `q`, `Esc`, or `Ctrl-C` before handoff, a camera/stream exception, a
 posture/identity mismatch, unavailable yaw, or failure to confirm stream
-cancellation stops/disconnects without calling `grabbing_box`. If `Ctrl-C`
+cancellation stops/disconnects without calling the packaged grasp. If `Ctrl-C`
 or an SDK/feedback exception arrives after an arm command has begun, the
 one-shot SDK handler is explicitly cancelled and awaited before the error is
 propagated; Ctrl-C cleanup exits with status 130. Partial physical arm motion
 may already have occurred.
 
-The shared grasp motion itself is inherited and has not been contact-validated
+The packaged grasp motion itself has not been contact-validated
 by these camera recordings: it uses a 300 mm inward target, a 150 mm continuing
 lift squeeze, 100 Nm per-arm-joint torque limits, and a 100 s lift hold. Its FT
 monitor reports force but does not autonomously abort on a threshold. Run the

@@ -9,9 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import importlib
-import importlib.util
 import math
-from pathlib import Path
 import threading
 import time
 from types import ModuleType
@@ -74,7 +72,7 @@ class AutoGrabConfig:
             )
         ) > 1e-9:
             raise ValueError(
-                "the current grabbing_box posture requires horizontal "
+                "the current packaged grasp posture requires horizontal "
                 "long-axis yaw=90 deg mod 180"
             )
         if (
@@ -118,25 +116,14 @@ class AutoGrabConfig:
 
 
 def _load_grabbing_box() -> ModuleType:
-    """Load the shared Palletizing grasp sequence without changing sys.path."""
+    """Lazy-load the package-local grasp sequence only for robot execution."""
 
-    palletizing_root = Path(__file__).resolve().parents[3]
-    source = palletizing_root / "grabbing_box.py"
-    if not source.is_file():
-        raise AutoGrabError(f"shared grasp sequence is missing: {source}")
-    spec = importlib.util.spec_from_file_location(
-        "_palletizing_grabbing_box_runtime",
-        source,
-    )
-    if spec is None or spec.loader is None:
-        raise AutoGrabError(f"cannot load shared grasp sequence: {source}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _normalized_version(value: Any) -> str:
-    return str(value).strip().lower().removeprefix("v")
+    try:
+        return importlib.import_module(".grabbing", package=__package__)
+    except ImportError as exc:
+        raise AutoGrabError(
+            f"cannot load the packaged RB-Y1 grasp sequence: {exc}"
+        ) from exc
 
 
 def _validate_robot_identity(robot: Any) -> None:
@@ -147,7 +134,12 @@ def _validate_robot_identity(robot: Any) -> None:
         raise AutoGrabError("connected SDK cannot report RB-Y1 model/version")
     info = get_info()
     model_name = str(getattr(info, "robot_model_name", "")).strip().upper()
-    version = _normalized_version(getattr(info, "robot_model_version", ""))
+    version = (
+        str(getattr(info, "robot_model_version", ""))
+        .strip()
+        .lower()
+        .removeprefix("v")
+    )
     if model_name != EXPECTED_ROBOT_MODEL:
         raise AutoGrabError(
             f"auto-grab requires RB-Y1 Model M; controller reports {model_name!r}"
@@ -222,7 +214,7 @@ def _horizontal_grasp_family_gate_reason(
     residual = base_pose.canonical_residual_deg
     if reference != 90 or residual is None or not np.isfinite(residual):
         return (
-            "unsupported_grasp_orientation: current grabbing_box posture "
+            "unsupported_grasp_orientation: current packaged grasp posture "
             "requires horizontal long-axis reference=90 deg"
         )
     return None
@@ -465,7 +457,7 @@ class AutoGrabRuntime:
             )
             if not callable(move_to_mobile_ready):
                 raise AutoGrabError(
-                    "shared grabbing_box module does not provide the required "
+                    "packaged grasp module does not provide the required "
                     "mobile-ready arm command"
                 )
             if not bool(move_to_mobile_ready(self._robot)):
@@ -607,15 +599,15 @@ class AutoGrabRuntime:
             self.config.fixed_posture_tolerance_deg,
         )
         self._grasp_invoked = True
-        print("[auto-grab] base stopped; starting shared grabbing_box sequence")
+        print("[auto-grab] base stopped; starting packaged grasp sequence")
         try:
             grasp_succeeded = bool(
                 self._grabbing.run_grabbing_sequence(self._robot)
             )
         except Exception as exc:
-            raise AutoGrabError(f"grabbing_box sequence failed: {exc}") from exc
+            raise AutoGrabError(f"packaged grasp sequence failed: {exc}") from exc
         if not grasp_succeeded:
-            raise AutoGrabError("grabbing_box sequence reported failure")
+            raise AutoGrabError("packaged grasp sequence reported failure")
         self._completed = True
         print("[auto-grab] box grasp and lift completed")
 

@@ -15,6 +15,7 @@ from parcel_pose.plane import (
     signed_distances,
 )
 from parcel_pose.projection import (
+    DepthPlaneProjector,
     deproject_depth,
     depth_to_meters,
     intersect_rays_with_plane,
@@ -156,6 +157,65 @@ def test_raw_depth_deprojection_rejects_unhandled_nonzero_distortion() -> None:
 
     with pytest.raises(ValueError, match="non-zero distortion"):
         deproject_depth(np.ones((2, 2), dtype=np.float64), intrinsics)
+
+
+def test_fixed_plane_projector_preserves_row_major_sampling_and_metric_geometry() -> None:
+    intrinsics = CameraIntrinsics(
+        width=4,
+        height=3,
+        fx=2.0,
+        fy=2.0,
+        cx=1.5,
+        cy=1.0,
+    )
+    plane = Plane(normal=np.array([0.1, -0.2, -1.0]), d=-1.0, frame="depth")
+    depth = np.array(
+        [
+            [1.00, 0.98, 0.00, 1.04],
+            [1.03, 0.99, 1.01, 2.50],
+            [np.nan, 0.97, 1.02, 1.00],
+        ],
+        dtype=np.float64,
+    )
+    support = np.array(
+        [
+            [True, True, True, False],
+            [True, True, True, True],
+            [True, False, True, True],
+        ],
+        dtype=np.bool_,
+    )
+
+    projector = DepthPlaneProjector(intrinsics, plane)
+    projected = projector.project(
+        depth,
+        slab_tolerance_m=0.20,
+        min_depth_m=0.20,
+        max_depth_m=2.0,
+        support_mask=support,
+        max_points=4,
+    )
+
+    expected_mask = (
+        np.isfinite(depth)
+        & (depth >= 0.20)
+        & (depth <= 2.0)
+        & support
+        & (np.abs(signed_distances(deproject_depth(depth, intrinsics), plane)) <= 0.20)
+    )
+    np.testing.assert_array_equal(projected.mask, expected_mask)
+    rows, cols = np.nonzero(expected_mask)
+    sampled = np.linspace(0, rows.size - 1, 4, dtype=np.int64)
+    expected_pixels = np.column_stack((cols[sampled], rows[sampled])).astype(np.float64)
+    np.testing.assert_array_equal(projected.pixels_uv, expected_pixels)
+    np.testing.assert_allclose(
+        signed_distances(projected.points_3d_m, plane),
+        0.0,
+        rtol=0.0,
+        atol=1e-12,
+    )
+    assert projected.diagnostics["slab_pixels"] == int(np.count_nonzero(expected_mask))
+    assert projected.count == 4
 
 
 def test_top_plane_slab_survives_holes_and_outliers_without_selecting_table() -> None:
