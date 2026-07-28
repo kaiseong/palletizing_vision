@@ -28,6 +28,7 @@ from box_orient import (  # noqa: E402
     OrientConfig,
     RealsenseSource,
     RecordingSource,
+    camera_to_base_static,
     camera_to_t5_static,
     estimate_box_orientation,
 )
@@ -64,8 +65,9 @@ def draw(bgr, est, intr, latency_ms, frame_label):
             p1 = intr.project((c + long_v)[None])[0].astype(int)
             cv2.arrowedLine(out, tuple(p0), tuple(p1), (255, 110, 0), 2, tipLength=0.25)
 
-    if show and frame_label == "ref" and est.center_ref_m is not None:
-        pos, fl = np.asarray(est.center_ref_m, dtype=np.float64), "T5"
+    if show and frame_label in ("base", "t5") and est.center_ref_m is not None:
+        pos = np.asarray(est.center_ref_m, dtype=np.float64)
+        fl = "base" if frame_label == "base" else "T5"
     elif show:
         pos, fl = np.asarray(est.center_camera_m, dtype=np.float64), "cam"
     else:
@@ -95,7 +97,8 @@ def parse_args():
     src.add_argument("--recording")
     p.add_argument("--camera", choices=("d405", "d435"), default="d435")
     p.add_argument("--box", type=parse_box, default="400x250x150")
-    p.add_argument("--yaw-frame", choices=("camera", "ref"), default="ref")
+    p.add_argument("--yaw-frame", choices=("base", "t5", "camera"), default="base",
+                   help="Frame for the x/y/z/yaw HUD (base=robot base, t5=torso top, camera).")
     p.add_argument("--scale", type=float, default=1.0, help="Depth downsample factor for the estimate (0<scale<=1).")
     p.add_argument("--z-min", type=float, default=0.20)
     p.add_argument("--z-max", type=float, default=1.20)
@@ -110,7 +113,12 @@ def main():
     args = parse_args()
     box_long, box_short, box_height = args.box
     cfg = OrientConfig(z_min=args.z_min, z_max=args.z_max)
-    camera_to_ref = camera_to_t5_static(args.camera) if args.yaw_frame == "ref" else None
+    if args.yaw_frame == "base":
+        camera_to_ref = camera_to_base_static(args.camera)
+    elif args.yaw_frame == "t5":
+        camera_to_ref = camera_to_t5_static(args.camera)
+    else:
+        camera_to_ref = None
     lat_hist = []
     saved = False
 

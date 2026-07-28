@@ -9,7 +9,12 @@ Public API:
 
 from __future__ import annotations
 
-from .extrinsics import camera_to_t5_from_fk, camera_to_t5_static, is_calibrated
+from .extrinsics import (
+    camera_to_base_static,
+    camera_to_t5_from_fk,
+    camera_to_t5_static,
+    is_calibrated,
+)
 from .geometry import (
     CameraIntrinsics,
     SupportPlane,
@@ -47,6 +52,7 @@ __all__ = [
     "RealsenseSource",
     "Frame",
     "draw_overlay",
+    "camera_to_base_static",
     "camera_to_t5_static",
     "camera_to_t5_from_fk",
     "is_calibrated",

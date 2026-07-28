@@ -27,6 +27,7 @@ from box_orient import (  # noqa: E402
     OrientConfig,
     RecordingSource,
     RealsenseSource,
+    camera_to_base_static,
     camera_to_t5_static,
     draw_overlay,
     estimate_box_orientation,
@@ -50,8 +51,8 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--camera", choices=("d405", "d435"), default="d435")
     p.add_argument("--box", type=parse_box, default="400x250x150", help="Box LxWxH in mm (default 400x250x150).")
-    p.add_argument("--yaw-frame", choices=("camera", "ref"), default="camera",
-                   help="'ref' expresses yaw in the robot T5 frame via the static extrinsic.")
+    p.add_argument("--yaw-frame", choices=("base", "t5", "camera"), default="base",
+                   help="Frame for pose/yaw: base=robot base, t5=torso top, camera.")
     p.add_argument("--head-pitch", type=float, default=None, help="head_1 pitch [rad] for the ref transform.")
     p.add_argument("--z-min", type=float, default=0.20)
     p.add_argument("--z-max", type=float, default=1.50)
@@ -87,9 +88,12 @@ def main() -> int:
     args = parse_args()
     box_long, box_short, box_height = args.box
     cfg = OrientConfig(z_min=args.z_min, z_max=args.z_max)
-    camera_to_ref = None
-    if args.yaw_frame == "ref":
+    if args.yaw_frame == "base":
+        camera_to_ref = camera_to_base_static(args.camera, head1_pitch_rad=args.head_pitch)
+    elif args.yaw_frame == "t5":
         camera_to_ref = camera_to_t5_static(args.camera, head1_pitch_rad=args.head_pitch)
+    else:
+        camera_to_ref = None
 
     overlay_dir = None
     if args.save_overlay:

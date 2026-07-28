@@ -93,6 +93,23 @@ _RECORDED_PITCH = {"d405": HEAD1_PITCH_RAD_D405_RECORDED, "d435": HEAD1_PITCH_RA
 _MOUNTS = {"d405": HEAD2_TO_D405_XYZ_RPY_ZYX_DEG, "d435": HEAD2_TO_D435_XYZ_RPY_ZYX_DEG}
 _CALIBRATED = {"d405": True, "d435": True}
 
+# base <- link_torso_5 for the FIXED recorded torso (RB-Y1 V1.2, M-type):
+#   torso = [0, 55, -59.988, 6.532, 0, 0] deg,  head = [0, 49.846] deg.
+# Computed offline with rby1_sdk.dynamics FK on models/rby1m/urdf/model_v1.2.urdf:
+#   robot = Robot(load_robot_from_urdf(urdf, "base")); set torso/head q;
+#   compute_transformation(state, base_idx, link_torso_5_idx).
+# Torso is fixed, so this is a constant -- recompute only if the torso posture
+# changes (no rby1_sdk needed at runtime).
+BASE_FROM_T5 = np.array(
+    [
+        [0.99963693, 0.0, 0.02694462, 0.26460911],
+        [0.0, 1.0, 0.0, 0.0],
+        [-0.02694462, 0.0, 0.99963693, 1.15524048],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    dtype=np.float64,
+)
+
 
 def _head2_from_camera(key: str) -> np.ndarray:
     """Pose of the depth optical frame in link_head_2, including the datasheet
@@ -119,6 +136,14 @@ def camera_to_t5_static(camera: str = "d405", *, head1_pitch_rad: float | None =
         [0.0, 0.0, 0.0], _rot_y(pitch)
     )
     return t_t5_from_head2 @ t_head2_from_camera
+
+
+def camera_to_base_static(camera: str = "d435", *, head1_pitch_rad: float | None = None) -> np.ndarray:
+    """Static camera->base transform (p_base = T @ p_camera) for the fixed torso.
+
+    Composes the constant base<-T5 (torso FK) with camera<-T5.
+    """
+    return BASE_FROM_T5 @ camera_to_t5_static(camera, head1_pitch_rad=head1_pitch_rad)
 
 
 def camera_to_t5_from_fk(
