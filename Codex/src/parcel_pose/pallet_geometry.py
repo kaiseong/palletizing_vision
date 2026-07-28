@@ -213,10 +213,17 @@ def _opening_candidates(
         area_m2 = float(stats[label, cv2.CC_STAT_AREA]) * resolution_m**2
         if not (min_area_m2 <= area_m2 <= max_area_m2):
             continue
-        rows, cols = np.nonzero(labels == label)
+        left = int(stats[label, cv2.CC_STAT_LEFT])
+        top = int(stats[label, cv2.CC_STAT_TOP])
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        component_labels = labels[top : top + height, left : left + width]
+        rows, cols = np.nonzero(component_labels == label)
         if rows.size < 20:
             continue
-        rectangle = cv2.minAreaRect(np.column_stack((cols, rows)).astype(np.float32))
+        rectangle = cv2.minAreaRect(
+            np.column_stack((cols + left, rows + top)).astype(np.float32)
+        )
         sizes = np.sort(np.asarray(rectangle[1], dtype=np.float64) * resolution_m)
         if sizes[0] < minimum_m or sizes[1] > maximum_m:
             continue
@@ -476,31 +483,46 @@ def _line_evidence(
     )
 
 
-def _held_carton_exclusion_mask(
+def _held_carton_footprint_mask(
     points_base: FloatArray,
     workspace: NDArray[np.bool_],
     hint: HeldBoxHint | None,
-) -> NDArray[np.bool_]:
-    """Return an EEF-associated exclusion only; it never selects a plane."""
+) -> NDArray[np.bool_] | None:
+    """Project the EEF-associated carton footprint once per frame."""
 
-    excluded = np.zeros(workspace.shape, dtype=np.bool_)
-    if hint is None or hint.center_base is None or hint.eef_proxy_z_base_m is None:
-        return excluded
+    if hint is None or hint.center_base is None:
+        return None
     center = np.asarray(hint.center_base, dtype=np.float64)
     yaw = 0.0 if hint.yaw_base_rad is None else float(hint.yaw_base_rad)
     axis_long = np.array((math.cos(yaw), math.sin(yaw)), dtype=np.float64)
     axis_short = np.array((-axis_long[1], axis_long[0]), dtype=np.float64)
-    relative_xy = points_base[..., :2] - center[:2]
+    relative_xy = points_base[workspace, :2] - center[:2]
     along = relative_xy @ axis_long
     across = relative_xy @ axis_short
     footprint = hint.footprint_size_m
+    footprint_mask = np.zeros(workspace.shape, dtype=np.bool_)
+    footprint_mask[workspace] = (np.abs(along) <= 0.5 * footprint[0] + 0.08) & (
+        np.abs(across) <= 0.5 * footprint[1] + 0.08
+    )
+    return footprint_mask
+
+
+def _held_carton_exclusion_mask(
+    points_base: FloatArray,
+    workspace: NDArray[np.bool_],
+    hint: HeldBoxHint | None,
+    footprint_mask: NDArray[np.bool_] | None,
+) -> NDArray[np.bool_]:
+    """Return an EEF-associated exclusion only; it never selects a plane."""
+
+    if hint is None or hint.eef_proxy_z_base_m is None or footprint_mask is None:
+        return np.zeros(workspace.shape, dtype=np.bool_)
     # The EEF proxy is only an association datum.  The 120 mm lower band is
     # intentionally smaller than the measured carton height, so the lower
     # completed layer is not removed when the carried footprint overlaps it.
     return (
         workspace
-        & (np.abs(along) <= 0.5 * footprint[0] + 0.08)
-        & (np.abs(across) <= 0.5 * footprint[1] + 0.08)
+        & footprint_mask
         & (points_base[..., 2] >= float(hint.eef_proxy_z_base_m) - 0.120)
     )
 
@@ -948,7 +970,10 @@ class PalletStackEstimator:
         config = self.config
         coefficients = self._ray_coefficients(depth_intrinsics, transform)
         points_base = depth[..., None] * coefficients + transform[:3, 3]
-        finite = np.isfinite(depth) & np.all(np.isfinite(points_base), axis=-1)
+        # Intrinsics and ``transform`` are finite-validated.  Any overflowed
+        # base coordinate still fails the paired workspace bounds below, so a
+        # second three-channel finiteness reduction cannot admit another point.
+        finite = np.isfinite(depth)
         workspace = (
             finite
             & (depth >= config.min_depth_m)
@@ -969,10 +994,16 @@ class PalletStackEstimator:
                 quality={"workspace_point_count": float(workspace_count)},
             )
 
+        held_footprint_mask = _held_carton_footprint_mask(
+            points_base,
+            workspace,
+            held_box_hint,
+        )
         held_selection_exclusion = _held_carton_exclusion_mask(
             points_base,
             workspace,
             held_box_hint,
+            held_footprint_mask,
         )
         plane_selection_workspace = workspace & ~held_selection_exclusion
         held_selection_excluded_count = int(np.count_nonzero(held_selection_exclusion))
@@ -1257,25 +1288,9 @@ class PalletStackEstimator:
         try:
             if held_box_hint is None or held_box_hint.center_base is None:
                 raise ValueError("held box association requires an EEF center hint")
-            hint_center = np.asarray(held_box_hint.center_base, dtype=np.float64)
-            yaw_hint = (
-                0.0
-                if held_box_hint.yaw_base_rad is None
-                else float(held_box_hint.yaw_base_rad)
-            )
-            axis_long = np.array(
-                (math.cos(yaw_hint), math.sin(yaw_hint)), dtype=np.float64
-            )
-            axis_short = np.array((-axis_long[1], axis_long[0]), dtype=np.float64)
-            relative_xy = points_base[..., :2] - hint_center[:2]
-            along = relative_xy @ axis_long
-            across = relative_xy @ axis_short
-            footprint = held_box_hint.footprint_size_m
-            association = (
-                closer_mask
-                & (np.abs(along) <= 0.5 * footprint[0] + 0.08)
-                & (np.abs(across) <= 0.5 * footprint[1] + 0.08)
-            )
+            if held_footprint_mask is None:
+                raise ValueError("held box association requires an EEF footprint")
+            association = closer_mask & held_footprint_mask
             lower_held_z = float(center_base[2] + config.held_plane_min_separation_m)
             held_peak, _ = _dominant_height(
                 points_base[..., 2][association],
