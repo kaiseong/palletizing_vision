@@ -50,13 +50,16 @@ class D435StreamConfig:
     warmup_frames: int = 30
 
     def __post_init__(self) -> None:
-        if min(
-            self.depth_width,
-            self.depth_height,
-            self.color_width,
-            self.color_height,
-            self.fps,
-        ) <= 0:
+        if (
+            min(
+                self.depth_width,
+                self.depth_height,
+                self.color_width,
+                self.color_height,
+                self.fps,
+            )
+            <= 0
+        ):
             raise ValueError("stream dimensions and FPS must be positive")
         if self.warmup_frames < 0:
             raise ValueError("warmup_frames cannot be negative")
@@ -204,20 +207,27 @@ class RealSenseAdapter:
             device = pipeline_profile.get_device()
             depth_sensor = device.first_depth_sensor()
             color_sensor = _first_color_sensor(device, sdk)
-            depth_profile = _video_profile(pipeline_profile.get_stream(sdk.stream.depth))
-            color_profile = _video_profile(pipeline_profile.get_stream(sdk.stream.color))
+            depth_profile = _video_profile(
+                pipeline_profile.get_stream(sdk.stream.depth)
+            )
+            color_profile = _video_profile(
+                pipeline_profile.get_stream(sdk.stream.color)
+            )
             self._pipeline = pipeline
             self._pipeline_profile = pipeline_profile
             self._depth_sensor = depth_sensor
             self._color_sensor = color_sensor
             self._depth_profile = depth_profile
             self._color_profile = color_profile
-            self._align = sdk.align(sdk.stream.depth) if settings.align_color_to_depth else None
+            self._align = (
+                sdk.align(sdk.stream.depth) if settings.align_color_to_depth else None
+            )
             depth_intrinsics = _intrinsics_from_profile(depth_profile, settings.fps)
             color_intrinsics = _intrinsics_from_profile(color_profile, settings.fps)
             for _ in range(settings.warmup_frames):
                 pipeline.wait_for_frames()
             self._profile_metadata = {
+                "camera_name": _device_info(device, sdk, "name"),
                 "camera_serial": _device_info(device, sdk, "serial_number"),
                 "camera_firmware": _device_info(device, sdk, "firmware_version"),
                 "usb_type": _device_info(device, sdk, "usb_type_descriptor"),
@@ -242,7 +252,9 @@ class RealSenseAdapter:
                     "depth_auto_exposure": _sensor_option(
                         depth_sensor, sdk, "enable_auto_exposure"
                     ),
-                    "emitter_enabled": _sensor_option(depth_sensor, sdk, "emitter_enabled"),
+                    "emitter_enabled": _sensor_option(
+                        depth_sensor, sdk, "emitter_enabled"
+                    ),
                     "laser_power": _sensor_option(depth_sensor, sdk, "laser_power"),
                     "visual_preset": _sensor_option(depth_sensor, sdk, "visual_preset"),
                     "color_exposure": _sensor_option(color_sensor, sdk, "exposure"),
@@ -257,6 +269,20 @@ class RealSenseAdapter:
             self._pipeline = None
             raise
         return self
+
+    def active_profile_metadata(self) -> Mapping[str, Any]:
+        """Return the negotiated live profile after :meth:`start`.
+
+        Callers use this read-only snapshot to validate the physical camera and
+        stream contract before they enable any robot actuation.  The payload is
+        intentionally shallow-copied; contained profile objects are immutable.
+        """
+
+        if self._profile_metadata is None:
+            raise RuntimeError(
+                "start the RealSense adapter before requesting active profile metadata"
+            )
+        return dict(self._profile_metadata)
 
     def session_metadata(
         self,
@@ -284,10 +310,22 @@ class RealSenseAdapter:
         if self._pipeline is None:
             raise RuntimeError("start the RealSense adapter before capture")
         frames = self._pipeline.wait_for_frames()
+        # Stamp receipt immediately after librealsense returns the frameset.  A
+        # post-copy timestamp would hide alignment/copy latency from the live
+        # freshness gate.
+        frameset_received_ns = time.time_ns()
         depth_frame = frames.get_depth_frame()
         color_frame = frames.get_color_frame()
         if not depth_frame or not color_frame:
             raise RuntimeError("D435 returned an incomplete RGB-D frameset")
+        depth_timestamp_ms = float(depth_frame.get_timestamp())
+        color_timestamp_ms = float(color_frame.get_timestamp())
+        depth_timestamp_domain = str(
+            getattr(depth_frame, "get_frame_timestamp_domain", lambda: "unknown")()
+        )
+        color_timestamp_domain = str(
+            getattr(color_frame, "get_frame_timestamp_domain", lambda: "unknown")()
+        )
         depth = np.array(depth_frame.get_data(), dtype=np.uint16, copy=True)
         color = np.array(color_frame.get_data(), dtype=np.uint8, copy=True)
         aligned_color: np.ndarray | None = None
@@ -300,19 +338,17 @@ class RealSenseAdapter:
             raw_depth_z16=depth,
             raw_color_bgr=color,
             color_on_depth_bgr=aligned_color,
-            depth_timestamp_ms=float(depth_frame.get_timestamp()),
-            color_timestamp_ms=float(color_frame.get_timestamp()),
+            depth_timestamp_ms=depth_timestamp_ms,
+            color_timestamp_ms=color_timestamp_ms,
             depth_frame_number=int(depth_frame.get_frame_number()),
             color_frame_number=int(color_frame.get_frame_number()),
-            hardware_timestamp_ms=float(depth_frame.get_timestamp()),
-            system_timestamp_ns=time.time_ns(),
+            hardware_timestamp_ms=depth_timestamp_ms,
+            system_timestamp_ns=frameset_received_ns,
             frame_metadata={
-                "depth_timestamp_domain": str(
-                    getattr(depth_frame, "get_frame_timestamp_domain", lambda: "unknown")()
-                ),
-                "color_timestamp_domain": str(
-                    getattr(color_frame, "get_frame_timestamp_domain", lambda: "unknown")()
-                ),
+                "depth_timestamp_domain": depth_timestamp_domain,
+                "color_timestamp_domain": color_timestamp_domain,
+                "frameset_received_system_timestamp_ns": frameset_received_ns,
+                "frame_copy_completed_system_timestamp_ns": time.time_ns(),
             },
         )
 

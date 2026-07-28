@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "status": "software_replay_only_actuation_uncommissioned",
+  "robot": {
+    "model": "M",
+    "version": "1.2",
+    "default_address": "192.168.30.1:50051",
+    "ready_pose_rad": {
+      "torso": [0.0, 1.410, -1.514, 0.6295, 0.0, 0.0],
+      "right_arm": [-1.120, -0.383, -0.048, -1.066, -0.824, 1.109, 0.157],
+      "left_arm": [-1.120, 0.383, 0.048, -1.066, 0.824, 1.109, -0.157],
+      "head": [0.0, 0.870]
+    },
+    "ready_transition_minimum_time_s": 5.0,
+    "ready_tolerance_deg": 1.0,
+    "arm_joint_impedance_stiffness_nm_per_rad": [150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0],
+    "arm_torque_limit": "sdk_default"
+  },
+  "camera": {
+    "model": "Intel RealSense D435",
+    "serial": "250122079439",
+    "required_product_name_contains": "D435",
+    "alignment": "color_to_depth",
+    "frame_fresh_after_s": 0.20,
+    "maximum_rgb_depth_timestamp_skew_s": 0.05,
+    "depth": {"width": 640, "height": 480, "fps": 30, "format": "z16"},
+    "color": {"width": 640, "height": 480, "fps": 30, "format": "bgr8"},
+    "front_glass_depth_start_m": -0.0042,
+    "front_glass_depth_start_usage": "mechanical_datum_only_do_not_add_to_sdk_depth"
+  },
+  "calibration": {
+    "registration_status": "nominal_unverified",
+    "recording_registration_status": "nominal_ready_assumed",
+    "T_base_from_head_ready_audit": [
+      [0.174400, 0.0, 0.984675, 0.583771],
+      [0.0, 1.0, 0.0, 0.0],
+      [-0.984675, 0.0, 0.174400, 1.130364],
+      [0.0, 0.0, 0.0, 1.0]
+    ],
+    "T_head_from_color": [
+      [6.123233995736766e-17, 6.123233995736766e-17, 1.0, 0.049],
+      [-1.0, 3.749399456654644e-33, 6.123233995736766e-17, -0.0115],
+      [0.0, -1.0, 6.123233995736766e-17, 0.057],
+      [0.0, 0.0, 0.0, 1.0]
+    ],
+    "E_color_from_depth": [
+      [0.9999751448631287, 0.003511840244755149, 0.00611736997961998, 0.014867995865643024],
+      [-0.0034803308080881834, 0.9999806880950928, -0.005153866484761238, 0.00010203145211562514],
+      [-0.006135351490229368, 0.005132447928190231, 0.9999679923057556, 0.0002396116469753906],
+      [0.0, 0.0, 0.0, 1.0]
+    ],
+    "base_translation_correction_m": [0.0, 0.05, 0.0],
+    "base_translation_correction_source": "operator_visual_alignment_2026-07-28",
+    "absolute_base_validated": false
+  },
+  "pallet": {
+    "outer_size_m": [0.660, 0.658],
+    "opening_size_m": [0.148, 0.149],
+    "slot1_offset_right_far_m": [0.128, 0.20175],
+    "slot1_long_axis": "u_right",
+    "axis_branch": "image_right",
+    "acquisition": {
+      "budget_m": 0.0,
+      "step_m": 0.010,
+      "speed_mps": 0.030,
+      "stationary_frames": 5,
+      "settle_duration_s": 0.35,
+      "freshness": {
+        "camera_s": 0.20,
+        "odometry_s": 0.15,
+        "wheel_s": 0.15
+      },
+      "timeouts": {
+        "step_s": 1.50,
+        "acquisition_s": 30.0,
+        "brake_s": 1.50
+      },
+      "no_progress": {
+        "timeout_s": 0.60,
+        "minimum_m": 0.001
+      },
+      "drift": {
+        "lateral_limit_m": 0.015,
+        "yaw_limit_deg": 3.0
+      },
+      "target_tolerance_m": 0.001,
+      "overshoot_tolerance_m": 0.003
+    }
+  },
+  "held_box": {
+    "nominal_size_m": [0.400, 0.253, 0.160],
+    "maximum_height_m": 0.164,
+    "center_offset_from_eef_midpoint_m": [0.085463, 0.008236, 0.0],
+    "center_offset_frame": "base_at_fixed_pallet_ready_pose",
+    "center_offset_source": "operator_eye_arrived_pallet_1_arrived_mean_slot_target_minus_ready_eef_midpoint",
+    "center_offset_status": "nominal_unverified_not_external_ground_truth",
+    "center_offset_observed_target_std_xy_m": [0.001779, 0.002159],
+    "long_axis_from_eef_line_offset_deg": 0.0,
+    "maximum_dual_eef_box_center_disagreement_m": 0.015,
+    "maximum_dual_eef_box_yaw_disagreement_deg": 2.0,
+    "direct_top_plane_dwell_frames": 5,
+    "maximum_top_plane_std_m": 0.005,
+    "maximum_downward_drift_m": 0.005,
+    "nominal_ready_right_eef_base_xyz_m": [1.00046, -0.16948, 0.73157],
+    "nominal_ready_left_eef_base_xyz_m": [1.00046, 0.16948, 0.73157],
+    "nominal_ready_proxy_usage": "replay_and_non_actuating_dry_run_only"
+  },
+  "perception": {
+    "min_depth_m": 0.20,
+    "max_depth_m": 2.0,
+    "workspace_u0_v0_u1_v1": [20, 20, 620, 470],
+    "minimum_inner_rims": 3,
+    "opening_dimension_tolerance_m": 0.015,
+    "maximum_orthogonality_error_deg": 5.0,
+    "maximum_plane_p95_residual_m": 0.008,
+    "minimum_plane_points": 600,
+    "plane_ransac_iterations": 160,
+    "plane_ransac_tolerance_m": 0.008,
+    "closer_plane_rejection_margin_m": 0.08,
+    "stable_window_frames": 5,
+    "live_center_spread_m": 0.008,
+    "live_yaw_spread_deg": 2.0,
+    "replay_center_std_m": 0.005,
+    "replay_yaw_std_deg": 1.5,
+    "l_corner": {
+      "edge_band_m": 0.012,
+      "min_front_support_m": 0.450,
+      "min_side_support_m": 0.180,
+      "max_line_p95_residual_m": 0.008,
+      "max_connection_gap_m": 0.015,
+      "max_orthogonality_error_rad": 0.08726646259971647,
+      "max_axis_residual_rad": 0.2617993877991494,
+      "image_crop_margin_px": 8,
+      "bev_crop_margin_m": 0.010
+    }
+  },
+  "servo": {
+    "control_rate_hz": 20.0,
+    "observation_stale_after_s": 0.30,
+    "maximum_measurement_jump_m": 0.030,
+    "maximum_initial_correction_m": 0.25,
+    "maximum_initial_yaw_deg": 15.0,
+    "arrival_inner_xy_m": 0.010,
+    "arrival_outer_xy_m": 0.015,
+    "arrival_inner_yaw_deg": 3.0,
+    "arrival_outer_yaw_deg": 5.0,
+    "arrival_min_frames": 5,
+    "arrival_min_duration_s": 0.35,
+    "kp_xy_per_s": [0.7, 0.7],
+    "kp_yaw_per_s": 0.8,
+    "maximum_linear_speed_mps": 0.05,
+    "maximum_angular_speed_radps": 0.08,
+    "absolute_linear_speed_limit_mps": 0.08,
+    "absolute_angular_speed_limit_radps": 0.10,
+    "wheel_stop_linear_mps": 0.01,
+    "wheel_stop_angular_radps": 0.02,
+    "wheel_stop_dwell_s": 0.35
+  },
+  "safety": {
+    "actuation_commissioned": false,
+    "ownership_bridge": "unimplemented_fail_closed",
+    "minimum_clearance_m": 0.050,
+    "state_fresh_after_s": 0.15,
+    "grip_continuity_dwell_s": 0.50,
+    "persistent_hold_states": ["ACQUIRE_STACK", "PERCEPTION_HOLD", "FAULT_HOLD", "ARRIVED_HOLD", "SHUTDOWN_PENDING_HOLD"],
+    "live_request_flags": ["--auto-palletize-slot1", "--allow-nominal-registration"],
+    "flags_authorize_motion": false,
+    "terminal_action": "zero_mobility_body_hold_only",
+    "forbidden_actions": ["descent", "contact", "release", "gripper", "slide", "power_off"]
+  },
+  "grip_interlock": {
+    "minimum_dwell_s": 0.50,
+    "minimum_samples": 10,
+    "maximum_arm_tracking_error_deg": 1.0,
+    "maximum_eef_separation_peak_to_peak_m": 0.004,
+    "maximum_eef_separation_axis_std_m": 0.002,
+    "force_torque_feedback_required": true,
+    "maximum_force_n": null,
+    "maximum_torque_nm": null,
+    "maximum_force_jump_n": null,
+    "unconfigured_force_torque_policy": "nonzero_mobility_fail_closed"
+  },
+  "mobility_frame": {
+    "T_mobility_from_base": [
+      [1.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0],
+      [0.0, 0.0, 1.0]
+    ],
+    "provenance": "RB-Y1 local SDK body-frame command convention; revalidate before commissioning"
+  },
+  "control_stream": {
+    "priority": 10,
+    "send_rate_hz": 20.0,
+    "control_hold_time_s": 1.0,
+    "minimum_time_s": 0.05,
+    "command_stale_after_s": 0.15,
+    "send_timeout_ms": 250,
+    "shutdown_timeout_ms": 2000
+  }
+}

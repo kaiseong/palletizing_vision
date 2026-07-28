@@ -130,6 +130,7 @@ Codex/
 ├── src/parcel_pose/    # estimator, live loop, mobile servo, packaged grasp
 ├── configs/            # D435 model and fixed RB-Y1 calibration artifacts
 ├── live_view.py        # short live/auto-grab entrypoint
+├── pallet.py           # pallet-stack replay and slot-1 hover facade
 └── pyproject.toml      # Python 3.12 package/install metadata
 ```
 
@@ -173,6 +174,184 @@ torso/head joints and SDK-FK result are stored in
 `--robot-state-json`. Because the camera mount is still a nominal seed and no
 independent ground truth exists, post-hoc base coordinates from this transform
 remain `nominal_unverified`; they are never relabelled as absolute/validated.
+
+## Pallet slot-1 active opening acquisition and hover MVP
+
+`pallet.py` estimates the two-layer stack frame from the metric top plane and
+the measured `148 x 149 mm` centre opening. It does not use an image bounding
+box as the primary measurement. The measured `660 x 658 mm` outer boundary is
+optional consistency evidence, because the carried carton can crop it.
+
+The first third-layer slot is fixed in the recovered stack frame:
+
+```text
+p_slot1 = p_opening + 0.12800 * u_right + 0.20175 * v_far
+```
+
+`u_right` is branch-locked to the stack axis projecting toward image right;
+the slot carton long axis is parallel to it. The ready posture is configured in
+`configs/rby1m_v1_2_pallet_slot1_nominal.json`: torso/head use Position, both
+arms use Joint Impedance with stiffness `[150] * 7`, and torque limits are left
+at the SDK defaults.
+
+The raw EEF midpoint is not the carton centre in this posture. The supplied
+config therefore applies a fixed base-frame XY offset
+`[+0.085463, +0.008236] m`, derived from the mean recovered slot target in the
+operator-eye `pallet_1_arrived` recording. This makes that reference recording
+near-zero in XY without pretending it is external ground truth; the offset is
+explicitly `nominal_unverified` and is valid only for this fixed ready/grasp
+family.
+
+When the upstream marker stage and ready-pose command finish too far from the
+stack to see the complete opening, the runtime uses a deliberately weaker
+metric observation first:
+
+```text
+future reviewed box-pick-to-pallet stream/epoch transfer (not implemented)
+  -> loaded ready/body hold with exact zero mobility
+  -> five stationary connected L-corner observations
+  -> at most one 10 mm forward-only step
+  -> zero + measured wheel stop + new stationary observations
+  -> five complete-hole observations spanning at least 0.35 s
+  -> one-way handoff to the existing slot-1 x/y/yaw fine servo
+  -> ARRIVED_HOLD
+```
+
+The partial L consists of the completed stack's near/front boundary and one
+connected side boundary in metric 3D/BEV. It exposes its plane, lines, corner,
+branch, residuals, and underconstrained degrees of freedom, but it has no stack
+center, hole center, or slot target. It can authorize only another bounded
+forward observation step; it cannot command lateral motion, yaw, reverse,
+descent, or fine placement.
+
+The shipped acquisition budget is `0.0 m`, so nonzero coarse motion is
+mechanically disabled, including transfer to the nonzero-capable fine servo.
+This release caps a reviewed budget at `0.15 m`, keeps
+an unreachable design ceiling of `0.20 m`, limits every step to `0.010 m`, and
+limits speed to `0.030 m/s`. Fresh `T_odom_base` measures a previously
+authorized step—including zero-command coasting through verified wheel stop—and
+monitors lateral/yaw drift. Each target reserves the configured 3 mm stopping
+allowance inside the session budget; odometry never authorizes the next step
+without a new five-frame visual gate.
+
+Replay the supplied recordings without a camera or robot SDK:
+
+```bash
+cd ~/kgs_ws/palletizing_vision/Codex
+python pallet.py replay \
+  --session recordings/codex_640x480/pallet_data
+
+python pallet.py evaluate \
+  --session recordings/codex_640x480/pallet_data \
+  --session recordings/codex_640x480/pallet_box \
+  --session recordings/codex_640x480/pallet_1_arrived
+```
+
+With no explicit output flags, replay creates a timestamped directory under
+the shared `Palletizing/out/` directory containing `replay.mp4`,
+`telemetry.jsonl`, `summary.json`, and `config_snapshot.json`. Use
+`--no-default-artifacts` for a summary-only run, or `--output-run-dir` to select
+an explicit run directory. Recorded sessions contain no odometry, so replay
+labels a stable L as `would_request_step` only and never claims executed
+distance or authorizes motion.
+
+Run a continuous D435 dry-run from the Jetson desktop. This command never
+imports `rby1_sdk`, connects to RB-Y1, or sends a command:
+
+```bash
+python pallet.py live
+```
+
+For SSH/headless use, save the same overlay and telemetry instead of opening a
+window:
+
+```bash
+python pallet.py live --headless \
+  --output-mp4 out/pallet_live.mp4 \
+  --log-jsonl out/pallet_live.jsonl
+```
+
+The two legacy actuator flags request the blocked integration path; neither
+flag authorizes motion or proves ownership/load support:
+
+```bash
+python pallet.py live \
+  --auto-palletize-slot1 \
+  --allow-nominal-registration
+```
+
+The standalone command and the injected-controller API both intentionally stop
+before connecting to or commanding RB-Y1. Neither currently has a commissioned
+box-pick-to-pallet ownership bridge. `GripHandoff` remains a typed design
+scaffold, but the existing box-pick endpoint uses a different Cartesian
+impedance/torque policy and does not provide exact torso/head/control-mode or
+stream-identity provenance. Pretending that token were sufficient could leave
+two publishers active or change the loaded hold without proof.
+
+An already-released `ReadyHoldHandoff` is also retained only as a data/test
+model. Both ownership forms are rejected at the runtime facade and
+`RBY1PalletController` before opening a stream. Supporting actuation later
+requires either one persistent combined stream with an internal owner epoch
+transfer, or a reviewed two-phase protocol in which static validation occurs
+while the source is active and release is coupled to an acknowledged successor
+packet. A containment loop after release cannot repair a gap that already
+occurred.
+
+A CLI boolean cannot replace exact target/stiffness/torque provenance, measured
+arm tracking, EEF separation, held-top stability, bilateral F/T plausibility,
+fresh odometry, wheel stop, or the 50 mm vertical-clearance lower bound. Exactly
+one controller owns mobility per cycle; after the complete-hole zero-speed
+handoff, the partial-L controller is permanently revoked for that session.
+
+Live frames are accepted only when RGB and Depth timestamps share the
+RealSense `GLOBAL_TIME` or `SYSTEM_TIME` clock domain. Both the sensor timestamp
+to current host time and frameset receipt to current host time must be within
+200 ms, so a progressing but buffered sequence is not mistaken for a fresh
+capture.
+
+The pure controller's intended terminal state is `ARRIVED_HOLD`: torso/head and
+both arms would remain supported by one combined body+mobility stream while
+mobility stays zero. No current live path publishes that state. The MVP has no
+descent, contact, release, gripper, slide, or power-off transition. The current
+camera registration still includes the empirical base-y `+0.050 m` correction
+and no external ground truth, so replay proves repeatability and
+observability—not absolute placement accuracy.
+
+The recorded `pallet_1_arrived` held-top evidence gives a conservative vertical
+clearance lower bound of about `0.032 m`, below the configured `0.050 m`
+nonzero-motion gate. This is reported as `fail_raise_ready_pose`; the code does
+not silently lower the limit. Raise the carried-box ready pose by at least
+18 mm (30 mm is the practical recommissioning target), then record the new
+ready view before enabling base motion.
+
+### Current commissioning boundary
+
+Replay, visualization, the pure acquisition controller, fake stream pump, and
+perception-only live mode are software-verifiable. Live robot actuation is not:
+both the public CLI and injected API fail before robot connection or command
+creation.
+
+Do not replace those checks with another CLI confirmation flag. Before physical
+base motion is commissioned, all of the following must be true in one process:
+
+- box-pick and pallet control share one reviewed persistent combined stream and
+  internal owner epoch, or an equivalent atomic/two-phase transfer carrying
+  exact torso/head/arm targets, control modality, stiffness, damping, torque
+  policy, source stream identity, and packet acknowledgement;
+- both calibrated `T_right_eef_box` and `T_left_eef_box` transforms are measured
+  and supplied; the nominal EEF-midpoint offset remains visualization-only;
+- the pallet-ready pose is raised and re-recorded so the conservative clearance
+  lower bound is at least 50 mm;
+- site-specific finite F/T plausibility and contact-loss limits are configured
+  from supervised zero-mobility measurements;
+- the destination combined stream proves all-component Running feedback at
+  exact zero, then revalidates grip, held-top, wheel-stop, odometry, and
+  perception dwell before any nonzero mobility command;
+- a reviewed config gives acquisition a positive budget no greater than
+  0.15 m.
+
+Until then, every supported pallet CLI/runtime actuator path remains
+deliberately fail-closed before it can connect to RB-Y1.
 
 ## Record raw D435 evidence
 

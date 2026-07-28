@@ -17,6 +17,7 @@ live = ["pyrealsense2>=2.58.1; platform_machine != 'aarch64'"]
 
 [project.scripts]
 parcel-pose = "parcel_pose.cli:main"
+pallet = "parcel_pose.pallet_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
