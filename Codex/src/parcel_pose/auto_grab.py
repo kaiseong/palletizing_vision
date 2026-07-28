@@ -22,12 +22,13 @@ from .evaluation import BasePoseDiagnostic
 from .mobile_servo import (
     MobileVisualServo,
     PoseMeasurement,
+    RBY1CommandPumpConfig,
+    RBY1MobilityCommandPump,
     RBY1MobilityStream,
     RBY1StreamConfig,
     ServoConfig,
     ServoDecision,
     ServoState,
-    ZERO_VELOCITY,
 )
 
 
@@ -50,6 +51,7 @@ class AutoGrabConfig:
     power: str = ".*"
     servo: ServoConfig = field(default_factory=ServoConfig)
     stream: RBY1StreamConfig = field(default_factory=RBY1StreamConfig)
+    pump: RBY1CommandPumpConfig = field(default_factory=RBY1CommandPumpConfig)
     fixed_posture_tolerance_deg: float = 1.0
     max_grasp_yaw_residual_deg: float = 8.0
     mobile_stop_velocity_threshold_radps: float = 0.05
@@ -343,10 +345,14 @@ def _wait_for_mobile_stop(
 
 
 class AutoGrabRuntime:
-    """Bridge current base-frame poses to one mobile stream and one grasp.
+    """Bridge current base-frame poses to one pumped mobile stream and one grasp.
 
     The same connected robot object is retained from preparation through
     mobility-stream cancellation and the existing start/grab/lift sequence.
+    RB-Y1 controller arbitration does not permit the mobility stream and the
+    separate body one-shots to execute concurrently, so the stream is kept
+    alive through measured base settling and released immediately before the
+    body sequence.
     """
 
     def __init__(
@@ -366,6 +372,7 @@ class AutoGrabRuntime:
         self._servo = MobileVisualServo(self.config.servo)
         self._robot: Any | None = None
         self._stream: RBY1MobilityStream | None = None
+        self._pump: RBY1MobilityCommandPump | None = None
         self._started = False
         self._closed = False
         self._handoff_ready = False
@@ -382,7 +389,7 @@ class AutoGrabRuntime:
         return self._grasp_invoked
 
     def start(self) -> None:
-        """Connect, validate, prepare, and open one zeroed mobility stream."""
+        """Connect, validate, prepare, and start one zeroed mobility pump."""
 
         if not self._execute:
             raise AutoGrabError(
@@ -425,7 +432,17 @@ class AutoGrabRuntime:
                 config=self.config.stream,
                 sdk_module=self._sdk,
             ).open()
-            self._stream.send(ZERO_VELOCITY)
+            self._pump = RBY1MobilityCommandPump(
+                self._stream,
+                config=self.config.pump,
+            )
+            self._pump.start()
+            print(
+                "[auto-grab] mobility pump active: "
+                f"rate={self.config.pump.send_rate_hz:.1f} Hz, "
+                f"hold={self.config.stream.control_hold_time_s:.2f} s, "
+                f"stale-zero={self.config.pump.command_stale_after_s:.2f} s"
+            )
             started = self._servo.start(self._clock())
             self._started = True
             self._report_transition(started)
@@ -443,9 +460,14 @@ class AutoGrabRuntime:
         pose_timestamp_s: float,
         now_s: float,
     ) -> bool:
-        """Send one bounded XY command derived from the current corrected pose."""
+        """Publish one bounded XY command for the fixed-rate mobility pump."""
 
-        if not self._started or self._closed or self._stream is None:
+        if (
+            not self._started
+            or self._closed
+            or self._stream is None
+            or self._pump is None
+        ):
             raise AutoGrabError("auto-grab runtime is not active")
         measurement = None
         if base_pose is not None:
@@ -463,7 +485,7 @@ class AutoGrabRuntime:
             if yaw_failure is not None:
                 decision = self._servo.abort(yaw_failure, now_s)
         try:
-            self._stream.send(decision.command)
+            self._pump.publish(decision.command)
         except Exception as exc:
             self._servo.abort("mobility_stream_error", now_s)
             raise AutoGrabError(f"RB-Y1 mobility stream failed: {exc}") from exc
@@ -477,7 +499,7 @@ class AutoGrabRuntime:
         return decision.handoff_ready
 
     def handoff(self) -> None:
-        """Release mobility control, then run the existing grasp exactly once."""
+        """Latch/settle/release mobility, then run the existing grasp once."""
 
         if not self._started or self._closed:
             raise AutoGrabError("auto-grab runtime is not active")
@@ -485,20 +507,39 @@ class AutoGrabRuntime:
             raise AutoGrabError("grasp handoff requested before stable arrival")
         if self._grasp_invoked:
             raise AutoGrabError("grasp sequence has already been invoked")
-        if self._stream is None or self._robot is None or self._grabbing is None:
+        if (
+            self._stream is None
+            or self._pump is None
+            or self._robot is None
+            or self._grabbing is None
+        ):
             raise AutoGrabError("auto-grab handoff resources are unavailable")
 
         try:
-            self._stream.stop_and_release()
+            self._pump.latch_zero_and_wait()
         except Exception as exc:
             raise AutoGrabError(
-                f"cannot hand off while the mobility stream is active: {exc}"
+                f"cannot zero the active mobility stream for handoff: {exc}"
             ) from exc
-        self._stream = None
         _wait_for_mobile_stop(
             self._robot,
             self.config,
             clock=self._clock,
+        )
+        try:
+            self._pump.raise_if_failed()
+            pump_send_count = self._pump.send_count
+            pump_max_gap_s = self._pump.max_send_gap_s
+            self._pump.stop_and_release()
+        except Exception as exc:
+            raise AutoGrabError(
+                f"cannot release the stopped mobility stream for body handoff: {exc}"
+            ) from exc
+        self._pump = None
+        self._stream = None
+        print(
+            "[auto-grab] mobility stream released for body handoff: "
+            f"sends={pump_send_count}, max-gap={pump_max_gap_s * 1000.0:.1f} ms"
         )
         _validate_fixed_camera_posture(
             self._robot,
@@ -525,10 +566,20 @@ class AutoGrabRuntime:
         stream_error: Exception | None = None
         disconnect_error: Exception | None = None
         try:
-            if self._stream is not None:
+            if self._pump is not None:
+                pump = self._pump
+                try:
+                    pump.close()
+                except Exception as exc:  # preserve disconnect on shutdown failure
+                    stream_error = exc
+                finally:
+                    if pump.is_closed:
+                        self._pump = None
+                        self._stream = None
+            elif self._stream is not None:
                 try:
                     self._stream.close()
-                except Exception as exc:  # preserve disconnect on shutdown failure
+                except Exception as exc:
                     stream_error = exc
                 finally:
                     self._stream = None
@@ -544,7 +595,11 @@ class AutoGrabRuntime:
                         self._robot = None
                 else:
                     self._robot = None
-        self._closed = self._stream is None and self._robot is None
+        self._closed = (
+            self._pump is None
+            and self._stream is None
+            and self._robot is None
+        )
         if disconnect_error is not None:
             raise AutoGrabError(
                 f"failed to disconnect RB-Y1 cleanly: {disconnect_error}"
@@ -555,7 +610,16 @@ class AutoGrabRuntime:
             ) from stream_error
 
     def _cleanup_after_start_failure(self) -> None:
-        if self._stream is not None:
+        if self._pump is not None:
+            pump = self._pump
+            try:
+                pump.close()
+            except Exception:
+                pass
+            if pump.is_closed:
+                self._pump = None
+                self._stream = None
+        elif self._stream is not None:
             try:
                 self._stream.close()
             except Exception:

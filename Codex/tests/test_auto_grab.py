@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,10 +8,23 @@ import pytest
 
 from parcel_pose.auto_grab import AutoGrabConfig, AutoGrabError, AutoGrabRuntime
 from parcel_pose.evaluation import BasePoseDiagnostic
+from parcel_pose.mobile_servo import RBY1CommandPumpConfig
 
 
 CALIBRATED_TORSO_DEG = (0.0, 55.0, -59.988, 6.532, 0.0, 0.0)
 CALIBRATED_HEAD_DEG = (0.0, 49.846)
+
+
+def _mobility_feedback(*, status: int = 2, finish_code: int = 0):
+    valid = SimpleNamespace(valid=True)
+    mobility = SimpleNamespace(valid=True, se2_velocity_command=valid)
+    component = SimpleNamespace(valid=True, mobility_command=mobility)
+    return SimpleNamespace(
+        valid=True,
+        status=status,
+        finish_code=finish_code,
+        component_based_command=component,
+    )
 
 
 def _pose(
@@ -75,14 +89,29 @@ class _RobotCommandBuilder:
 
 
 class _CommandStream:
-    def __init__(self, events: list[tuple], *, wait_result: bool = True) -> None:
+    def __init__(
+        self,
+        events: list[tuple],
+        *,
+        wait_result: bool = True,
+        fail_after_sends: int | None = None,
+    ) -> None:
         self.events = events
         self.wait_result = wait_result
+        self.fail_after_sends = fail_after_sends
+        self.send_count = 0
 
     def send_command(self, command, timeout_ms):
+        if (
+            self.fail_after_sends is not None
+            and self.send_count >= self.fail_after_sends
+        ):
+            self.events.append(("stream_send_failed", timeout_ms))
+            raise RuntimeError("simulated command stream expiry")
+        self.send_count += 1
         velocity = command.component.mobility.velocity
         self.events.append(("velocity", velocity))
-        return SimpleNamespace(ok=True)
+        return _mobility_feedback()
 
     def cancel(self):
         self.events.append(("stream_cancel",))
@@ -116,6 +145,7 @@ class _Robot:
         mobility_velocity_radps: tuple[float, float] = (0.0, 0.0),
         state_update_samples: int = 9,
         mobility_ready: bool = True,
+        stream_fail_after_sends: int | None = None,
     ) -> None:
         self.events = events
         self.connected = False
@@ -123,7 +153,11 @@ class _Robot:
             robot_model_name=model,
             robot_model_version=version,
         )
-        self.stream = _CommandStream(events, wait_result=stream_wait_result)
+        self.stream = _CommandStream(
+            events,
+            wait_result=stream_wait_result,
+            fail_after_sends=stream_fail_after_sends,
+        )
         self.robot_model = SimpleNamespace(
             model_name="m",
             torso_idx=np.arange(6, dtype=np.int64),
@@ -301,7 +335,7 @@ def test_wrong_fixed_camera_posture_disconnects_before_prepare_or_stream(
     assert "grasp" not in names
 
 
-def test_stable_target_stops_stream_then_grasps_once_on_same_connection() -> None:
+def test_stable_target_keeps_zero_stream_through_stop_check_then_grasps() -> None:
     events: list[tuple] = []
     robot = _Robot(events)
     runtime = AutoGrabRuntime(
@@ -330,17 +364,17 @@ def test_stable_target_stops_stream_then_grasps_once_on_same_connection() -> Non
     runtime.close()
 
     names = [event[0] for event in events]
-    cancel_index = names.index("stream_cancel")
-    wait_index = names.index("stream_wait")
     state_start_index = names.index("state_update_start")
     state_stop_index = names.index("state_update_stop")
+    cancel_index = names.index("stream_cancel")
+    wait_index = names.index("stream_wait")
     grasp_index = names.index("grasp")
     disconnect_index = names.index("disconnect")
     assert (
-        cancel_index
-        < wait_index
-        < state_start_index
+        state_start_index
         < state_stop_index
+        < cancel_index
+        < wait_index
         < grasp_index
         < disconnect_index
     )
@@ -462,7 +496,7 @@ def test_stream_shutdown_failure_prevents_grasp() -> None:
         execute=True,
         sdk_module=_sdk(events, robot),
         grabbing_module=_grabbing(events),
-        clock=lambda: 0.0,
+        clock=_StepClock(),
     )
     runtime.start()
     for index in range(1, 9):
@@ -474,6 +508,86 @@ def test_stream_shutdown_failure_prevents_grasp() -> None:
         runtime.handoff()
     runtime.close()
 
+    assert all(event[0] != "grasp" for event in events)
+
+
+def test_background_pump_failure_is_surfaced_and_prevents_grasp() -> None:
+    events: list[tuple] = []
+    robot = _Robot(events, stream_fail_after_sends=1)
+    runtime = AutoGrabRuntime(
+        AutoGrabConfig(
+            pump=RBY1CommandPumpConfig(
+                send_rate_hz=100.0,
+                command_stale_after_s=0.05,
+            )
+        ),
+        execute=True,
+        sdk_module=_sdk(events, robot),
+        grabbing_module=_grabbing(events),
+        clock=lambda: 0.0,
+    )
+    runtime.start()
+    deadline = time.monotonic() + 1.0
+    while not any(event[0] == "stream_send_failed" for event in events):
+        if time.monotonic() >= deadline:
+            raise AssertionError("pump failure did not occur before timeout")
+        time.sleep(0.002)
+
+    with pytest.raises(AutoGrabError, match="command stream expiry"):
+        runtime.update(None, pose_timestamp_s=0.1, now_s=0.1)
+    with pytest.raises(AutoGrabError, match="command stream expiry"):
+        runtime.close()
+
+    assert not runtime.grasp_invoked
+    assert all(event[0] != "grasp" for event in events)
+
+
+def test_late_pump_failure_during_release_prevents_body_handoff() -> None:
+    events: list[tuple] = []
+    robot = _Robot(events)
+    runtime = AutoGrabRuntime(
+        AutoGrabConfig(
+            pump=RBY1CommandPumpConfig(
+                send_rate_hz=100.0,
+                command_stale_after_s=0.05,
+            )
+        ),
+        execute=True,
+        sdk_module=_sdk(events, robot),
+        grabbing_module=_grabbing(events),
+        clock=_StepClock(),
+    )
+    runtime.start()
+    for index in range(1, 9):
+        now = 0.1 * index
+        if runtime.update(_pose(), pose_timestamp_s=now, now_s=now):
+            break
+
+    pump = runtime._pump
+    assert pump is not None
+    original_latch = pump.latch_zero_and_wait
+    latch_count = 0
+
+    def fail_after_second_zero_latch() -> None:
+        nonlocal latch_count
+        original_latch()
+        latch_count += 1
+        if latch_count == 2:
+            robot.stream.fail_after_sends = robot.stream.send_count
+            deadline = time.monotonic() + 1.0
+            while not any(event[0] == "stream_send_failed" for event in events):
+                if time.monotonic() >= deadline:
+                    raise AssertionError("late pump failure did not occur")
+                time.sleep(0.002)
+
+    pump.latch_zero_and_wait = fail_after_second_zero_latch
+
+    with pytest.raises(AutoGrabError, match="command stream expiry"):
+        runtime.handoff()
+    runtime.close()
+
+    assert latch_count == 2
+    assert not runtime.grasp_invoked
     assert all(event[0] != "grasp" for event in events)
 
 

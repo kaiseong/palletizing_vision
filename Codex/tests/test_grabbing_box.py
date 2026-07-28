@@ -30,6 +30,15 @@ def grabbing_box(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
+def test_start_pose_matches_latest_recorded_grasp_posture(grabbing_box):
+    assert grabbing_box.START_POSE == {
+        "torso": [0.000, 0.960, -1.047, 0.114, 0.000, 0.000],
+        "right_arm": [-0.375, -0.391, -0.238, -1.576, -1.013, 1.467, -0.003],
+        "left_arm": [-0.375, 0.391, 0.238, -1.576, 1.013, 1.467, 0.003],
+        "head": [0.000, 0.870],
+    }
+
+
 class PrepareRobotFake:
     def __init__(
         self,

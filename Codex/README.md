@@ -364,17 +364,27 @@ The automatic path uses the corrected box-volume center and performs:
 
 ```text
 acquire 3 valid poses
-  -> XY-only mobile stream toward x=0.740 m, y=0.000 m
+  -> publish XY commands toward x=0.740 m, y=0.000 m
+  -> sole 20 Hz mobility pump keeps the SDK stream alive
   -> stable arrival hold
-  -> repeated zero velocity
+  -> latch zero and acknowledge 3 pumped zero commands
+  -> measured mobility-joint stop confirmation while pumping zero
   -> stream cancel + completion wait
-  -> measured mobility-joint stop confirmation
   -> existing start_pose -> impedance grab -> impedance lift
 ```
 
 The mobile command is proportional XY control with `wz=0`, a vector speed cap
 of `0.08 m/s`, a `0.15 m/s^2` slew/SDK acceleration limit, a three-frame
-median, and a 30 mm jump gate. Pose age starts immediately after D435 capture,
+median, and a 30 mm jump gate. Vision only publishes the latest command; one
+dedicated sender thread is the sole SDK stream writer and refreshes it at 20
+Hz with a finite 1.0-second control hold. If vision stops publishing for 0.30
+seconds, the sender substitutes zero instead of refreshing a stale non-zero
+velocity. This prevents estimator/display stalls from expiring the stream
+without allowing a frozen vision loop to keep renewing motion indefinitely.
+Startup and each zero acknowledgement require valid component/mobility/SE(2)
+feedback with the controller in `Running`; terminal, idle, malformed, or
+preempted feedback aborts without grasp.
+Pose age starts immediately after D435 capture,
 before estimator execution; a result older than 0.30 seconds is rejected
 instead of receiving a fresh post-inference timestamp. Missing/invalid/stale
 pose sends zero velocity; continuous pose loss for 2 seconds or a 30-second
@@ -383,13 +393,17 @@ filtered positions inside 10 mm, then at least five valid frames and 0.35
 seconds inside a 15 mm outer band. At handoff, yaw must have a valid 0- or
 90-degree canonical reference with at most 8 degrees residual. The controller
 does not rotate the base; an incompatible yaw aborts instead of forcing a
-grasp. The grasp is invoked exactly once and only after the mobility stream
-has ended and measured wheel speeds remain at or below 0.05 rad/s throughout
-at least 0.35 seconds of continuous 20 Hz state updates. All mobility
+grasp. At arrival the pump is permanently zero-latched, and measured wheel
+speeds must remain at or below 0.05 rad/s throughout at least 0.35 seconds of
+continuous 20 Hz state updates while that zero stream stays alive. All mobility
 joints must report ready and the state stream must remain fresh. Failure to
-settle within 2 seconds blocks the arms; that state subscription is stopped
-before the grasp FT monitor starts. The same robot connection is used for a
-continuous handoff.
+settle within 2 seconds blocks the arms. After settling, the sender thread is
+joined and the mobility stream is cancelled and awaited before any body
+command. RB-Y1 controller arbitration does not allow the active navigation
+stream and the separate `grabbing_box.py` body one-shots to execute in
+parallel: keeping both streams alive could cause the body command to be
+refused or silently not execute. The state subscription is stopped before the
+grasp FT monitor starts, and the same robot connection is reused throughout.
 
 Pressing `q`, `Esc`, or `Ctrl-C` before handoff, a camera/stream exception, a
 posture/identity mismatch, an incompatible yaw, or failure to confirm stream

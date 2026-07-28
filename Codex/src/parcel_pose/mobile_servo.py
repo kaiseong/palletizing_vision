@@ -16,6 +16,8 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 import importlib
+import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -481,12 +483,24 @@ class StreamShutdownError(RuntimeError):
     """Raised when an RB-Y1 command stream does not finish after cancellation."""
 
 
+class StreamFeedbackError(RuntimeError):
+    """Raised when RB-Y1 feedback does not confirm a live SE(2) controller."""
+
+
+class MobilityCommandPumpError(RuntimeError):
+    """Raised when the fixed-rate mobility sender cannot stay healthy."""
+
+
 @dataclass(frozen=True, slots=True)
 class RBY1StreamConfig:
     """RB-Y1 SE(2) stream parameters with conservative hold and limits."""
 
     priority: int = 10
-    control_hold_time_s: float = 0.25
+    # RB-Y1 ends the whole stream when this command hold expires.  The Jetson
+    # vision loop can hold the GIL for several hundred milliseconds, so the
+    # hold must bridge those stalls while a separate watchdog sender refreshes
+    # the command at a fixed rate.
+    control_hold_time_s: float = 1.0
     minimum_time_s: float = 0.05
     linear_acceleration_limit_mps2: float = 0.15
     angular_acceleration_limit_radps2: float = 0.5
@@ -504,8 +518,8 @@ class RBY1StreamConfig:
             "angular_acceleration_limit_radps2",
         ):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
-        if self.control_hold_time_s > 0.5:
-            raise ValueError("control_hold_time_s cannot exceed 0.5 seconds")
+        if self.control_hold_time_s > 1.0:
+            raise ValueError("control_hold_time_s cannot exceed 1.0 second")
         if self.send_timeout_ms <= 0 or self.shutdown_timeout_ms <= 0:
             raise ValueError("stream timeouts must be positive")
         if self.zero_repetitions < 2:
@@ -556,33 +570,47 @@ class RBY1MobilityStream:
         if command.linear_norm_mps > MAX_ALLOWED_LINEAR_SPEED_MPS + 1e-12:
             raise ValueError("linear velocity exceeds the 0.08 m/s safety limit")
         try:
-            return stream.send_command(
+            feedback = stream.send_command(
                 self._command_builder(command),
                 timeout_ms=self.config.send_timeout_ms,
             )
-        except Exception:
-            self._invalidate_stream(stream)
+            self._feedback_state(feedback)
+            return feedback
+        except Exception as exc:
+            cleanup_error = self._invalidate_stream(stream)
+            if cleanup_error is not None:
+                raise StreamShutdownError(
+                    "RB-Y1 mobility command failed and stream release was not "
+                    f"confirmed: command={exc}; cleanup={cleanup_error}"
+                ) from exc
             raise
+
+    def feedback_is_running(self, feedback: Any) -> bool:
+        """Return whether validated feedback confirms active base control."""
+
+        return self._feedback_state(feedback) == "running"
 
     def stop_and_release(self) -> None:
         """Send repeated zeros, cancel, and wait before releasing the stream."""
 
+        for _ in range(self.config.zero_repetitions):
+            self.send(ZERO_VELOCITY)
+        self.cancel_and_wait()
+
+    def cancel_and_wait(self) -> None:
+        """Cancel without sending; used only after the sole sender has stopped."""
+
         stream = self._require_stream()
         completed = False
         try:
-            for _ in range(self.config.zero_repetitions):
-                self.send(ZERO_VELOCITY)
+            stream.cancel()
         finally:
-            if self._stream is not None:
-                try:
-                    stream.cancel()
-                finally:
-                    try:
-                        completed = bool(
-                            stream.wait_for(self.config.shutdown_timeout_ms)
-                        )
-                    finally:
-                        self._stream = None
+            try:
+                completed = bool(
+                    stream.wait_for(self.config.shutdown_timeout_ms)
+                )
+            finally:
+                self._stream = None
         if not completed:
             raise StreamShutdownError(
                 "RB-Y1 mobility stream did not finish after cancellation"
@@ -608,18 +636,78 @@ class RBY1MobilityStream:
             raise RuntimeError("RB-Y1 mobility stream is not open")
         return self._stream
 
-    def _invalidate_stream(self, stream: Any) -> None:
-        """Best-effort release after a send/build failure, preserving its error."""
+    def _invalidate_stream(self, stream: Any) -> Exception | None:
+        """Release after send failure and report whether shutdown was confirmed."""
 
         self._stream = None
+        failures: list[str] = []
         try:
             stream.cancel()
-        except Exception:
-            pass
+        except Exception as exc:
+            failures.append(f"cancel failed: {exc}")
         try:
-            stream.wait_for(self.config.shutdown_timeout_ms)
-        except Exception:
-            pass
+            completed = bool(stream.wait_for(self.config.shutdown_timeout_ms))
+        except Exception as exc:
+            failures.append(f"wait failed: {exc}")
+        else:
+            if not completed:
+                failures.append("wait timed out")
+        if failures:
+            return StreamShutdownError("; ".join(failures))
+        return None
+
+    def _feedback_state(self, feedback: Any) -> str:
+        """Validate top-level and SE(2) feedback using wire numeric codes.
+
+        The locally available robot-core source and SDK disagree on some
+        finish-code names, so control decisions intentionally use only the
+        stable wire values.  Initializing is accepted temporarily, but the
+        command pump does not acknowledge a generation until Running is seen.
+        """
+
+        if feedback is None or not bool(getattr(feedback, "valid", False)):
+            raise StreamFeedbackError("missing or invalid RB-Y1 mobility feedback")
+
+        try:
+            component = feedback.component_based_command
+            mobility = component.mobility_command
+            se2 = mobility.se2_velocity_command
+        except AttributeError as exc:
+            raise StreamFeedbackError(
+                "RB-Y1 feedback does not contain a component-based SE(2) command"
+            ) from exc
+        if not all(bool(getattr(node, "valid", False)) for node in (component, mobility, se2)):
+            raise StreamFeedbackError(
+                "RB-Y1 feedback does not validate the requested SE(2) command"
+            )
+
+        status = self._wire_enum_code(feedback.status, "status")
+        finish = self._wire_enum_code(feedback.finish_code, "finish_code")
+        detail = (
+            f"status={status} ({feedback.status!r}), "
+            f"finish={finish} ({feedback.finish_code!r})"
+        )
+        if status == 2 and finish == 0:
+            return "running"
+        if status == 1 and finish == 0:
+            return "initializing"
+        if status == 3:
+            raise StreamFeedbackError(f"RB-Y1 mobility stream terminated: {detail}")
+        if status == 0:
+            raise StreamFeedbackError(
+                f"RB-Y1 mobility command was not activated: {detail}"
+            )
+        raise StreamFeedbackError(f"unexpected RB-Y1 mobility feedback: {detail}")
+
+    @staticmethod
+    def _wire_enum_code(value: Any, field: str) -> int:
+        raw = getattr(value, "value", value)
+        try:
+            return int(raw)
+        except (TypeError, ValueError) as exc:
+            raise StreamFeedbackError(
+                f"invalid RB-Y1 mobility feedback {field}: {value!r}"
+            ) from exc
 
     def _command_builder(self, command: VelocityCommand) -> Any:
         assert self._sdk is not None
@@ -645,3 +733,395 @@ class RBY1MobilityStream:
         )
         component = self._sdk.ComponentBasedCommandBuilder().set_mobility_command(se2)
         return self._sdk.RobotCommandBuilder().set_command(component)
+
+
+@dataclass(frozen=True, slots=True)
+class RBY1CommandPumpConfig:
+    """Fixed-rate sender settings independent of D435 estimation latency."""
+
+    send_rate_hz: float = 20.0
+    command_stale_after_s: float = 0.30
+    startup_timeout_s: float = 2.0
+    zero_ack_timeout_s: float = 2.0
+    zero_ack_repetitions: int = 3
+    join_timeout_s: float = 2.0
+
+    def __post_init__(self) -> None:
+        for name in (
+            "send_rate_hz",
+            "command_stale_after_s",
+            "startup_timeout_s",
+            "zero_ack_timeout_s",
+            "join_timeout_s",
+        ):
+            object.__setattr__(self, name, _positive(getattr(self, name), name))
+        period_s = 1.0 / self.send_rate_hz
+        if self.command_stale_after_s < period_s * 2.0:
+            raise ValueError(
+                "command_stale_after_s must cover at least two pump periods"
+            )
+        if self.zero_ack_repetitions < 2:
+            raise ValueError("zero_ack_repetitions must be at least 2")
+
+
+class RBY1MobilityCommandPump:
+    """Sole fixed-rate owner of an open RB-Y1 mobility command stream.
+
+    Vision publishes the newest bounded command, but never calls the SDK
+    stream directly.  The pump refreshes that command at a fixed rate and
+    substitutes zero when the producer stops updating.  Shutdown latches zero,
+    waits until that generation was sent, joins the sender, then cancels the
+    underlying stream; there is no concurrent ``send``/``cancel`` race.
+    """
+
+    def __init__(
+        self,
+        stream: RBY1MobilityStream,
+        *,
+        config: RBY1CommandPumpConfig | None = None,
+    ) -> None:
+        self._stream = stream
+        self.config = config or RBY1CommandPumpConfig()
+        self._condition = threading.Condition()
+        self._shutdown_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._latest_command = ZERO_VELOCITY
+        self._latest_update_s = time.monotonic()
+        self._generation = 0
+        self._sent_generation = -1
+        self._last_sent_command = ZERO_VELOCITY
+        self._zero_sends_after_latch = 0
+        self._send_count = 0
+        self._last_send_completed_s: float | None = None
+        self._max_send_gap_s = 0.0
+        self._running = False
+        self._zero_latched = False
+        self._closed = False
+        self._last_error: Exception | None = None
+
+    @property
+    def is_running(self) -> bool:
+        with self._condition:
+            return self._running
+
+    @property
+    def is_closed(self) -> bool:
+        with self._condition:
+            return self._closed
+
+    @property
+    def send_count(self) -> int:
+        with self._condition:
+            return self._send_count
+
+    @property
+    def last_error(self) -> Exception | None:
+        with self._condition:
+            return self._last_error
+
+    @property
+    def max_send_gap_s(self) -> float:
+        with self._condition:
+            return self._max_send_gap_s
+
+    def start(self) -> "RBY1MobilityCommandPump":
+        """Start with zero velocity and verify active ``Running`` feedback."""
+
+        with self._condition:
+            if self._closed:
+                raise MobilityCommandPumpError("mobility command pump is closed")
+            if self._running:
+                return self
+            if not self._stream.is_open:
+                raise MobilityCommandPumpError("mobility stream is not open")
+            self._stop_event.clear()
+            self._latest_command = ZERO_VELOCITY
+            self._latest_update_s = time.monotonic()
+            self._generation += 1
+            startup_generation = self._generation
+            self._zero_latched = False
+            self._zero_sends_after_latch = 0
+            self._last_error = None
+            self._running = True
+            self._thread = threading.Thread(
+                target=self._run,
+                name="rby1-mobility-command-pump",
+                daemon=True,
+            )
+            self._thread.start()
+        try:
+            self._wait_until_sent(
+                startup_generation,
+                timeout_s=self.config.startup_timeout_s,
+                operation="start mobility command pump",
+            )
+        except Exception as startup_error:
+            cleanup_error = self._abort_startup()
+            if cleanup_error is not None:
+                raise MobilityCommandPumpError(
+                    f"{startup_error}; startup cleanup failed: {cleanup_error}"
+                ) from startup_error
+            raise
+        return self
+
+    def publish(self, command: VelocityCommand) -> int:
+        """Atomically replace the command consumed by the sender thread."""
+
+        self._validate_command(command)
+        with self._condition:
+            self._raise_if_failed_locked()
+            if not self._running or self._closed:
+                raise MobilityCommandPumpError("mobility command pump is not running")
+            if self._zero_latched and not command.is_zero:
+                raise MobilityCommandPumpError(
+                    "mobility command pump is zero-latched for body handoff"
+                )
+            self._latest_command = command
+            self._latest_update_s = time.monotonic()
+            self._generation += 1
+            generation = self._generation
+            self._condition.notify_all()
+            return generation
+
+    def raise_if_failed(self) -> None:
+        """Surface a background SDK failure on the owning thread."""
+
+        with self._condition:
+            self._raise_if_failed_locked()
+
+    def latch_zero_and_wait(self) -> None:
+        """Permanently select zero and wait for repeated acknowledged sends."""
+
+        with self._condition:
+            self._raise_if_failed_locked()
+            if not self._running or self._closed:
+                raise MobilityCommandPumpError("mobility command pump is not running")
+            self._zero_latched = True
+            self._zero_sends_after_latch = 0
+            self._latest_command = ZERO_VELOCITY
+            self._latest_update_s = time.monotonic()
+            self._generation += 1
+            zero_generation = self._generation
+            self._condition.notify_all()
+        deadline_s = time.monotonic() + self.config.zero_ack_timeout_s
+        with self._condition:
+            while (
+                self._sent_generation < zero_generation
+                or self._zero_sends_after_latch
+                < self.config.zero_ack_repetitions
+            ):
+                self._raise_if_failed_locked()
+                if not self._running:
+                    raise MobilityCommandPumpError(
+                        "cannot send zero mobility command: sender thread stopped"
+                    )
+                remaining_s = deadline_s - time.monotonic()
+                if remaining_s <= 0.0:
+                    raise MobilityCommandPumpError(
+                        "timed out while trying to send zero mobility command"
+                    )
+                self._condition.wait(timeout=remaining_s)
+            if not self._last_sent_command.is_zero:
+                raise MobilityCommandPumpError(
+                    "mobility pump acknowledged a non-zero handoff command"
+                )
+
+    def stop_and_release(self) -> None:
+        """Stop the sole sender, then zero/cancel/wait the SDK stream."""
+
+        with self._shutdown_lock:
+            with self._condition:
+                if self._closed:
+                    return
+                primary_error = self._background_error_locked()
+
+            if self.is_running:
+                try:
+                    self.latch_zero_and_wait()
+                except Exception as exc:
+                    primary_error = primary_error or exc
+
+            thread_alive, emergency_error = self._stop_sender()
+            if thread_alive and primary_error is None:
+                primary_error = MobilityCommandPumpError(
+                    "mobility command pump thread remained alive after stream cancel"
+                )
+            if emergency_error is not None and primary_error is None:
+                primary_error = emergency_error
+
+            # A send can fail after the zero latch completed but before the
+            # stop event reaches the sender.  Re-read the background result
+            # after join so body handoff can never follow that late failure.
+            with self._condition:
+                primary_error = primary_error or self._background_error_locked()
+
+            stream_error: Exception | None = None
+            if self._stream.is_open and not thread_alive:
+                try:
+                    self._stream.stop_and_release()
+                except Exception as exc:
+                    stream_error = exc
+
+            with self._condition:
+                primary_error = primary_error or self._background_error_locked()
+                if not thread_alive:
+                    self._running = False
+                self._closed = not thread_alive and not self._stream.is_open
+                cleanup_complete = self._closed
+                self._condition.notify_all()
+
+            if primary_error is not None:
+                raise primary_error
+            if stream_error is not None:
+                raise stream_error
+            if not cleanup_complete:
+                raise MobilityCommandPumpError(
+                    "mobility command pump shutdown was not confirmed"
+                )
+
+    def close(self) -> None:
+        self.stop_and_release()
+
+    def _abort_startup(self) -> Exception | None:
+        """Transactionally unwind a startup that never confirmed Running."""
+
+        with self._shutdown_lock:
+            thread_alive, cleanup_error = self._stop_sender()
+            if self._stream.is_open and not thread_alive:
+                try:
+                    # No Running acknowledgement exists, so do not issue more
+                    # owner-thread commands; cancel the unconfirmed stream.
+                    self._stream.cancel_and_wait()
+                except Exception as exc:
+                    cleanup_error = cleanup_error or exc
+            with self._condition:
+                if not thread_alive:
+                    self._running = False
+                self._closed = not thread_alive and not self._stream.is_open
+                self._condition.notify_all()
+            if thread_alive:
+                return MobilityCommandPumpError(
+                    "startup sender remained alive after emergency stream cancel"
+                )
+            return cleanup_error
+
+    def _stop_sender(self) -> tuple[bool, Exception | None]:
+        """Join the sole sender, canceling only to unblock a timed-out send."""
+
+        self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
+            thread = self._thread
+        if thread is None:
+            return False, None
+
+        thread.join(timeout=self.config.join_timeout_s)
+        thread_alive = thread.is_alive()
+        cleanup_error: Exception | None = None
+        if thread_alive:
+            if self._stream.is_open:
+                try:
+                    self._stream.cancel_and_wait()
+                except Exception as exc:
+                    cleanup_error = exc
+            thread.join(timeout=self.config.join_timeout_s)
+            thread_alive = thread.is_alive()
+        return thread_alive, cleanup_error
+
+    def _run(self) -> None:
+        period_s = 1.0 / self.config.send_rate_hz
+        next_tick_s = time.monotonic()
+        try:
+            while not self._stop_event.is_set():
+                now_s = time.monotonic()
+                with self._condition:
+                    command = self._latest_command
+                    generation = self._generation
+                    stale = (
+                        now_s - self._latest_update_s
+                        > self.config.command_stale_after_s
+                    )
+                selected = ZERO_VELOCITY if stale else command
+                feedback = self._stream.send(selected)
+                feedback_is_running = getattr(
+                    self._stream,
+                    "feedback_is_running",
+                    lambda _: True,
+                )(feedback)
+                send_completed_s = time.monotonic()
+                with self._condition:
+                    if self._last_send_completed_s is not None:
+                        self._max_send_gap_s = max(
+                            self._max_send_gap_s,
+                            send_completed_s - self._last_send_completed_s,
+                        )
+                    self._last_send_completed_s = send_completed_s
+                    self._send_count += 1
+                    if feedback_is_running:
+                        self._last_sent_command = selected
+                        if self._zero_latched and selected.is_zero:
+                            self._zero_sends_after_latch += 1
+                        if not stale or command.is_zero:
+                            self._sent_generation = max(
+                                self._sent_generation,
+                                generation,
+                            )
+                    self._condition.notify_all()
+
+                next_tick_s += period_s
+                delay_s = next_tick_s - time.monotonic()
+                if delay_s <= 0.0:
+                    next_tick_s = time.monotonic()
+                    continue
+                self._stop_event.wait(delay_s)
+        except Exception as exc:
+            with self._condition:
+                self._last_error = exc
+                self._condition.notify_all()
+        finally:
+            with self._condition:
+                self._running = False
+                self._condition.notify_all()
+
+    def _wait_until_sent(
+        self,
+        generation: int,
+        *,
+        timeout_s: float,
+        operation: str,
+    ) -> None:
+        deadline_s = time.monotonic() + timeout_s
+        with self._condition:
+            while self._sent_generation < generation:
+                self._raise_if_failed_locked()
+                if not self._running:
+                    raise MobilityCommandPumpError(
+                        f"cannot {operation}: sender thread stopped"
+                    )
+                remaining_s = deadline_s - time.monotonic()
+                if remaining_s <= 0.0:
+                    raise MobilityCommandPumpError(
+                        f"timed out while trying to {operation}"
+                    )
+                self._condition.wait(timeout=remaining_s)
+
+    @staticmethod
+    def _validate_command(command: VelocityCommand) -> None:
+        if abs(command.wz_radps) > 1e-12:
+            raise ValueError("mobile visual servo is XY-only; wz must be zero")
+        if command.linear_norm_mps > MAX_ALLOWED_LINEAR_SPEED_MPS + 1e-12:
+            raise ValueError("linear velocity exceeds the 0.08 m/s safety limit")
+
+    def _raise_if_failed_locked(self) -> None:
+        if self._last_error is not None:
+            raise MobilityCommandPumpError(
+                f"mobility command pump failed: {self._last_error}"
+            ) from self._last_error
+
+    def _background_error_locked(self) -> Exception | None:
+        if self._last_error is None:
+            return None
+        return MobilityCommandPumpError(
+            f"mobility command pump failed: {self._last_error}"
+        )

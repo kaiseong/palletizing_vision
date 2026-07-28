@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,12 +9,16 @@ import pytest
 
 from parcel_pose.mobile_servo import (
     MAX_ALLOWED_LINEAR_SPEED_MPS,
+    MobilityCommandPumpError,
     MobileVisualServo,
     PoseMeasurement,
+    RBY1CommandPumpConfig,
+    RBY1MobilityCommandPump,
     RBY1MobilityStream,
     RobotMotionDisabledError,
     ServoConfig,
     ServoState,
+    StreamFeedbackError,
     VelocityCommand,
 )
 
@@ -272,7 +278,7 @@ class _FakeStream:
 
     def send_command(self, command, timeout_ms):
         self.events.append(("stream", "send", timeout_ms))
-        return SimpleNamespace(ok=True)
+        return _mobility_feedback()
 
     def cancel(self):
         self.events.append(("stream", "cancel"))
@@ -298,6 +304,18 @@ def _fake_sdk(events: list[tuple]):
         SE2VelocityCommandBuilder=lambda: _FakeBuilder("se2", events),
         ComponentBasedCommandBuilder=lambda: _FakeBuilder("component", events),
         RobotCommandBuilder=lambda: _FakeBuilder("robot_command", events),
+    )
+
+
+def _mobility_feedback(*, status: int = 2, finish_code: int = 0):
+    valid = SimpleNamespace(valid=True)
+    mobility = SimpleNamespace(valid=True, se2_velocity_command=valid)
+    component = SimpleNamespace(valid=True, mobility_command=mobility)
+    return SimpleNamespace(
+        valid=True,
+        status=status,
+        finish_code=finish_code,
+        component_based_command=component,
     )
 
 
@@ -336,7 +354,7 @@ def test_rby1_stream_is_opt_in_and_shutdown_orders_zeros_cancel_then_wait() -> N
     assert velocities[1:] == [pytest.approx((0.0, 0.0))] * 3
     assert ("se2", "acceleration", (0.15, 0.15), 0.5) in events
     assert ("se2", "minimum_time", 0.05) in events
-    assert ("header", "hold", 0.25) in events
+    assert ("header", "hold", 1.0) in events
     assert not adapter.is_open
 
 
@@ -353,6 +371,71 @@ def test_rby1_stream_rejects_yaw_and_excess_linear_speed() -> None:
     with pytest.raises(ValueError, match="0.08 m/s"):
         adapter.send(VelocityCommand(0.081, 0.0, 0.0))
     adapter.close()
+
+
+def test_terminal_stream_feedback_is_rejected_and_released() -> None:
+    events: list[tuple] = []
+
+    class TerminalFeedbackStream(_FakeStream):
+        def send_command(self, command, timeout_ms):
+            self.events.append(("stream", "send_terminal", timeout_ms))
+            return _mobility_feedback(status=3, finish_code=2)
+
+    robot = _FakeRobot(events)
+    robot.stream = TerminalFeedbackStream(events)
+    adapter = RBY1MobilityStream(
+        robot,
+        execute=True,
+        sdk_module=_fake_sdk(events),
+    ).open()
+
+    with pytest.raises(StreamFeedbackError, match="terminated"):
+        adapter.send(VelocityCommand(0.01, 0.0, 0.0))
+
+    assert not adapter.is_open
+    assert events[-2:] == [
+        ("stream", "cancel"),
+        ("stream", "wait", 2000),
+    ]
+
+
+def test_pump_start_waits_for_running_feedback_not_just_initializing() -> None:
+    events: list[tuple] = []
+
+    class InitializingThenRunningStream(_FakeStream):
+        def __init__(self, stream_events: list[tuple]) -> None:
+            super().__init__(stream_events)
+            self.feedback_statuses = [1, 1, 2]
+
+        def send_command(self, command, timeout_ms):
+            status = self.feedback_statuses.pop(0) if self.feedback_statuses else 2
+            self.events.append(("stream", "send_status", status))
+            return _mobility_feedback(status=status)
+
+    robot = _FakeRobot(events)
+    robot.stream = InitializingThenRunningStream(events)
+    adapter = RBY1MobilityStream(
+        robot,
+        execute=True,
+        sdk_module=_fake_sdk(events),
+    ).open()
+    pump = RBY1MobilityCommandPump(
+        adapter,
+        config=RBY1CommandPumpConfig(
+            send_rate_hz=100.0,
+            command_stale_after_s=0.05,
+        ),
+    ).start()
+
+    assert [event[2] for event in events if event[1] == "send_status"][:3] == [
+        1,
+        1,
+        2,
+    ]
+    pump.close()
+
+    assert pump.is_closed
+    assert not adapter.is_open
 
 
 def test_stream_is_not_reused_when_shutdown_wait_raises() -> None:
@@ -401,3 +484,160 @@ def test_send_failure_invalidates_and_best_effort_releases_stream() -> None:
         ("stream", "cancel"),
         ("stream", "wait", 2000),
     ]
+
+
+class _PumpStreamFake:
+    def __init__(self, *, fail_after: int | None = None) -> None:
+        self.is_open = True
+        self.fail_after = fail_after
+        self.sends: list[tuple[int, float, VelocityCommand]] = []
+        self.released = False
+
+    def send(self, command: VelocityCommand):
+        if self.fail_after is not None and len(self.sends) >= self.fail_after:
+            raise RuntimeError("simulated stream expiry")
+        self.sends.append((threading.get_ident(), time.monotonic(), command))
+        return _mobility_feedback()
+
+    def stop_and_release(self) -> None:
+        self.released = True
+        self.is_open = False
+
+    def cancel_and_wait(self) -> None:
+        self.released = True
+        self.is_open = False
+
+
+def _wait_for(predicate, *, timeout_s: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError("condition did not become true before timeout")
+        time.sleep(0.002)
+
+
+def test_fixed_rate_pump_repeats_latest_command_then_watchdogs_to_zero() -> None:
+    stream = _PumpStreamFake()
+    pump = RBY1MobilityCommandPump(
+        stream,
+        config=RBY1CommandPumpConfig(
+            send_rate_hz=100.0,
+            command_stale_after_s=0.05,
+            zero_ack_repetitions=3,
+        ),
+    ).start()
+
+    pump.publish(VelocityCommand(0.02, -0.01, 0.0))
+    _wait_for(lambda: sum(not item[2].is_zero for item in stream.sends) >= 2)
+    _wait_for(
+        lambda: any(item[2].is_zero for item in stream.sends[3:]),
+        timeout_s=1.0,
+    )
+
+    pump.latch_zero_and_wait()
+    with pytest.raises(MobilityCommandPumpError, match="zero-latched"):
+        pump.publish(VelocityCommand(0.01, 0.0, 0.0))
+    pump.stop_and_release()
+
+    sender_threads = {item[0] for item in stream.sends}
+    assert len(sender_threads) == 1
+    assert threading.get_ident() not in sender_threads
+    assert stream.released
+    assert not pump.is_running
+
+
+def test_pump_surfaces_background_stream_failure_and_releases() -> None:
+    stream = _PumpStreamFake(fail_after=2)
+    pump = RBY1MobilityCommandPump(
+        stream,
+        config=RBY1CommandPumpConfig(
+            send_rate_hz=100.0,
+            command_stale_after_s=0.05,
+        ),
+    ).start()
+    pump.publish(VelocityCommand(0.01, 0.0, 0.0))
+    _wait_for(lambda: pump.last_error is not None)
+
+    with pytest.raises(MobilityCommandPumpError, match="simulated stream expiry"):
+        pump.raise_if_failed()
+    with pytest.raises(MobilityCommandPumpError, match="simulated stream expiry"):
+        pump.stop_and_release()
+
+    assert stream.released
+
+
+def test_startup_timeout_cancels_blocked_send_and_joins_sender() -> None:
+    class BlockingStartupStream(_PumpStreamFake):
+        def __init__(self) -> None:
+            super().__init__()
+            self.send_entered = threading.Event()
+            self.send_unblocked = threading.Event()
+            self.cancel_count = 0
+
+        def send(self, command: VelocityCommand):
+            self.send_entered.set()
+            self.send_unblocked.wait(timeout=1.0)
+            if not self.is_open:
+                raise RuntimeError("startup stream canceled")
+            return super().send(command)
+
+        def cancel_and_wait(self) -> None:
+            self.cancel_count += 1
+            self.is_open = False
+            self.released = True
+            self.send_unblocked.set()
+
+    stream = BlockingStartupStream()
+    pump = RBY1MobilityCommandPump(
+        stream,
+        config=RBY1CommandPumpConfig(
+            send_rate_hz=100.0,
+            command_stale_after_s=0.05,
+            startup_timeout_s=0.03,
+            join_timeout_s=0.05,
+        ),
+    )
+
+    try:
+        with pytest.raises(MobilityCommandPumpError, match="timed out"):
+            pump.start()
+    finally:
+        stream.send_unblocked.set()
+
+    assert stream.send_entered.is_set()
+    assert stream.cancel_count == 1
+    assert stream.released
+    assert pump.is_closed
+    assert not pump.is_running
+    assert pump._thread is not None
+    assert not pump._thread.is_alive()
+
+
+def test_late_send_failure_after_zero_ack_blocks_successful_release() -> None:
+    stream = _PumpStreamFake()
+    pump = RBY1MobilityCommandPump(
+        stream,
+        config=RBY1CommandPumpConfig(
+            send_rate_hz=100.0,
+            command_stale_after_s=0.05,
+            zero_ack_repetitions=3,
+        ),
+    ).start()
+    original_latch = pump.latch_zero_and_wait
+    failure_seen = threading.Event()
+
+    def latch_then_fail() -> None:
+        original_latch()
+        stream.fail_after = len(stream.sends)
+        _wait_for(lambda: pump.last_error is not None)
+        failure_seen.set()
+
+    pump.latch_zero_and_wait = latch_then_fail
+
+    with pytest.raises(MobilityCommandPumpError, match="simulated stream expiry"):
+        pump.stop_and_release()
+
+    assert failure_seen.is_set()
+    assert stream.released
+    assert pump.is_closed
+    assert not pump.is_running

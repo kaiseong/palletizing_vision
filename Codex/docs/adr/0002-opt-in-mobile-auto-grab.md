@@ -16,6 +16,11 @@ The camera-to-base registration still lacks independent ground truth. Robot
 motion must therefore remain distinct from the default diagnostic viewer and
 must preserve the estimator's explicit `nominal_unverified` state.
 
+The [RB-Y1 SDK controller FAQ](https://rainbowrobotics.github.io/rby1-dev/sdk/trobuleshooting/generated/faq.html)
+states that navigation and body controllers do not run as independent
+simultaneous commands: priority arbitration preempts or refuses one command,
+and true arm/base simultaneity requires one combined whole-body stream.
+
 ## Decision
 
 1. Store `[0.000, +0.050, 0.000] m` as an empirical base-translation
@@ -28,15 +33,20 @@ must preserve the estimator's explicit `nominal_unverified` state.
    that torso/head remain within 1 degree of the fixed calibration posture
    before opening a command stream.
 4. Use bounded XY-only proportional velocity control through one SDK command
-   stream. Do not command yaw; require the observed box orientation to be
-   within 8 degrees of a supported 0- or 90-degree symmetry axis before grasp.
+   stream. A sole 20 Hz sender thread refreshes the latest published command
+   with a finite 1.0-second hold and substitutes zero when the producer is
+   stale. Startup requires validated SE(2) feedback to reach `Running`, and
+   terminal/idle/malformed feedback fails closed. Do not command yaw; require
+   the observed box orientation to be within 8 degrees of a supported 0- or
+   90-degree symmetry axis before grasp.
 5. Treat pose loss, timeout, camera failure, stream failure, operator exit, and
    posture/model/yaw mismatch as stop-without-grasp conditions. Timestamp each
    pose before estimation so the stale-frame watchdog includes inference time.
-6. Require multi-frame arrival hysteresis. Then send repeated zero commands,
-   cancel the stream, confirm stream completion, and require fresh/ready 20 Hz
-   mobility state with low wheel velocity continuously for at least 0.35
-   seconds before any arm command.
+6. Require multi-frame arrival hysteresis. Then permanently latch zero, confirm
+   at least three pumped zero sends, and require fresh/ready 20 Hz mobility
+   state with low wheel velocity continuously for at least 0.35 seconds while
+   the stream remains alive. Join the sole sender, cancel the stream, and
+   confirm completion before any arm command.
 7. Refactor `grabbing_box.py` so its motion sequence accepts the already
    connected/prepared robot. The standalone CLI continues to own its own
    connection, while auto-grab reuses one connection through alignment and
@@ -47,8 +57,9 @@ must preserve the estimator's explicit `nominal_unverified` state.
 - The user can measure estimator latency with `python live_view.py` without any
   robot-side effect.
 - Automatic execution is deliberately fail-closed and clearly opt-in.
-- Mobile and grasp commands cannot overlap; failed stream cancellation blocks
-  the grasp.
+- Mobile and grasp commands cannot overlap. RB-Y1 priority arbitration does
+  not provide independent simultaneous mobility/body controllers; failed
+  sender join or stream cancellation blocks the grasp.
 - A base that does not measurably settle within 2 seconds blocks the grasp.
 - The +50 mm correction is auditable but does not constitute base validation.
 - Orientation is observed but not controlled in this phase; an incompatible or
@@ -60,7 +71,8 @@ must preserve the estimator's explicit `nominal_unverified` state.
   calibration serialization.
 - Pure closed-loop tests cover speed/slew bounds, outliers, dropout, pose-loss
   stop, timeout, arrival hysteresis, and exactly-once handoff.
-- Fake-SDK integration tests prove `zero -> cancel -> wait -> grasp` ordering on
-  the same robot object and prove every failure path omits the grasp.
+- Fake-SDK integration tests prove `zero pump -> measured stop -> sender join ->
+  cancel -> wait -> grasp` ordering on the same robot object and prove every
+  failure path omits the grasp.
 - No verification step may connect to or command a physical robot outside an
   explicit on-robot operator run.
