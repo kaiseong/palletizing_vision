@@ -470,7 +470,7 @@ class AutoGrabRuntime:
                 )
             if not bool(move_to_mobile_ready(self._robot)):
                 raise AutoGrabError(
-                    "both arms did not reach the verified mobile-ready pose; "
+                    "mobile-ready Joint Position command did not finish with OK feedback; "
                     "mobility stream was not started"
                 )
             _validate_fixed_camera_posture(

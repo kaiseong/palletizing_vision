@@ -360,7 +360,8 @@ closed on a different reported model/version. Before opening the mobility
 stream it also verifies the calibrated fixed posture within 1 degree: torso
 `[0, 55, -59.988, 6.532, 0, 0]` degrees and head `[0, 49.846]` degrees.
 After robot preparation and before the mobility stream exists, both arms move
-for 5 seconds under Joint Impedance control to the mobile-ready posture below.
+for 5 seconds under an arm-only Joint Position command to the mobile-ready
+posture below.
 Torso and head are omitted from this command, then rechecked, so the fixed
 camera transform is preserved.
 
@@ -369,17 +370,17 @@ right [6.644, -21.489, -17.252, -129.031, -83.302, 53.394, 37.071] deg
 left  [6.644,  21.488,  17.245, -129.036,  83.304, 53.392, -37.070] deg
 ```
 
-The ready command uses `60 Nm/rad` arm stiffness, damping ratio `1.0`, a
-1-second final hold, and a 10-second command timeout. The measured arm joints
-must finish within 2 degrees of every target. Failure or interruption closes
-the connection without creating a mobility stream.
+The ready command uses a 1-second final hold and a 10-second command timeout.
+Completion means that the SDK handler finished and returned `FinishCode.Ok`;
+there is no second joint-state tolerance check. Failure, timeout, or
+interruption closes the connection without creating a mobility stream.
 
 The automatic path uses the corrected box-volume center and performs:
 
 ```text
 connect and validate RB-Y1 M v1.2 + fixed torso/head
   -> prepare power/servos/control manager
-  -> arm-only mobile-ready Joint Impedance move + measured verification
+  -> arm-only mobile-ready Joint Position one-shot + OK feedback
   -> create a zeroed mobility stream
   -> acquire 3 valid poses
   -> require horizontal canonical family (reference=90 deg)
@@ -439,7 +440,7 @@ stream and the separate `grabbing_box.py` body one-shots to execute in
 parallel: keeping both streams alive could cause the body command to be
 refused or silently not execute. The state subscription is stopped before the
 grasp FT monitor starts, and the same robot connection is reused throughout.
-The mobile-ready Joint Impedance command is therefore a completed one-shot
+The mobile-ready Joint Position command is therefore a completed one-shot
 before the stream is created. After the stream is released at arrival, the
 existing `start_pose` command takes ownership of torso, head, and both arms via
 Joint Position control; grab and lift then switch the arms to Cartesian-space

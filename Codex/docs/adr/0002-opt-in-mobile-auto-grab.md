@@ -34,12 +34,12 @@ and true arm/base simultaneity requires one combined whole-body stream.
    that torso/head remain within 1 degree of the fixed calibration posture
    before opening a command stream.
 4. After power/servo/control-manager preparation, move only the two arms to the
-   operator-provided mobile-ready joint targets with a completed Joint
-   Impedance one-shot. Use 5 seconds minimum motion time, `60 Nm/rad`
-   stiffness, damping ratio `1.0`, a finite 1-second hold, and a 10-second
-   timeout. Verify every measured arm joint within 2 degrees and recheck the
-   fixed torso/head pose before creating the mobility stream. Any command or
-   verification failure disconnects without base motion.
+   operator-provided mobile-ready joint targets with a completed Joint Position
+   one-shot. Use 5 seconds minimum motion time, a finite 1-second hold, and a
+   10-second timeout. Treat SDK handler completion with `FinishCode.Ok` as the
+   ready contract; do not add a second measured joint-tolerance gate. Recheck
+   the fixed torso/head pose before creating the mobility stream. Any command
+   or feedback failure disconnects without base motion.
 5. Use bounded simultaneous XY+yaw proportional velocity control through one
    SDK SE(2) command stream. The current shared grasp posture fixes the parcel
    long-axis target to base `90 deg mod 180`, which appears at the live
@@ -73,8 +73,8 @@ and true arm/base simultaneity requires one combined whole-body stream.
 - The user can measure estimator latency with `python live_view.py` without any
   robot-side effect.
 - Automatic execution is deliberately fail-closed and clearly opt-in.
-- No mobility stream exists until the two arms have reached and measurably
-  matched the mobile-ready posture. Torso/head are not part of that arm command.
+- No mobility stream exists until the arm-only mobile-ready command has
+  completed with OK feedback. Torso/head are not part of that arm command.
 - Mobile and grasp commands cannot overlap. RB-Y1 priority arbitration does
   not provide independent simultaneous mobility/body controllers; failed
   sender join or stream cancellation blocks the grasp.
@@ -95,8 +95,7 @@ and true arm/base simultaneity requires one combined whole-body stream.
   cancel -> wait -> grasp` ordering on the same robot object and prove every
   failure path omits the grasp.
 - Builder and fake-SDK tests prove the exact arm targets, arm-only Joint
-  Impedance configuration, and `prepare -> mobile ready -> create stream`
-  ordering; timeout, bad feedback, or measured arm mismatch must create no
-  mobility stream.
+  Position configuration, and `prepare -> mobile ready -> create stream`
+  ordering; timeout or bad feedback must create no mobility stream.
 - No verification step may connect to or command a physical robot outside an
   explicit on-robot operator run.

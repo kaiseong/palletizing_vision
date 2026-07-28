@@ -372,7 +372,7 @@ def test_mobile_ready_failure_disconnects_before_mobility_stream_creation() -> N
         clock=lambda: 0.0,
     )
 
-    with pytest.raises(AutoGrabError, match="mobile-ready pose"):
+    with pytest.raises(AutoGrabError, match="Joint Position"):
         runtime.start()
 
     names = [event[0] for event in events]
