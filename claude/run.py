@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     src.add_argument("--live", action="store_true", help="Use a live RealSense camera.")
 
     p.add_argument("--camera", choices=("d405", "d435"), default="d435")
-    p.add_argument("--box", type=parse_box, default="400x250x150", help="Box LxWxH in mm (default 400x250x150).")
+    p.add_argument("--box", type=parse_box, default="400x253x160", help="Box LxWxH in mm (measured nominal 400x253x160).")
     p.add_argument("--yaw-frame", choices=("base", "t5", "camera"), default="base",
                    help="Frame for pose/yaw: base=robot base, t5=torso top, camera.")
     p.add_argument("--head-pitch", type=float, default=None, help="head_1 pitch [rad] for the ref transform.")

@@ -96,7 +96,7 @@ def parse_args():
     src.add_argument("--live", action="store_true")
     src.add_argument("--recording")
     p.add_argument("--camera", choices=("d405", "d435"), default="d435")
-    p.add_argument("--box", type=parse_box, default="400x250x150")
+    p.add_argument("--box", type=parse_box, default="400x253x160")
     p.add_argument("--yaw-frame", choices=("base", "t5", "camera"), default="base",
                    help="Frame for the x/y/z/yaw HUD (base=robot base, t5=torso top, camera).")
     p.add_argument("--scale", type=float, default=1.0, help="Depth downsample factor for the estimate (0<scale<=1).")

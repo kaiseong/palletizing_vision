@@ -5,7 +5,7 @@ RB-Y1 팔레타이징용. **색에 의존하지 않는 depth 기반**으로 단�
 
 - 카메라: D435(권장, 집기 0.6~0.7m + 놓기 ~1m 커버) 또는 D405. **코드는 카메라 무관**,
   런타임에 intrinsic을 읽음. 바뀌는 건 extrinsic 캘리브레이션뿐.
-- 박스: 기본 400×250×150mm (닫힌 top). CLI `--box`로 변경.
+- 박스: 실측 공칭 **400×253×160mm** (라벨 400×250×150, 8개 평균). CLI `--box`로 변경.
 - 입력: RGB-D (depth는 color에 align, 미터 단위).
 
 ## 왜 이렇게 접근했나
@@ -32,12 +32,12 @@ top면을 얇게 슬라이스하는 문제를 "2단계 top면 재fit"으로 해�
 python run.py --recording recordings/box_sweep --yaw-frame ref \
     --z-min 0.4 --z-max 0.9 --step 3 --save-overlay out/ --summary
 ```
-(기본값: `--camera d435`, `--box 400x250x150` — 새 박스는 생략 가능)
+(기본값: `--camera d435`, `--box 400x253x160`, `--yaw-frame base` — 생략 가능)
 
 라이브(로봇 위, pyrealsense2 필요):
 
 ```bash
-python run.py --live --camera d435 --box 400x250x150 --yaw-frame ref --smooth 5
+python run.py --live --yaw-frame base --smooth 5     # 기본: d435, 400x253x160, base
 ```
 
 주요 옵션: `--z-min/--z-max`(작업거리 근처로 ROI를 좁히면 클러터에 강해짐),
@@ -67,7 +67,7 @@ python run.py --live --camera d435 --box 400x250x150 --yaw-frame ref --smooth 5
 
 `ref_zero`(기본 = 참조 프레임 x축)가 0° 방향. 경계(45°)는 `OrientConfig.boundary_deg`.
 
-## 검증 결과 (D435IF, 새 박스 400×250×150)
+## 검증 결과 (D435IF, 박스 400×253×160 실측)
 
 실제 팔레타이징 셋업(헤드 D435IF, 박스 top ~0.6m·책상 ~0.75m, `z 0.3~1.0`) 녹화로:
 
