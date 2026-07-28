@@ -25,7 +25,7 @@ import numpy as np
 from .calibration import load_calibration, load_json
 from .estimator import ParcelPoseEstimator
 from .evaluation import base_pose_from_estimate
-from .models import BoxModel, EstimatorConfig
+from .models import EstimatorConfig
 from .output import pose_estimate_to_dict, to_jsonable
 from .recording import MANIFEST_NAME, SessionReader
 
@@ -207,9 +207,7 @@ def _environment_fingerprint(environment: Mapping[str, Any]) -> str:
 
 
 def _estimator_config(config_payload: Mapping[str, Any]) -> EstimatorConfig:
-    values = dict(config_payload.get("estimator", {}))
-    values["box_model"] = BoxModel.from_dict(config_payload.get("box_model_m", {}))
-    return EstimatorConfig.from_dict(values)
+    return EstimatorConfig.from_root_config(config_payload)
 
 
 def _frame_signature(

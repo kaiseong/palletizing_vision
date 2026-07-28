@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from parcel_pose.models import BoxModel, CameraIntrinsics
+from parcel_pose.models import BoxDimensionPrior, BoxModel, CameraIntrinsics
 from parcel_pose.recording import SessionReader, SessionWriter, write_session
 from parcel_pose.session import (
     FactoryExtrinsics,
@@ -14,7 +14,7 @@ from parcel_pose.session import (
 )
 
 
-def make_metadata(*, width=4, height=3):
+def make_metadata(*, width=4, height=3, include_dimension_prior=False):
     depth_intrinsics = CameraIntrinsics(
         width=width,
         height=height,
@@ -51,6 +51,28 @@ def make_metadata(*, width=4, height=3):
         rotation=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
         translation_m=(-0.015, 0.0, 0.0),
     )
+    prior = (
+        BoxDimensionPrior(
+            samples_m=(
+                (0.400, 0.253, 0.160),
+                (0.395, 0.252, 0.164),
+                (0.401, 0.256, 0.156),
+            ),
+            source="manual_test_measurements",
+        )
+        if include_dimension_prior
+        else None
+    )
+    box_model = (
+        BoxModel(
+            long_m=prior.representative_m[0],
+            short_m=prior.representative_m[1],
+            height_m=prior.representative_m[2],
+            model_id="test_population_median",
+        )
+        if prior is not None
+        else BoxModel()
+    )
     return SessionMetadata(
         camera_serial="D435-test-001",
         camera_firmware="5.16.test",
@@ -85,7 +107,8 @@ def make_metadata(*, width=4, height=3):
             "plane": {"normal": [0.0, -1.0, 0.0], "d": -0.7, "frame": "depth"},
             "config_schema_version": 1,
         },
-        box_model=BoxModel(),
+        box_model=box_model,
+        box_dimension_prior=prior,
         annotation={
             "session_id": "test-session",
             "yaw_family": "0",
@@ -117,6 +140,25 @@ def test_session_metadata_exact_json_roundtrip():
     original = make_metadata()
     restored = SessionMetadata.from_dict(json.loads(json.dumps(original.to_dict())))
     assert restored.to_dict() == original.to_dict()
+
+
+def test_session_metadata_preserves_dimension_prior_and_representative():
+    original = make_metadata(include_dimension_prior=True)
+
+    payload = json.loads(json.dumps(original.to_dict()))
+    restored = SessionMetadata.from_dict(payload)
+
+    assert restored.box_dimension_prior == original.box_dimension_prior
+    assert restored.box_model == original.box_model
+    assert payload["box_dimension_prior_m"]["sample_count"] == 3
+
+
+def test_session_metadata_wraps_malformed_dimension_summary() -> None:
+    payload = make_metadata(include_dimension_prior=True).to_dict()
+    del payload["box_dimension_prior_m"]["mean"]["height"]
+
+    with pytest.raises(SessionValidationError, match="invalid session metadata"):
+        SessionMetadata.from_dict(payload)
 
 
 def test_raw_arrays_and_metadata_roundtrip(tmp_path):

@@ -125,11 +125,9 @@ def _resolve_session_arg(args: argparse.Namespace) -> Path:
 
 
 def _estimator_config(config: dict[str, Any]):
-    from .models import BoxModel, EstimatorConfig
+    from .models import EstimatorConfig
 
-    values = dict(config.get("estimator", {}))
-    values["box_model"] = BoxModel.from_dict(config.get("box_model_m", {}))
-    return EstimatorConfig.from_dict(values)
+    return EstimatorConfig.from_root_config(config)
 
 
 def _validate_burst_args(burst_size: int, min_valid: int) -> None:
@@ -263,6 +261,8 @@ def _recording_context(
     annotation: dict[str, Any],
     robot_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from .models import BoxDimensionPrior, BoxModel
+
     frames = config["frames"]
     nominal = config["calibration"]["nominal_T_head_from_color"]
     default_robot_state = {
@@ -274,6 +274,12 @@ def _recording_context(
     if robot_state is not None:
         default_robot_state.update(robot_state)
     return {
+        "box_model": BoxModel.from_dict(config.get("box_model_m", {})),
+        "box_dimension_prior": (
+            None
+            if config.get("box_dimension_prior_m") is None
+            else BoxDimensionPrior.from_dict(config["box_dimension_prior_m"])
+        ),
         "robot_state": default_robot_state,
         "nominal_transform": {
             "target_frame": frames["head_candidate"],

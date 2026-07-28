@@ -1,6 +1,9 @@
 # RB-Y1 D435 parcel pose
 
-Perception-only Python package for estimating the center and long-axis yaw of one fixed `400 x 250 x 150 mm` closed parcel from an Intel RealSense D435 mounted on RB-Y1.
+Perception-only Python package for estimating the center and long-axis yaw of
+one folded parcel family from an Intel RealSense D435 mounted on RB-Y1. Eight
+physical samples measured `395-401 x 252-256 x 156-164 mm`; the estimator uses
+their component-wise median `400 x 253 x 160 mm` as its fixed metric prior.
 
 The estimator uses calibrated table/top-plane geometry and a fixed-size metric rectangle. It does not generate base, arm, grasp, power, contact, or end-effector commands.
 
@@ -24,7 +27,7 @@ Calibration states are deliberately separate:
 Without a complete base transform, the package returns depth/table-plane coordinates and does not populate `*_base` fields.
 When base registration is validated, `top_center_base_xyz_m` names the fitted
 top-surface center and `box_center_base_xyz_m` names the physical volume center
-75 mm below it along the table normal; the two z meanings are never conflated.
+80 mm below it along the table normal; the two z meanings are never conflated.
 
 ## Geometry pipeline
 
@@ -33,7 +36,7 @@ raw Z16 + raw-depth intrinsics
         -> top-plane depth slab
         -> pixel ray / top-plane intersection
         -> continuous metric plane points
-        -> fixed 0.400 x 0.250 m rectangle fit
+        -> fixed measured-median 0.400 x 0.253 m rectangle fit
         -> crop/edge/conditioning observability
         -> center + yaw modulo 180 + confidence
 ```
@@ -41,11 +44,20 @@ raw Z16 + raw-depth intrinsics
 The table plane uses `n dot p = d`, with unit `n` oriented toward the camera/box side. The top plane is offset along the physical normal:
 
 ```text
-p_top = p_table + 0.150 * n
-d_top = d_table + 0.150
+p_top = p_table + 0.160 * n
+d_top = d_table + 0.160
 ```
 
 Image borders are censored observations, not box edges. A missing box-axis coordinate or a 90-degree long/short ambiguity is returned as invalid/null with a reason, never as a forced high-confidence point.
+
+The eight raw measurements and their derived mean, sample standard deviation,
+and observed range are preserved in `configs/d435_rby1_nominal.json`. Long and
+short size are not re-estimated per frame: their 6/4 mm population spread is
+smaller than the D435 edge uncertainty and freeing size would make crop-induced
+scale jitter observable as pose motion. Likewise, per-box height adaptation is
+not enabled without an explicit `box on table + arms clear` lifecycle signal,
+because RGB-D top height alone cannot distinguish a taller box from a lifted
+shorter box.
 
 ## Installation
 
@@ -188,7 +200,8 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli evaluate-video \
 
 The displayed `box center base [m]` is the physical box-volume center. The
 fitted rectangle lies on the top plane, so the evaluator moves its center
-downward by half the known height (`75 mm`) along the calibrated table normal.
+downward by half the representative height (`80 mm`) along the calibrated table
+normal.
 The video preserves the recording's total timestamp duration and distinguishes
 validated registration from FK-plus-nominal-mount output. Without independent
 ground truth, its summary reports availability, continuity, and latency—not
@@ -291,7 +304,7 @@ yaw=... deg   latency=... ms
 ```
 
 `x/y/z` are the physical box-volume center in the RB-Y1 base frame; the fitted
-top center is shifted down by 75 mm along the calibrated table normal. `yaw` is
+top center is shifted down by 80 mm along the calibrated table normal. `yaw` is
 the signed long-axis line angle in `[-90, 90)` degrees. `latency` measures only
 `ParcelPoseEstimator.estimate()` on the host, matching the saved evaluation
 video; camera blocking and GUI rendering are excluded. If a frame is

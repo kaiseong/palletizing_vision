@@ -14,7 +14,26 @@
     "depth": "d435_depth_optical_frame",
     "transform_convention": "active_column_vector_target_from_source"
   },
-  "box_model_m": {"long": 0.4, "short": 0.25, "height": 0.15},
+  "box_model_m": {
+    "model_id": "parcel_measured_prior_400x253x160_v1",
+    "long": 0.4,
+    "short": 0.253,
+    "height": 0.16
+  },
+  "box_dimension_prior_m": {
+    "source": "manual_tape_measurements_2026-07-28",
+    "strategy": "componentwise_population_median",
+    "samples": [
+      {"long": 0.4, "short": 0.253, "height": 0.16},
+      {"long": 0.395, "short": 0.252, "height": 0.164},
+      {"long": 0.395, "short": 0.254, "height": 0.164},
+      {"long": 0.4, "short": 0.256, "height": 0.161},
+      {"long": 0.401, "short": 0.252, "height": 0.159},
+      {"long": 0.401, "short": 0.255, "height": 0.156},
+      {"long": 0.399, "short": 0.253, "height": 0.16},
+      {"long": 0.4, "short": 0.253, "height": 0.159}
+    ]
+  },
   "calibration": {
     "state": "nominal",
     "nominal_T_head_from_color": {
@@ -43,6 +62,7 @@
     "min_depth_m": 0.2,
     "max_depth_m": 2.0,
     "top_plane_tolerance_m": 0.02,
+    "rectangle_containment_tolerance_m": 0.01,
     "border_margin_px": 3,
     "edge_band_m": 0.015,
     "min_points": 120,

@@ -97,7 +97,7 @@ def test_full_fixed_rectangle_meets_clean_numeric_targets(yaw_deg: float) -> Non
     assert result.candidate_margin > 0.0
     assert result.yaw_curvature > 0.0
     assert result.diagnostics["long_observed_span_m"] == pytest.approx(0.400, abs=0.025)
-    assert result.diagnostics["short_observed_span_m"] == pytest.approx(0.250, abs=0.025)
+    assert result.diagnostics["short_observed_span_m"] == pytest.approx(0.253, abs=0.025)
 
 
 def test_fixed_fit_tolerates_depth_like_holes_and_metric_outliers() -> None:

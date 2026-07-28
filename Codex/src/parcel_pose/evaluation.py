@@ -24,7 +24,14 @@ from numpy.typing import NDArray
 from .angles import classify_canonical_angle_deg, normalize_signed_line_angle_deg
 from .calibration import factory_extrinsics_to_transform
 from .estimator import EstimationEvidence, ParcelPoseEstimator
-from .models import Calibration, CameraIntrinsics, EstimatorConfig, PoseEstimate
+from .models import (
+    BoxDimensionPrior,
+    BoxModel,
+    Calibration,
+    CameraIntrinsics,
+    EstimatorConfig,
+    PoseEstimate,
+)
 from .output import dumps_strict, to_jsonable
 from .projection import unproject_plane_points
 from .recording import MANIFEST_NAME, SessionReader
@@ -92,8 +99,8 @@ def base_pose_from_estimate(
     """Recover a clearly gated base-frame pose for display and evaluation.
 
     ``estimate.center_depth_m`` is the fitted top-surface center.  The requested
-    physical box center is half the known 150 mm height below it along the
-    calibrated table normal.
+    physical box center is half the active measured-prior height below it along
+    the calibrated table normal.
     """
 
     transform = calibration.T_base_from_depth
@@ -303,6 +310,91 @@ def _longest_run(values: Sequence[bool], target: bool) -> int:
     return longest
 
 
+def _box_dimension_replay_summary(
+    recorded_model: BoxModel,
+    recorded_prior: BoxDimensionPrior | None,
+    estimator_config: EstimatorConfig,
+) -> dict[str, Any]:
+    """Preserve recorded and active dimensions without silently mixing them.
+
+    Offline evaluation intentionally uses the explicitly supplied estimator
+    config.  A recording manifest remains evidence about capture-time intent,
+    not an implicit override of that config.  This diagnostic makes a mismatch
+    auditable and states which dimensions generated the reported pose.
+    """
+
+    active_model = estimator_config.box_model
+    dimension_names = ("long", "short", "height")
+    recorded_values = np.asarray(
+        (recorded_model.long_m, recorded_model.short_m, recorded_model.height_m),
+        dtype=np.float64,
+    )
+    active_values = np.asarray(
+        (active_model.long_m, active_model.short_m, active_model.height_m),
+        dtype=np.float64,
+    )
+    dimension_values_match = bool(
+        np.allclose(recorded_values, active_values, rtol=0.0, atol=1e-12)
+    )
+    model_id_matches = recorded_model.model_id == active_model.model_id
+
+    recorded_prior_payload = (
+        None if recorded_prior is None else recorded_prior.to_dict()
+    )
+    active_prior = estimator_config.box_dimension_prior
+    active_prior_payload = None if active_prior is None else active_prior.to_dict()
+    prior_matches = recorded_prior_payload == active_prior_payload
+
+    mismatch_reasons: list[str] = []
+    if not dimension_values_match:
+        mismatch_reasons.append(
+            "recorded_box_dimensions_differ_from_active_estimator"
+        )
+    if not model_id_matches:
+        mismatch_reasons.append("recorded_box_model_id_differs_from_active_estimator")
+    if not prior_matches:
+        mismatch_reasons.append(
+            "recorded_dimension_prior_differs_from_active_estimator"
+        )
+    override_applied = bool(mismatch_reasons)
+
+    return {
+        "status": "active_config_override" if override_applied else "matched",
+        "override_applied": override_applied,
+        "pose_geometry_source": "active_estimator_config",
+        "recorded_box_dimensions_used_for_pose_geometry": False,
+        "mismatch_reasons": mismatch_reasons,
+        "recorded": {
+            "box_model_m": recorded_model.to_dict(),
+            "box_dimension_prior_m": recorded_prior_payload,
+        },
+        "active_estimator": {
+            "box_model_m": active_model.to_dict(),
+            "box_dimension_prior_m": active_prior_payload,
+        },
+        "comparison": {
+            "dimension_values_match": dimension_values_match,
+            "model_id_matches": model_id_matches,
+            "dimension_prior_matches": prior_matches,
+            "active_minus_recorded_m": dict(
+                zip(
+                    dimension_names,
+                    (float(value) for value in active_values - recorded_values),
+                    strict=True,
+                )
+            ),
+        },
+        "safety": {
+            "outputs_use_active_estimator_dimensions": True,
+            "recorded_dimensions_preserved_for_audit": True,
+            "interpretation": (
+                "reported pose uses the active estimator model; recorded "
+                "dimensions are audit metadata only"
+            ),
+        },
+    }
+
+
 def _manifest_timestamps(session_root: Path) -> list[float]:
     try:
         payload = json.loads((session_root / MANIFEST_NAME).read_text(encoding="utf-8"))
@@ -380,6 +472,11 @@ def evaluate_session_video(
     estimator = ParcelPoseEstimator(
         reader.metadata.depth_profile.intrinsics,
         calibration,
+        estimator_config,
+    )
+    box_dimension_replay = _box_dimension_replay_summary(
+        reader.metadata.box_model,
+        reader.metadata.box_dimension_prior,
         estimator_config,
     )
 
@@ -563,6 +660,7 @@ def evaluate_session_video(
                 math.acos(float(np.clip(table_normal_base[2], -1.0, 1.0)))
             ),
         },
+        "box_dimension_replay": box_dimension_replay,
         "tracked_box_center_range": center_range,
         "tracked_yaw_range": yaw_range,
         "accuracy_evaluation": {

@@ -8,12 +8,15 @@ import pytest
 
 from parcel_pose.evaluation import (
     _allocate_temporary_video,
+    _box_dimension_replay_summary,
     _timing_summary,
     base_pose_from_estimate,
     draw_evaluation_overlay,
     evaluate_session_video,
 )
 from parcel_pose.models import (
+    BoxDimensionPrior,
+    BoxModel,
     Calibration,
     CalibrationState,
     CameraIntrinsics,
@@ -53,7 +56,7 @@ def test_base_pose_reports_volume_center_and_nominal_registration() -> None:
 
     assert pose is not None
     np.testing.assert_allclose(pose.top_center_xyz_m, [0.70, -0.05, 0.90])
-    np.testing.assert_allclose(pose.box_center_xyz_m, [0.70, -0.05, 0.825])
+    np.testing.assert_allclose(pose.box_center_xyz_m, [0.70, -0.05, 0.820])
     assert pose.yaw_mod_180_deg == pytest.approx(170.0)
     assert pose.yaw_signed_deg == pytest.approx(-10.0)
     assert pose.canonical_reference_deg == 0
@@ -76,6 +79,68 @@ def test_recorded_timing_preserves_total_duration_not_only_median_interval() -> 
     assert timing["recorded_duration_sec"] == pytest.approx(0.4)
     assert timing["effective_stored_fps"] == pytest.approx(7.5)
     assert timing["median_arrival_fps"] == pytest.approx(10.0)
+
+
+def test_dimension_replay_summary_preserves_mismatch_and_active_override() -> None:
+    recorded_model = BoxModel(
+        long_m=0.400,
+        short_m=0.250,
+        height_m=0.150,
+        model_id="legacy_recorded_400x250x150",
+    )
+    active_prior = BoxDimensionPrior(
+        samples_m=(
+            (0.399, 0.252, 0.159),
+            (0.400, 0.253, 0.160),
+            (0.401, 0.254, 0.161),
+        ),
+        source="manual_test_measurements",
+    )
+    config = EstimatorConfig(box_dimension_prior=active_prior)
+
+    result = _box_dimension_replay_summary(recorded_model, None, config)
+
+    assert result["status"] == "active_config_override"
+    assert result["override_applied"] is True
+    assert result["pose_geometry_source"] == "active_estimator_config"
+    assert result["recorded_box_dimensions_used_for_pose_geometry"] is False
+    assert result["recorded"]["box_model_m"] == recorded_model.to_dict()
+    assert result["recorded"]["box_dimension_prior_m"] is None
+    assert result["active_estimator"]["box_model_m"] == BoxModel().to_dict()
+    assert (
+        result["active_estimator"]["box_dimension_prior_m"]
+        == active_prior.to_dict()
+    )
+    assert result["comparison"]["dimension_values_match"] is False
+    assert result["comparison"]["model_id_matches"] is False
+    assert result["comparison"]["dimension_prior_matches"] is False
+    assert result["comparison"]["active_minus_recorded_m"] == pytest.approx(
+        {"long": 0.0, "short": 0.003, "height": 0.010}
+    )
+    assert result["mismatch_reasons"] == [
+        "recorded_box_dimensions_differ_from_active_estimator",
+        "recorded_box_model_id_differs_from_active_estimator",
+        "recorded_dimension_prior_differs_from_active_estimator",
+    ]
+    assert result["safety"]["outputs_use_active_estimator_dimensions"] is True
+    assert result["safety"]["recorded_dimensions_preserved_for_audit"] is True
+
+
+def test_dimension_replay_summary_is_backward_compatible_without_priors() -> None:
+    result = _box_dimension_replay_summary(
+        BoxModel(),
+        None,
+        EstimatorConfig(),
+    )
+
+    assert result["status"] == "matched"
+    assert result["override_applied"] is False
+    assert result["mismatch_reasons"] == []
+    assert result["comparison"]["dimension_values_match"] is True
+    assert result["comparison"]["model_id_matches"] is True
+    assert result["comparison"]["dimension_prior_matches"] is True
+    assert result["recorded"]["box_dimension_prior_m"] is None
+    assert result["active_estimator"]["box_dimension_prior_m"] is None
 
 
 def test_evaluation_rejects_colliding_output_paths_before_session_read(

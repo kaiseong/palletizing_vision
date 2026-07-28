@@ -1,8 +1,8 @@
 """Deterministic metric scenes shared by the geometry acceptance tests.
 
 The renderer deliberately works in the raw depth optical frame.  A pixel ray is
-intersected with either the calibrated table plane or its 150 mm normal offset;
-there is no image-space scale approximation in the generated truth.
+intersected with either the calibrated table plane or a configurable parcel-top
+normal offset; there is no image-space scale approximation in the truth.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from numpy.typing import NDArray
 
 
 BOX_LONG_M = 0.400
-BOX_SHORT_M = 0.250
-BOX_HEIGHT_M = 0.150
+BOX_SHORT_M = 0.253
+BOX_HEIGHT_M = 0.160
 DEPTH_SCALE_M = 0.001
 
 
@@ -48,6 +48,9 @@ class SyntheticScene:
     center_depth_m: FloatArray
     center_plane_xy_m: FloatArray
     yaw_rad: float
+    box_long_m: float
+    box_short_m: float
+    box_height_m: float
     visible_top_points_depth_m: FloatArray
     visible_top_points_plane_xy_m: FloatArray
     visible_top_pixels_uv: FloatArray
@@ -91,9 +94,11 @@ def rectangle_support_points(
     outlier_count: int = 0,
     visible_sides: tuple[str, ...] = ("long_low", "long_high", "short_low", "short_high"),
     crop_bounds_xy_m: tuple[float, float, float, float] | None = None,
+    long_m: float = BOX_LONG_M,
+    short_m: float = BOX_SHORT_M,
     seed: int = 7,
 ) -> FloatArray:
-    """Sample a fixed 400 x 250 mm rectangle in continuous plane coordinates.
+    """Sample a metric rectangle in continuous plane coordinates.
 
     Side names describe the fixed-size box coordinates: ``long_low/high`` are
     the two short physical edges at +/- long/2; ``short_low/high`` are the two
@@ -101,25 +106,29 @@ def rectangle_support_points(
     """
 
     rng = np.random.default_rng(seed)
+    long_m = float(long_m)
+    short_m = float(short_m)
+    if not long_m > short_m > 0.0:
+        raise ValueError("rectangle dimensions must satisfy long_m > short_m > 0")
     along_long = np.array([math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))])
     along_short = np.array([-along_long[1], along_long[0]])
     center = np.asarray(center_xy_m, dtype=np.float64)
     edge_parts: list[FloatArray] = []
-    long_t = np.linspace(-BOX_LONG_M / 2.0, BOX_LONG_M / 2.0, points_per_edge)
-    short_t = np.linspace(-BOX_SHORT_M / 2.0, BOX_SHORT_M / 2.0, points_per_edge)
+    long_t = np.linspace(-long_m / 2.0, long_m / 2.0, points_per_edge)
+    short_t = np.linspace(-short_m / 2.0, short_m / 2.0, points_per_edge)
 
     if "long_low" in visible_sides:
-        edge_parts.append(center - BOX_LONG_M / 2.0 * along_long + short_t[:, None] * along_short)
+        edge_parts.append(center - long_m / 2.0 * along_long + short_t[:, None] * along_short)
     if "long_high" in visible_sides:
-        edge_parts.append(center + BOX_LONG_M / 2.0 * along_long + short_t[:, None] * along_short)
+        edge_parts.append(center + long_m / 2.0 * along_long + short_t[:, None] * along_short)
     if "short_low" in visible_sides:
-        edge_parts.append(center - BOX_SHORT_M / 2.0 * along_short + long_t[:, None] * along_long)
+        edge_parts.append(center - short_m / 2.0 * along_short + long_t[:, None] * along_long)
     if "short_high" in visible_sides:
-        edge_parts.append(center + BOX_SHORT_M / 2.0 * along_short + long_t[:, None] * along_long)
+        edge_parts.append(center + short_m / 2.0 * along_short + long_t[:, None] * along_long)
 
     if interior_points:
-        a = rng.uniform(-BOX_LONG_M / 2.0, BOX_LONG_M / 2.0, interior_points)
-        b = rng.uniform(-BOX_SHORT_M / 2.0, BOX_SHORT_M / 2.0, interior_points)
+        a = rng.uniform(-long_m / 2.0, long_m / 2.0, interior_points)
+        b = rng.uniform(-short_m / 2.0, short_m / 2.0, interior_points)
         edge_parts.append(center + a[:, None] * along_long + b[:, None] * along_short)
 
     points = np.concatenate(edge_parts, axis=0) if edge_parts else np.empty((0, 2), dtype=np.float64)
@@ -184,6 +193,9 @@ def tilted_scene(
     normal: tuple[float, float, float] = (0.08, -0.16, -0.984),
     table_point_depth_m: tuple[float, float, float] = (0.0, 0.0, 0.90),
     intrinsics: SyntheticIntrinsics = SyntheticIntrinsics(),
+    box_long_m: float = BOX_LONG_M,
+    box_short_m: float = BOX_SHORT_M,
+    box_height_m: float = BOX_HEIGHT_M,
     depth_noise_std_m: float = 0.0008,
     hole_rate: float = 0.0,
     outlier_rate: float = 0.0,
@@ -193,16 +205,23 @@ def tilted_scene(
     """Render a closed parcel top above a tilted table into a raw Z depth map."""
 
     rng = np.random.default_rng(seed)
+    box_long_m = float(box_long_m)
+    box_short_m = float(box_short_m)
+    box_height_m = float(box_height_m)
+    if not box_long_m > box_short_m > 0.0 or box_height_m <= 0.0:
+        raise ValueError(
+            "box dimensions must satisfy long_m > short_m > 0 and height_m > 0"
+        )
     n = unit(np.asarray(normal, dtype=np.float64))
     table_point = np.asarray(table_point_depth_m, dtype=np.float64)
     # The normal must face the camera at the optical origin.
     if float(n @ -table_point) <= 0.0:
         n = -n
     table_d = float(n @ table_point)
-    top_d = table_d + BOX_HEIGHT_M
+    top_d = table_d + box_height_m
     u_axis, v_axis = plane_basis(n)
     center_plane = np.asarray(center_plane_xy_m, dtype=np.float64)
-    top_reference = table_point + BOX_HEIGHT_M * n
+    top_reference = table_point + box_height_m * n
     center_depth = top_reference + center_plane[0] * u_axis + center_plane[1] * v_axis
 
     v_px, u_px = np.indices((intrinsics.height, intrinsics.width), dtype=np.float64)
@@ -228,8 +247,8 @@ def tilted_scene(
     short_coordinate = relative @ short_axis
     top_mask = (
         (top_t > 0.0)
-        & (np.abs(long_coordinate) <= BOX_LONG_M / 2.0)
-        & (np.abs(short_coordinate) <= BOX_SHORT_M / 2.0)
+        & (np.abs(long_coordinate) <= box_long_m / 2.0)
+        & (np.abs(short_coordinate) <= box_short_m / 2.0)
     )
     if image_clip is not None:
         x0, y0, x1, y1 = image_clip
@@ -273,6 +292,9 @@ def tilted_scene(
         center_depth_m=center_depth,
         center_plane_xy_m=center_plane,
         yaw_rad=theta,
+        box_long_m=box_long_m,
+        box_short_m=box_short_m,
+        box_height_m=box_height_m,
         visible_top_points_depth_m=visible_points,
         visible_top_points_plane_xy_m=visible_plane,
         visible_top_pixels_uv=visible_pixels_uv,

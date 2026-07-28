@@ -162,9 +162,9 @@ class Plane:
 @dataclass(frozen=True, slots=True)
 class BoxModel:
     long_m: float = 0.400
-    short_m: float = 0.250
-    height_m: float = 0.150
-    model_id: str = "parcel_400x250x150"
+    short_m: float = 0.253
+    height_m: float = 0.160
+    model_id: str = "parcel_measured_prior_400x253x160_v1"
 
     def __post_init__(self) -> None:
         for name in ("long_m", "short_m", "height_m"):
@@ -186,14 +186,200 @@ class BoxModel:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "BoxModel":
         try:
+            dimension_keys = {
+                "long_m",
+                "long",
+                "short_m",
+                "short",
+                "height_m",
+                "height",
+            }
+            dimensions_explicit = any(key in value for key in dimension_keys)
+            long_m = float(value.get("long_m", value.get("long", 0.400)))
+            short_m = float(value.get("short_m", value.get("short", 0.253)))
+            height_m = float(value.get("height_m", value.get("height", 0.160)))
+            if "model_id" in value:
+                model_id = str(value["model_id"])
+            elif not dimensions_explicit:
+                model_id = "parcel_measured_prior_400x253x160_v1"
+            else:
+                dimensions_mm = (1000.0 * long_m, 1000.0 * short_m, 1000.0 * height_m)
+                dimension_token = "x".join(f"{dimension:g}" for dimension in dimensions_mm)
+                model_id = f"parcel_configured_{dimension_token}"
             return cls(
-                long_m=float(value.get("long_m", value.get("long", 0.400))),
-                short_m=float(value.get("short_m", value.get("short", 0.250))),
-                height_m=float(value.get("height_m", value.get("height", 0.150))),
-                model_id=str(value.get("model_id", "parcel_400x250x150")),
+                long_m=long_m,
+                short_m=short_m,
+                height_m=height_m,
+                model_id=model_id,
             )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid box model: {exc}") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class BoxDimensionPrior:
+    """Measured population evidence for one folded parcel family.
+
+    Samples are stored instead of only derived summary values so the physical
+    evidence remains auditable.  The estimator uses the component-wise median
+    as its fixed metric model; it does not freely resize a cropped rectangle
+    from frame to frame.
+    """
+
+    samples_m: tuple[tuple[float, float, float], ...]
+    source: str
+    strategy: str = "componentwise_population_median"
+
+    def __post_init__(self) -> None:
+        normalized: list[tuple[float, float, float]] = []
+        for index, sample in enumerate(self.samples_m):
+            values = _tuple_of_floats(sample, 3, f"samples_m[{index}]")
+            long_m, short_m, height_m = values
+            if not long_m > short_m > 0.0 or height_m <= 0.0:
+                raise ValueError(
+                    "each dimension sample must satisfy long_m > short_m > 0 "
+                    "and height_m > 0"
+                )
+            # Values above two metres almost always mean millimetres were
+            # accidentally supplied to a metre-valued API.
+            if max(values) > 2.0:
+                raise ValueError("dimension samples must be expressed in metres")
+            normalized.append(values)
+        if not normalized:
+            raise ValueError("box dimension prior requires at least one sample")
+        source = str(self.source).strip()
+        strategy = str(self.strategy).strip()
+        if not source:
+            raise ValueError("box dimension prior source cannot be empty")
+        if strategy != "componentwise_population_median":
+            raise ValueError(
+                "box dimension prior strategy must be "
+                "'componentwise_population_median'"
+            )
+        object.__setattr__(self, "samples_m", tuple(normalized))
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "strategy", strategy)
+
+    @property
+    def sample_count(self) -> int:
+        return len(self.samples_m)
+
+    def _array(self) -> NDArray[np.float64]:
+        return np.asarray(self.samples_m, dtype=np.float64)
+
+    @property
+    def representative_m(self) -> tuple[float, float, float]:
+        return tuple(float(value) for value in np.median(self._array(), axis=0))
+
+    @property
+    def mean_m(self) -> tuple[float, float, float]:
+        return tuple(float(value) for value in np.mean(self._array(), axis=0))
+
+    @property
+    def sample_std_m(self) -> tuple[float, float, float]:
+        if self.sample_count == 1:
+            return (0.0, 0.0, 0.0)
+        return tuple(float(value) for value in np.std(self._array(), axis=0, ddof=1))
+
+    @property
+    def observed_min_m(self) -> tuple[float, float, float]:
+        return tuple(float(value) for value in np.min(self._array(), axis=0))
+
+    @property
+    def observed_max_m(self) -> tuple[float, float, float]:
+        return tuple(float(value) for value in np.max(self._array(), axis=0))
+
+    @staticmethod
+    def _named(values: Sequence[float]) -> dict[str, float]:
+        return dict(zip(("long", "short", "height"), (float(v) for v in values), strict=True))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "strategy": self.strategy,
+            "sample_count": self.sample_count,
+            "representative": self._named(self.representative_m),
+            "mean": self._named(self.mean_m),
+            "sample_std": self._named(self.sample_std_m),
+            "observed_min": self._named(self.observed_min_m),
+            "observed_max": self._named(self.observed_max_m),
+            "samples": [self._named(sample) for sample in self.samples_m],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "BoxDimensionPrior":
+        def sample_tuple(sample: Any, index: int) -> tuple[float, float, float]:
+            if isinstance(sample, Mapping):
+                try:
+                    return (
+                        float(sample["long"]),
+                        float(sample["short"]),
+                        float(sample["height"]),
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError(f"invalid dimension sample {index}: {exc}") from exc
+            try:
+                return tuple(float(item) for item in sample)  # type: ignore[arg-type, return-value]
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid dimension sample {index}: {exc}") from exc
+
+        try:
+            raw_samples = value["samples"]
+            if not isinstance(raw_samples, Sequence) or isinstance(raw_samples, (str, bytes)):
+                raise ValueError("samples must be an array")
+            prior = cls(
+                samples_m=tuple(
+                    sample_tuple(sample, index)
+                    for index, sample in enumerate(raw_samples)
+                ),
+                source=str(value["source"]),
+                strategy=str(
+                    value.get("strategy", "componentwise_population_median")
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, ValueError) and str(exc).startswith("invalid dimension sample"):
+                raise
+            raise ValueError(f"invalid box dimension prior: {exc}") from exc
+
+        # Derived fields are optional on input.  When present (for example in
+        # a recording manifest), verify them so stale summaries cannot silently
+        # disagree with the preserved raw measurements.
+        expected = prior.to_dict()
+        for name in (
+            "sample_count",
+            "representative",
+            "mean",
+            "sample_std",
+            "observed_min",
+            "observed_max",
+        ):
+            if name not in value:
+                continue
+            if name == "sample_count":
+                if int(value[name]) != expected[name]:
+                    raise ValueError("box dimension prior sample_count disagrees with samples")
+                continue
+            actual_mapping = value[name]
+            if not isinstance(actual_mapping, Mapping):
+                raise ValueError(f"box dimension prior {name} must be an object")
+            try:
+                actual = np.asarray(
+                    [actual_mapping[key] for key in ("long", "short", "height")],
+                    dtype=np.float64,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"box dimension prior {name} must contain numeric "
+                    "long, short, and height fields"
+                ) from exc
+            reference = np.asarray(
+                [expected[name][key] for key in ("long", "short", "height")],
+                dtype=np.float64,
+            )
+            if not np.allclose(actual, reference, rtol=0.0, atol=1e-12):
+                raise ValueError(f"box dimension prior {name} disagrees with samples")
+        return prior
 
 
 class CalibrationState(str, Enum):
@@ -306,9 +492,11 @@ class Calibration:
 @dataclass(frozen=True, slots=True)
 class EstimatorConfig:
     box_model: BoxModel = field(default_factory=BoxModel)
+    box_dimension_prior: BoxDimensionPrior | None = None
     min_depth_m: float = 0.20
     max_depth_m: float = 2.00
     top_plane_tolerance_m: float = 0.020
+    rectangle_containment_tolerance_m: float = 0.010
     border_margin_px: int = 3
     edge_band_m: float = 0.015
     min_points: int = 120
@@ -327,6 +515,7 @@ class EstimatorConfig:
             "min_depth_m",
             "max_depth_m",
             "top_plane_tolerance_m",
+            "rectangle_containment_tolerance_m",
             "edge_band_m",
             "coarse_angle_step_deg",
             "fine_angle_step_deg",
@@ -338,8 +527,15 @@ class EstimatorConfig:
             object.__setattr__(self, name, _finite_float(getattr(self, name), name))
         if not 0.0 < self.min_depth_m < self.max_depth_m:
             raise ValueError("depth range must satisfy 0 < min_depth_m < max_depth_m")
-        if self.top_plane_tolerance_m <= 0.0 or self.edge_band_m <= 0.0:
-            raise ValueError("plane tolerance and edge band must be positive")
+        if (
+            self.top_plane_tolerance_m <= 0.0
+            or self.rectangle_containment_tolerance_m <= 0.0
+            or self.edge_band_m <= 0.0
+        ):
+            raise ValueError(
+                "plane tolerance, rectangle containment tolerance, and edge band "
+                "must be positive"
+            )
         if self.min_points < 1 or self.max_points < self.min_points:
             raise ValueError("point limits must satisfy 1 <= min_points <= max_points")
         if self.border_margin_px < 0:
@@ -353,15 +549,71 @@ class EstimatorConfig:
             if workspace[0] >= workspace[1] or workspace[2] >= workspace[3]:
                 raise ValueError("workspace must be (xmin, xmax, ymin, ymax)")
             object.__setattr__(self, "workspace_xy_m", workspace)
+        if self.box_dimension_prior is not None:
+            if not isinstance(self.box_dimension_prior, BoxDimensionPrior):
+                raise ValueError("box_dimension_prior must be a BoxDimensionPrior")
+            representative = np.asarray(
+                self.box_dimension_prior.representative_m,
+                dtype=np.float64,
+            )
+            configured = np.asarray(
+                (
+                    self.box_model.long_m,
+                    self.box_model.short_m,
+                    self.box_model.height_m,
+                ),
+                dtype=np.float64,
+            )
+            if not np.allclose(configured, representative, rtol=0.0, atol=1e-9):
+                raise ValueError(
+                    "box_model must equal the component-wise median of "
+                    "box_dimension_prior samples"
+                )
+            maximum_height_delta = float(
+                np.max(
+                    np.abs(
+                        np.asarray(
+                            (
+                                self.box_dimension_prior.observed_min_m[2],
+                                self.box_dimension_prior.observed_max_m[2],
+                            )
+                        )
+                        - self.box_model.height_m
+                    )
+                )
+            )
+            if self.top_plane_tolerance_m < maximum_height_delta:
+                raise ValueError(
+                    "top_plane_tolerance_m does not cover the measured height range"
+                )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "EstimatorConfig":
         fields = dict(value)
         if "box_model" in fields and not isinstance(fields["box_model"], BoxModel):
             fields["box_model"] = BoxModel.from_dict(fields["box_model"])
+        if "box_dimension_prior" in fields and not isinstance(
+            fields["box_dimension_prior"], BoxDimensionPrior
+        ):
+            fields["box_dimension_prior"] = BoxDimensionPrior.from_dict(
+                fields["box_dimension_prior"]
+            )
         if "workspace_xy_m" in fields and fields["workspace_xy_m"] is not None:
             fields["workspace_xy_m"] = tuple(fields["workspace_xy_m"])
         return cls(**fields)
+
+    @classmethod
+    def from_root_config(cls, value: Mapping[str, Any]) -> "EstimatorConfig":
+        """Build one estimator config from the repository-level JSON schema."""
+
+        fields = dict(value.get("estimator", {}))
+        fields["box_model"] = BoxModel.from_dict(value.get("box_model_m", {}))
+        prior = value.get("box_dimension_prior_m")
+        if prior is not None:
+            if not isinstance(prior, Mapping):
+                raise ValueError("box_dimension_prior_m must be an object")
+            fields["box_dimension_prior"] = BoxDimensionPrior.from_dict(prior)
+        return cls.from_dict(fields)
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,6 +703,7 @@ class PoseEstimate:
 
 
 __all__ = [
+    "BoxDimensionPrior",
     "BoxModel",
     "Calibration",
     "CalibrationState",

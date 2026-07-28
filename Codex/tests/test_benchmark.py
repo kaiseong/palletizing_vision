@@ -22,7 +22,12 @@ def _public_pose(index: int) -> dict[str, object]:
         "timestamp_ms": 1000.0 + index,
         "frame_id": 100 + index,
         "frame": "table_plane",
-        "box_model_m": {"long": 0.4, "short": 0.25, "height": 0.15},
+        "box_model_m": {
+            "model_id": "parcel_measured_prior_400x253x160_v1",
+            "long": 0.4,
+            "short": 0.253,
+            "height": 0.16,
+        },
         "center_plane_xy_m": [0.1, -0.1],
         "center_depth_m": [0.7, 0.0, 0.905],
         "yaw_rad": math.radians(89.98),

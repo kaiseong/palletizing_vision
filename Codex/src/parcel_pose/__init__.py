@@ -14,6 +14,7 @@ from .angles import (
     normalize_signed_line_angle_rad,
 )
 from .models import (
+    BoxDimensionPrior,
     BoxModel,
     Calibration,
     CalibrationState,
@@ -25,6 +26,7 @@ from .models import (
 )
 
 __all__ = [
+    "BoxDimensionPrior",
     "BoxModel",
     "Calibration",
     "CalibrationState",

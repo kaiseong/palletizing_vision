@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .models import CameraIntrinsics
+from .models import BoxDimensionPrior, BoxModel, CameraIntrinsics
 from .session import (
     FactoryExtrinsics,
     RecordedFrame,
@@ -261,6 +261,8 @@ class RealSenseAdapter:
     def session_metadata(
         self,
         *,
+        box_model: BoxModel | None = None,
+        box_dimension_prior: BoxDimensionPrior | None = None,
         robot_state: Mapping[str, Any],
         nominal_transform: Mapping[str, Any],
         table: Mapping[str, Any],
@@ -273,6 +275,8 @@ class RealSenseAdapter:
             robot_state=dict(robot_state),
             nominal_transform=dict(nominal_transform),
             table=dict(table),
+            box_model=BoxModel() if box_model is None else box_model,
+            box_dimension_prior=box_dimension_prior,
             annotation={} if annotation is None else dict(annotation),
         )
 

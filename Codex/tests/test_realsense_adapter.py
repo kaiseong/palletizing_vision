@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from parcel_pose.models import BoxModel
 from parcel_pose.realsense_adapter import (
     D435StreamConfig,
     RealSenseAdapter,
@@ -223,6 +224,12 @@ def test_fake_sdk_requests_d435_profiles_and_preserves_raw_frames():
         assert frame.raw_color_bgr[0, 0, 0] == 9
         assert frame.color_on_depth_bgr[0, 0, 0] == 17
         metadata = adapter.session_metadata(
+            box_model=BoxModel(
+                long_m=0.410,
+                short_m=0.260,
+                height_m=0.170,
+                model_id="custom_recording_model",
+            ),
             robot_state={
                 "head_joints": None,
                 "torso_joints": None,
@@ -247,5 +254,7 @@ def test_fake_sdk_requests_d435_profiles_and_preserves_raw_frames():
         assert metadata.capture_options["exposure"] == pytest.approx(1.0)
         assert metadata.capture_options["color_exposure"] == pytest.approx(2.0)
         assert metadata.capture_options["color_gain"] == pytest.approx(2.0)
+        assert metadata.box_model.model_id == "custom_recording_model"
+        assert metadata.box_model.height_m == pytest.approx(0.170)
     finally:
         adapter.stop()

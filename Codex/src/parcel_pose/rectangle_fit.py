@@ -1,4 +1,4 @@
-"""Deterministic robust fitting of a fixed 400 x 250 mm rectangle.
+"""Deterministic robust fitting of a fixed metric parcel rectangle.
 
 The fit never optimizes physical scale.  It searches only center and line yaw
 in continuous metric plane coordinates.  Image-border evidence, when

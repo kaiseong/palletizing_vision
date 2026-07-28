@@ -8,7 +8,7 @@ from typing import Any, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from .models import BoxModel, CameraIntrinsics
+from .models import BoxDimensionPrior, BoxModel, CameraIntrinsics
 
 
 SCHEMA_VERSION = 1
@@ -124,6 +124,7 @@ class SessionMetadata:
     nominal_transform: Mapping[str, Any]
     table: Mapping[str, Any]
     box_model: BoxModel = field(default_factory=BoxModel)
+    box_dimension_prior: BoxDimensionPrior | None = None
     annotation: Mapping[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 
@@ -166,9 +167,26 @@ class SessionMetadata:
             _required(self.nominal_transform, key, "nominal_transform")
         for key in ("plane", "config_schema_version"):
             _required(self.table, key, "table")
+        if not isinstance(self.box_model, BoxModel):
+            raise SessionValidationError("box_model must be a BoxModel")
+        if self.box_dimension_prior is not None:
+            if not isinstance(self.box_dimension_prior, BoxDimensionPrior):
+                raise SessionValidationError(
+                    "box_dimension_prior must be a BoxDimensionPrior"
+                )
+            representative = self.box_dimension_prior.representative_m
+            configured = (
+                self.box_model.long_m,
+                self.box_model.short_m,
+                self.box_model.height_m,
+            )
+            if not np.allclose(configured, representative, rtol=0.0, atol=1e-9):
+                raise SessionValidationError(
+                    "box_model must match the dimension-prior representative"
+                )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "camera": {
                 "serial": self.camera_serial,
@@ -191,6 +209,9 @@ class SessionMetadata:
             "box_model_m": self.box_model.to_dict(),
             "annotation": dict(self.annotation),
         }
+        if self.box_dimension_prior is not None:
+            result["box_dimension_prior_m"] = self.box_dimension_prior.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "SessionMetadata":
@@ -223,6 +244,11 @@ class SessionMetadata:
                 ),
                 table=dict(_required(value, "table", "session metadata")),
                 box_model=BoxModel.from_dict(_required(value, "box_model_m", "session metadata")),
+                box_dimension_prior=(
+                    None
+                    if value.get("box_dimension_prior_m") is None
+                    else BoxDimensionPrior.from_dict(value["box_dimension_prior_m"])
+                ),
                 annotation=dict(_required(value, "annotation", "session metadata")),
             )
         except (TypeError, ValueError) as exc:

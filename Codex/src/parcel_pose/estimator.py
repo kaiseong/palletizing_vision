@@ -49,7 +49,7 @@ def _rectangle_config(config: EstimatorConfig) -> RectangleFitConfig:
         coarse_angle_step_deg=float(config.coarse_angle_step_deg),
         fine_angle_step_deg=float(config.fine_angle_step_deg),
         fine_half_width_deg=max(2.0, float(config.coarse_angle_step_deg) * 1.1),
-        containment_tolerance_m=max(0.006, 0.5 * float(config.top_plane_tolerance_m)),
+        containment_tolerance_m=float(config.rectangle_containment_tolerance_m),
         edge_band_m=float(config.edge_band_m),
         robust_quantile=tail,
         border_margin_px=int(config.border_margin_px),
@@ -154,6 +154,9 @@ def _failure(
         if calibration.has_base_transform_chain
         else "unavailable"
     )
+    merged_diagnostics = _dimension_diagnostics(config)
+    if diagnostics is not None:
+        merged_diagnostics.update(diagnostics)
     return PoseEstimate(
         timestamp_ms=timestamp_ms,
         frame_id=frame_id,
@@ -166,12 +169,38 @@ def _failure(
             "reference": "unavailable",
         },
         per_field_confidence={"center_long": 0.0, "center_short": 0.0, "yaw": 0.0},
-        diagnostics={} if diagnostics is None else diagnostics,
+        diagnostics=merged_diagnostics,
         reasons=(reason,),
         calibration_state=calibration.state,
         base_registration=base_registration,
         base_registration_valid=calibration.absolute_base_validated,
     )
+
+
+def _dimension_diagnostics(config: EstimatorConfig) -> dict[str, Any]:
+    """Expose the physical source behind the active fixed-size model."""
+
+    model = config.box_model
+    prior = config.box_dimension_prior
+    result: dict[str, Any] = {
+        "box_dimensions": {
+            "model": model.to_dict(),
+            "inference": (
+                "fixed_population_representative"
+                if prior is not None
+                else "fixed_configured_model"
+            ),
+        }
+    }
+    if prior is not None:
+        prior_summary = prior.to_dict()
+        prior_summary.pop("samples")
+        result["box_dimensions"]["prior"] = prior_summary
+        result["box_dimensions"]["per_frame_size_adaptation"] = False
+        result["box_dimensions"]["height_adaptation_requires"] = (
+            "explicit_on_table_arms_clear_lifecycle"
+        )
+    return result
 
 
 class ParcelPoseEstimator:
@@ -399,6 +428,7 @@ class ParcelPoseEstimator:
         )
         feasible_set = rectangle.feasible_set
         diagnostics: dict[str, Any] = {
+            **_dimension_diagnostics(self.config),
             "projection": projection.diagnostics,
             "rectangle": rectangle.to_dict(),
             "component_sizes": list(component_sizes),
