@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 from typing import Sequence
@@ -23,6 +24,24 @@ def build_live_view_args(argv: Sequence[str]) -> list[str]:
     return arguments
 
 
+def _reexec_active_conda_python() -> None:
+    """Honor the activated conda environment even if PATH shadows python3.12."""
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if not conda_prefix:
+        return
+
+    conda_python = Path(conda_prefix) / "bin" / "python"
+    if not conda_python.is_file():
+        return
+    if conda_python.resolve() == Path(sys.executable).resolve():
+        return
+
+    os.execv(
+        str(conda_python),
+        [str(conda_python), str(Path(__file__).resolve()), *sys.argv[1:]],
+    )
+
+
 def _run_parcel_pose(argv: Sequence[str]) -> int:
     source_root = PROJECT_ROOT / "src"
     sys.path.insert(0, str(source_root))
@@ -32,6 +51,8 @@ def _run_parcel_pose(argv: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if argv is None:
+        _reexec_active_conda_python()
     user_args = sys.argv[1:] if argv is None else list(argv)
     return _run_parcel_pose(build_live_view_args(user_args))
 

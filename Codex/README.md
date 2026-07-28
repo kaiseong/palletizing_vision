@@ -61,19 +61,34 @@ The `vision` extra installs a headless PyPI OpenCV build for generic Python 3.12
 development hosts. Do not use that command for the Jetson live viewer because
 headless OpenCV cannot open an `imshow` window.
 
-On Jetson, retain or install a GUI-capable OpenCV build, then install the
-package without the `vision` extra. For JetPack 6.2.2, the `live` extra requires
-a RealSense binding with JetPack 6.2.2 support (`pyrealsense2>=2.58.1`):
+On Jetson, retain or install a GUI-capable OpenCV build and use the Python from
+the activated environment. A user-level `python3.12` can appear before conda in
+`PATH`, so verify the executable explicitly:
 
 ```bash
-python3.12 -c 'import cv2; print(cv2.__version__, cv2.currentUIFramework())'
-python3.12 -m pip install -e '.[test,live]'
+conda activate lerobot
+cd ~/kgs_ws/palletizing_vision/Codex
+python -c 'import sys, cv2; print(sys.executable); print(cv2.__version__, cv2.currentUIFramework())'
+python -m pip install -e '.[test]'
 ```
 
 `live-view` needs a non-empty UI framework in the first command. A blank value
 means that the active Python 3.12 environment still has a headless OpenCV
 build. The package intentionally does not install a replacement GUI OpenCV
 wheel automatically because that can replace the JetPack-matched build.
+
+The public ARM64 `pyrealsense2` wheel may require a newer glibc than JetPack
+6.2.2 provides. Build the official v2.58.3 Python binding inside this repository
+instead of replacing JetPack system libraries or the conda environment:
+
+```bash
+bash scripts/build_jetson_pyrealsense2.sh
+PYTHONPATH=src python -c 'import pyrealsense2 as rs; print(rs.__file__)'
+```
+
+The build is self-contained under `.runtime/`; the resulting extension is
+copied to `src/` and both paths are ignored by Git. The script does not use
+`sudo` or install into `/usr` or conda.
 
 ## Configuration
 
@@ -247,9 +262,13 @@ Run the continuous viewer from the Jetson desktop session with the D435
 connected over USB 3:
 
 ```bash
-cd /home/nvidia/palletizing_vision/Codex
-python3.12 live_view.py
+conda activate lerobot
+cd ~/kgs_ws/palletizing_vision/Codex
+python live_view.py
 ```
+
+`python3.12 live_view.py` is also accepted: the wrapper re-executes the active
+conda interpreter when a user-level Python shadows it in `PATH`.
 
 The wrapper uses the tracked fixed-setup artifact
 `configs/rby1m_v1_2_fixed_table_nominal.json` and the nominal estimator config
@@ -258,7 +277,7 @@ Override either path when a newly fitted or independently validated calibration
 is available:
 
 ```bash
-python3.12 live_view.py \
+python live_view.py \
   --calibration ../out/calibrations/table_plane_with_fk.json \
   --config configs/d435_rby1_nominal.json
 ```

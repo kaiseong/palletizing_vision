@@ -60,3 +60,38 @@ def test_live_view_main_forwards_short_user_arguments(monkeypatch) -> None:
     assert module.main(["--max-frames", "2"]) == 19
     assert received[0][0] == "live-view"
     assert received[0][-2:] == ["--max-frames", "2"]
+
+
+def test_script_reexecs_the_active_conda_python_when_path_shadows_it(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_live_view_script()
+    conda_python = tmp_path / "lerobot" / "bin" / "python"
+    conda_python.parent.mkdir(parents=True)
+    conda_python.touch()
+    calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setenv("CONDA_PREFIX", str(conda_python.parents[1]))
+    monkeypatch.setattr(module.sys, "executable", str(tmp_path / "uv" / "python3.12"))
+    monkeypatch.setattr(
+        module.sys, "argv", [str(module.PROJECT_ROOT / "live_view.py"), "--fullscreen"]
+    )
+    monkeypatch.setattr(
+        module.os,
+        "execv",
+        lambda executable, args: calls.append((executable, list(args))),
+    )
+
+    module._reexec_active_conda_python()
+
+    assert calls == [
+        (
+            str(conda_python),
+            [
+                str(conda_python),
+                str(module.PROJECT_ROOT / "live_view.py"),
+                "--fullscreen",
+            ],
+        )
+    ]

@@ -194,6 +194,20 @@ def test_sdk_is_loaded_lazily_and_missing_message_is_actionable(monkeypatch):
         load_realsense_sdk()
 
 
+def test_sdk_import_error_preserves_binary_compatibility_detail(monkeypatch):
+    import parcel_pose.realsense_adapter as adapter_module
+
+    def incompatible(name):
+        raise ImportError("GLIBC_2.38 not found")
+
+    monkeypatch.setattr(adapter_module.importlib, "import_module", incompatible)
+    with pytest.raises(
+        RealSenseUnavailableError,
+        match="build_jetson_pyrealsense2.*GLIBC_2.38",
+    ):
+        load_realsense_sdk()
+
+
 def test_fake_sdk_requests_d435_profiles_and_preserves_raw_frames():
     sdk = FakeSdk()
     adapter = RealSenseAdapter(D435StreamConfig(warmup_frames=0), sdk=sdk).start()
