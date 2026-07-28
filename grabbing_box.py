@@ -47,6 +47,27 @@ import rby1_sdk as rby
 # Time (seconds) the robot takes to reach the start pose. Larger = slower/safer.
 MINIMUM_TIME = 5.0
 
+# Arm-only posture used while the mobile base approaches the box.  These are
+# measured RB-Y1 M v1.2 joint angles supplied in degrees; the SDK receives
+# radians.  Torso/head are intentionally absent so the fixed camera
+# calibration posture cannot be changed by this preparatory command.
+MOBILE_READY_RIGHT_ARM_DEG = np.asarray(
+    [6.644, -21.489, -17.252, -129.031, -83.302, 53.394, 37.071],
+    dtype=np.float64,
+)
+MOBILE_READY_LEFT_ARM_DEG = np.asarray(
+    [6.644, 21.488, 17.245, -129.036, 83.304, 53.392, -37.070],
+    dtype=np.float64,
+)
+MOBILE_READY_RIGHT_ARM_RAD = np.deg2rad(MOBILE_READY_RIGHT_ARM_DEG)
+MOBILE_READY_LEFT_ARM_RAD = np.deg2rad(MOBILE_READY_LEFT_ARM_DEG)
+MOBILE_READY_MINIMUM_TIME = 5.0
+MOBILE_READY_HOLD_TIME = 1.0
+MOBILE_READY_COMMAND_TIMEOUT_MS = 10_000
+MOBILE_READY_ARM_TOLERANCE_DEG = 2.0
+MOBILE_READY_ARM_STIFFNESS = np.full(7, 60.0, dtype=np.float64)
+MOBILE_READY_ARM_DAMPING_RATIO = 1.0
+
 # Rate (Hz) at which the FT-sensor monitoring callback is invoked.
 FT_MONITOR_RATE = 10.0
 
@@ -148,6 +169,40 @@ def build_pose_command(pose, minimum_time):
     )
 
 
+def build_mobile_ready_command(
+    minimum_time=MOBILE_READY_MINIMUM_TIME,
+    hold_time=MOBILE_READY_HOLD_TIME,
+):
+    """Build the arm-only Joint Impedance command used before base motion."""
+
+    minimum_time = float(minimum_time)
+    hold_time = float(hold_time)
+    if not np.isfinite(minimum_time) or minimum_time <= 0.0:
+        raise ValueError("mobile-ready minimum_time must be positive and finite")
+    if not np.isfinite(hold_time) or hold_time <= 0.0:
+        raise ValueError("mobile-ready hold_time must be positive and finite")
+
+    def arm_command(position):
+        return (
+            rby.JointImpedanceControlCommandBuilder()
+            .set_command_header(
+                rby.CommandHeaderBuilder().set_control_hold_time(hold_time)
+            )
+            .set_position(position)
+            .set_minimum_time(minimum_time)
+            .set_stiffness(MOBILE_READY_ARM_STIFFNESS)
+            .set_damping_ratio(MOBILE_READY_ARM_DAMPING_RATIO)
+        )
+
+    return rby.RobotCommandBuilder().set_command(
+        rby.ComponentBasedCommandBuilder().set_body_command(
+            rby.BodyComponentBasedCommandBuilder()
+            .set_right_arm_command(arm_command(MOBILE_READY_RIGHT_ARM_RAD))
+            .set_left_arm_command(arm_command(MOBILE_READY_LEFT_ARM_RAD))
+        )
+    )
+
+
 def _cancel_active_command(handler) -> None:
     """Best-effort cancellation that never masks the command's root failure."""
     try:
@@ -163,13 +218,22 @@ def _cancel_active_command(handler) -> None:
         print(f"[grabbing] command cancellation wait failed: {exc}")
 
 
-def send_once(robot, builder):
+def send_once(robot, builder, *, timeout_ms=None):
     """Send a single (one-shot) command and block until it finishes.
 
     This is the "send once" pattern: hand one command to the robot, wait for the
     handler to complete, and check the finish code (no persistent stream)."""
+    if timeout_ms is not None:
+        timeout_ms = int(timeout_ms)
+        if timeout_ms <= 0:
+            raise ValueError("timeout_ms must be positive")
+
     handler = robot.send_command(builder)
     try:
+        if timeout_ms is not None:
+            if handler.wait_for(timeout_ms) is False:
+                _cancel_active_command(handler)
+                return False
         feedback = handler.get()
     except KeyboardInterrupt:
         _cancel_active_command(handler)
@@ -181,6 +245,78 @@ def send_once(robot, builder):
         _cancel_active_command(handler)
         raise
     return feedback.finish_code == rby.RobotCommandFeedback.FinishCode.Ok
+
+
+def _mobile_ready_arm_errors_deg(robot):
+    """Return per-arm absolute joint errors after the ready command."""
+
+    model = robot.model()
+    position = np.asarray(robot.get_state().position, dtype=np.float64)
+    if position.ndim != 1 or not np.all(np.isfinite(position)):
+        raise RuntimeError("Invalid robot joint state after mobile-ready command")
+
+    errors = {}
+    targets = {
+        "right_arm": MOBILE_READY_RIGHT_ARM_RAD,
+        "left_arm": MOBILE_READY_LEFT_ARM_RAD,
+    }
+    for name, target in targets.items():
+        raw_indices = getattr(model, f"{name}_idx", None)
+        if raw_indices is None:
+            raise RuntimeError(f"Robot model does not expose {name}_idx")
+        indices = np.asarray(raw_indices, dtype=np.int64)
+        try:
+            current = position[indices]
+        except (IndexError, TypeError) as exc:
+            raise RuntimeError(
+                f"Robot {name} indices do not match the current joint state"
+            ) from exc
+        if current.shape != target.shape or not np.all(np.isfinite(current)):
+            raise RuntimeError(f"Invalid current {name} joint state: {current}")
+        errors[name] = np.abs(np.rad2deg(current - target))
+    return errors
+
+
+def move_arms_to_mobile_ready_pose(robot):
+    """Reach and verify the arm-only safe posture before creating a base stream."""
+
+    if not robot.is_connected():
+        raise ConnectionError("Robot is not connected")
+
+    print("[grabbing] moving both arms to mobile-ready pose (joint impedance) ...")
+    succeeded = send_once(
+        robot,
+        build_mobile_ready_command(),
+        timeout_ms=MOBILE_READY_COMMAND_TIMEOUT_MS,
+    )
+    if not succeeded:
+        print("[grabbing] FAILED while moving arms to mobile-ready pose.")
+        return False
+
+    errors = _mobile_ready_arm_errors_deg(robot)
+    largest_name = ""
+    largest_joint = 0
+    largest_error_deg = -1.0
+    for name, values in errors.items():
+        joint = int(np.argmax(values))
+        error_deg = float(values[joint])
+        if error_deg > largest_error_deg:
+            largest_name = name
+            largest_joint = joint
+            largest_error_deg = error_deg
+    if largest_error_deg > MOBILE_READY_ARM_TOLERANCE_DEG:
+        print(
+            "[grabbing] FAILED mobile-ready verification: "
+            f"{largest_name}[{largest_joint}] error={largest_error_deg:.3f} deg "
+            f"> {MOBILE_READY_ARM_TOLERANCE_DEG:.3f} deg"
+        )
+        return False
+
+    print(
+        "[grabbing] mobile-ready arms verified: "
+        f"max joint error={largest_error_deg:.3f} deg"
+    )
+    return True
 
 
 def offset_translation_y(T, dy):

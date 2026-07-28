@@ -3,6 +3,9 @@
 The controller consumes parcel centres expressed in the corrected RB-Y1 base
 frame.  A positive centre error therefore commands positive base velocity:
 moving the base in that direction reduces the next relative parcel error.
+Yaw uses the same current-minus-target convention modulo 180 degrees: a
+positive relative line-yaw error commands positive RB-Y1 ``wz``, which reduces
+the next fixed-object relative yaw.
 
 No robot motion is possible merely by importing this module or constructing an
 adapter.  :class:`RBY1MobilityStream` requires both ``execute=True`` and an
@@ -16,14 +19,18 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 import importlib
+import math
 import threading
 import time
 from typing import Any
 
 import numpy as np
 
+from .angles import line_angle_difference_rad, normalize_line_angle_rad
+
 
 MAX_ALLOWED_LINEAR_SPEED_MPS = 0.08
+MAX_ALLOWED_ANGULAR_SPEED_RADPS = 0.10
 
 
 def _finite(value: float, name: str) -> float:
@@ -60,7 +67,12 @@ class ServoState(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ServoConfig:
-    """Safety and convergence parameters for parcel-centre servoing."""
+    """Safety and convergence parameters for parcel SE(2) servoing.
+
+    The current shared grasp posture is valid only when the parcel long axis is
+    parallel to base +Y.  Since a rectangle axis is an unoriented line,
+    ``+90`` and ``-90`` degrees represent the same target.
+    """
 
     target_xy_m: tuple[float, float] = (0.740, 0.0)
     proportional_gain_per_s: float = 1.0
@@ -76,17 +88,41 @@ class ServoConfig:
     arrival_min_duration_s: float = 0.35
     lost_abort_after_s: float = 2.0
     timeout_s: float = 30.0
+    # Appended after the original XY configuration fields so legacy positional
+    # construction cannot silently reinterpret an XY gain as a yaw target.
+    target_long_axis_yaw_rad: float = math.pi / 2.0
+    yaw_proportional_gain_per_s: float = 1.0
+    max_angular_speed_radps: float = MAX_ALLOWED_ANGULAR_SPEED_RADPS
+    max_angular_acceleration_radps2: float = 0.20
+    yaw_jump_threshold_rad: float = math.radians(15.0)
+    arrival_yaw_inner_rad: float = math.radians(3.0)
+    arrival_yaw_outer_rad: float = math.radians(5.0)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "target_xy_m", _xy(self.target_xy_m, "target_xy_m"))
+        target_yaw = _finite(
+            self.target_long_axis_yaw_rad,
+            "target_long_axis_yaw_rad",
+        )
+        object.__setattr__(
+            self,
+            "target_long_axis_yaw_rad",
+            normalize_line_angle_rad(target_yaw),
+        )
         for name in (
             "proportional_gain_per_s",
+            "yaw_proportional_gain_per_s",
             "max_linear_speed_mps",
+            "max_angular_speed_radps",
             "max_linear_acceleration_mps2",
+            "max_angular_acceleration_radps2",
             "jump_threshold_m",
+            "yaw_jump_threshold_rad",
             "stale_after_s",
             "arrival_inner_m",
             "arrival_outer_m",
+            "arrival_yaw_inner_rad",
+            "arrival_yaw_outer_rad",
             "arrival_min_duration_s",
             "lost_abort_after_s",
             "timeout_s",
@@ -96,6 +132,10 @@ class ServoConfig:
             raise ValueError(
                 "max_linear_speed_mps cannot exceed the 0.08 m/s safety limit"
             )
+        if self.max_angular_speed_radps > MAX_ALLOWED_ANGULAR_SPEED_RADPS:
+            raise ValueError(
+                "max_angular_speed_radps cannot exceed the 0.10 rad/s safety limit"
+            )
         if self.filter_window != 3:
             raise ValueError("filter_window must be 3 for the robust median filter")
         if self.jump_reseed_frames < 2:
@@ -104,33 +144,65 @@ class ServoConfig:
             raise ValueError("arrival_min_frames must be positive")
         if self.arrival_outer_m <= self.arrival_inner_m:
             raise ValueError("arrival_outer_m must be greater than arrival_inner_m")
+        if self.arrival_yaw_outer_rad <= self.arrival_yaw_inner_rad:
+            raise ValueError(
+                "arrival_yaw_outer_rad must be greater than arrival_yaw_inner_rad"
+            )
+        if self.arrival_yaw_outer_rad >= math.pi / 2.0:
+            raise ValueError("arrival_yaw_outer_rad must be less than pi/2")
+        if self.yaw_jump_threshold_rad >= math.pi / 2.0:
+            raise ValueError("yaw_jump_threshold_rad must be less than pi/2")
 
 
 @dataclass(frozen=True, slots=True)
 class PoseMeasurement:
-    """One corrected base-frame parcel-centre observation."""
+    """One corrected base-frame parcel centre and long-axis observation."""
 
     xy_m: tuple[float, float] | None
     timestamp_s: float
     valid: bool = True
+    # Kept after the original ``valid`` field for positional API compatibility.
+    long_axis_yaw_rad: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timestamp_s", _finite(self.timestamp_s, "timestamp_s"))
         if self.valid:
             if self.xy_m is None:
                 raise ValueError("a valid pose measurement requires xy_m")
+            if self.long_axis_yaw_rad is None:
+                raise ValueError(
+                    "a valid pose measurement requires long_axis_yaw_rad"
+                )
             object.__setattr__(self, "xy_m", _xy(self.xy_m, "xy_m"))
+            yaw = _finite(self.long_axis_yaw_rad, "long_axis_yaw_rad")
+            object.__setattr__(
+                self,
+                "long_axis_yaw_rad",
+                normalize_line_angle_rad(yaw),
+            )
         elif self.xy_m is not None:
             object.__setattr__(self, "xy_m", _xy(self.xy_m, "xy_m"))
+        if not self.valid and self.long_axis_yaw_rad is not None:
+            yaw = _finite(self.long_axis_yaw_rad, "long_axis_yaw_rad")
+            object.__setattr__(
+                self,
+                "long_axis_yaw_rad",
+                normalize_line_angle_rad(yaw),
+            )
 
     @classmethod
     def invalid(cls, timestamp_s: float) -> "PoseMeasurement":
-        return cls(xy_m=None, timestamp_s=timestamp_s, valid=False)
+        return cls(
+            xy_m=None,
+            timestamp_s=timestamp_s,
+            valid=False,
+            long_axis_yaw_rad=None,
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class VelocityCommand:
-    """Planar RB-Y1 velocity command; yaw is deliberately fixed at zero."""
+    """Bounded planar RB-Y1 translation and yaw velocity command."""
 
     vx_mps: float = 0.0
     vy_mps: float = 0.0
@@ -163,10 +235,12 @@ class ServoDecision:
     measurement_accepted: bool
     handoff_ready: bool
     reason: str
+    filtered_long_axis_yaw_rad: float | None = None
+    yaw_error_rad: float | None = None
 
 
 class MobileVisualServo:
-    """Deterministic XY-only visual-servo state machine.
+    """Deterministic parcel-centre and 180-symmetric-yaw servo state machine.
 
     Calling :meth:`step` while idle cannot produce motion.  Call :meth:`start`
     explicitly, then provide monotonically increasing ``now_s`` values.
@@ -250,8 +324,15 @@ class MobileVisualServo:
         if invalid_reason is not None:
             return self._pose_lost(invalid_reason, now)
 
-        assert measurement is not None and measurement.xy_m is not None
-        raw = np.asarray(measurement.xy_m, dtype=np.float64)
+        assert (
+            measurement is not None
+            and measurement.xy_m is not None
+            and measurement.long_axis_yaw_rad is not None
+        )
+        raw = np.asarray(
+            (*measurement.xy_m, measurement.long_axis_yaw_rad),
+            dtype=np.float64,
+        )
         accepted, reason = self._accept_or_reseed(raw)
         if not accepted:
             if self._lost_started_at_s is None:
@@ -262,35 +343,48 @@ class MobileVisualServo:
             self._last_command = ZERO_VELOCITY
             self._last_update_s = now
             self._clear_hold()
+            filtered_pose = self._filtered_pose()
             return self._decision(
                 reason=reason,
-                filtered=self._filtered_xy(),
+                filtered_pose=filtered_pose,
                 accepted=False,
             )
         self._lost_started_at_s = None
 
-        filtered = self._filtered_xy()
-        if filtered is None or len(self._samples) < self.config.filter_window:
+        filtered_pose = self._filtered_pose()
+        if filtered_pose is None or len(self._samples) < self.config.filter_window:
             self.state = ServoState.ACQUIRING
             self._last_command = ZERO_VELOCITY
             self._last_update_s = now
             return self._decision(
                 reason="acquiring_stable_pose",
-                filtered=filtered,
+                filtered_pose=filtered_pose,
                 accepted=True,
             )
 
         target = np.asarray(self.config.target_xy_m, dtype=np.float64)
-        error = filtered - target
-        raw_error = raw - target
-        filtered_distance = float(np.linalg.norm(error))
-        raw_distance = float(np.linalg.norm(raw_error))
+        filtered_xy = filtered_pose[:2]
+        filtered_yaw = float(filtered_pose[2])
+        error_xy = filtered_xy - target
+        raw_error_xy = raw[:2] - target
+        yaw_error = line_angle_difference_rad(
+            filtered_yaw,
+            self.config.target_long_axis_yaw_rad,
+        )
+        raw_yaw_error = line_angle_difference_rad(
+            float(raw[2]),
+            self.config.target_long_axis_yaw_rad,
+        )
+        filtered_distance = float(np.linalg.norm(error_xy))
+        raw_distance = float(np.linalg.norm(raw_error_xy))
 
         holding = self.state is ServoState.HOLDING
         if holding:
             if (
                 filtered_distance <= self.config.arrival_outer_m
                 and raw_distance <= self.config.arrival_outer_m
+                and abs(yaw_error) <= self.config.arrival_yaw_outer_rad
+                and abs(raw_yaw_error) <= self.config.arrival_yaw_outer_rad
             ):
                 self._hold_frames += 1
             else:
@@ -299,6 +393,8 @@ class MobileVisualServo:
         elif (
             filtered_distance <= self.config.arrival_inner_m
             and raw_distance <= self.config.arrival_inner_m
+            and abs(yaw_error) <= self.config.arrival_yaw_inner_rad
+            and abs(raw_yaw_error) <= self.config.arrival_yaw_inner_rad
         ):
             self._hold_started_at_s = now
             self._hold_frames = 1
@@ -306,7 +402,11 @@ class MobileVisualServo:
 
         if holding:
             self.state = ServoState.HOLDING
-            command = self._slew_towards(np.zeros(2, dtype=np.float64), now)
+            command = self._slew_towards(
+                np.zeros(2, dtype=np.float64),
+                0.0,
+                now,
+            )
             hold_elapsed = now - float(self._hold_started_at_s)
             if (
                 self._hold_frames >= self.config.arrival_min_frames
@@ -319,28 +419,43 @@ class MobileVisualServo:
                 self._last_update_s = now
                 return self._decision(
                     reason="arrival_stable",
-                    filtered=filtered,
-                    error=error,
+                    filtered_pose=filtered_pose,
+                    error_xy=error_xy,
+                    yaw_error=yaw_error,
                     accepted=True,
                     handoff=handoff,
                 )
             self._last_update_s = now
             return self._decision(
                 reason="arrival_holding",
-                filtered=filtered,
-                error=error,
+                filtered_pose=filtered_pose,
+                error_xy=error_xy,
+                yaw_error=yaw_error,
                 accepted=True,
             )
 
         self.state = ServoState.TRACKING
-        desired = self.config.proportional_gain_per_s * error
-        desired = self._limit_norm(desired, self.config.max_linear_speed_mps)
-        command = self._slew_towards(desired, now)
+        desired_wz = self.config.yaw_proportional_gain_per_s * yaw_error
+        # A rotating base changes the coordinates of a stationary parcel even
+        # with zero translation.  This orbit feed-forward keeps the parcel
+        # centre approximately fixed while yaw and XY converge together:
+        # v_ff = wz * [p_y, -p_x].
+        orbit_feedforward = desired_wz * np.asarray(
+            (filtered_xy[1], -filtered_xy[0]),
+            dtype=np.float64,
+        )
+        desired_xy = (
+            self.config.proportional_gain_per_s * error_xy
+            + orbit_feedforward
+        )
+        desired_xy, desired_wz = self._limit_se2(desired_xy, desired_wz)
+        command = self._slew_towards(desired_xy, desired_wz, now)
         self._last_update_s = now
         return self._decision(
             reason="tracking",
-            filtered=filtered,
-            error=error,
+            filtered_pose=filtered_pose,
+            error_xy=error_xy,
+            yaw_error=yaw_error,
             accepted=True,
             command=command,
         )
@@ -360,6 +475,8 @@ class MobileVisualServo:
             return "pose_missing"
         if not measurement.valid:
             return "pose_invalid"
+        if measurement.xy_m is None or measurement.long_axis_yaw_rad is None:
+            return "pose_incomplete"
         age_s = now_s - measurement.timestamp_s
         if age_s < -1e-6:
             return "pose_timestamp_in_future"
@@ -388,20 +505,16 @@ class MobileVisualServo:
             self._jump_candidates.clear()
             return True, "accepted"
 
-        if float(np.linalg.norm(raw - self._last_raw)) <= self.config.jump_threshold_m:
+        if self._pose_jump_is_within_limit(raw, self._last_raw):
             self._samples.append(raw.copy())
             self._last_raw = raw.copy()
             self._jump_candidates.clear()
             return True, "accepted"
 
         if self._jump_candidates:
-            candidate_centre = np.median(
-                np.stack(tuple(self._jump_candidates), axis=0), axis=0
-            )
-            if (
-                float(np.linalg.norm(raw - candidate_centre))
-                > self.config.jump_threshold_m
-            ):
+            candidate_centre = self._filtered_pose(self._jump_candidates)
+            assert candidate_centre is not None
+            if not self._pose_jump_is_within_limit(raw, candidate_centre):
                 self._jump_candidates.clear()
         self._jump_candidates.append(raw.copy())
 
@@ -414,10 +527,41 @@ class MobileVisualServo:
         self._jump_candidates.clear()
         return True, "jump_reseeded"
 
-    def _filtered_xy(self) -> np.ndarray | None:
-        if not self._samples:
+    def _pose_jump_is_within_limit(
+        self,
+        first: np.ndarray,
+        second: np.ndarray,
+    ) -> bool:
+        xy_jump = float(np.linalg.norm(first[:2] - second[:2]))
+        yaw_jump = abs(line_angle_difference_rad(float(first[2]), float(second[2])))
+        return (
+            xy_jump <= self.config.jump_threshold_m
+            and yaw_jump <= self.config.yaw_jump_threshold_rad
+        )
+
+    @staticmethod
+    def _line_medoid_rad(angles_rad: np.ndarray) -> float:
+        """Return a robust sample angle without a 0/pi scalar-median seam."""
+
+        normalized = np.mod(np.asarray(angles_rad, dtype=np.float64), math.pi)
+        pairwise = np.abs(
+            (normalized[:, None] - normalized[None, :] + math.pi / 2.0)
+            % math.pi
+            - math.pi / 2.0
+        )
+        return float(normalized[int(np.argmin(np.sum(pairwise, axis=1)))])
+
+    def _filtered_pose(
+        self,
+        samples: deque[np.ndarray] | None = None,
+    ) -> np.ndarray | None:
+        selected = self._samples if samples is None else samples
+        if not selected:
             return None
-        return np.median(np.stack(tuple(self._samples), axis=0), axis=0)
+        stacked = np.stack(tuple(selected), axis=0)
+        filtered_xy = np.median(stacked[:, :2], axis=0)
+        filtered_yaw = self._line_medoid_rad(stacked[:, 2])
+        return np.asarray((*filtered_xy, filtered_yaw), dtype=np.float64)
 
     @staticmethod
     def _limit_norm(vector: np.ndarray, limit: float) -> np.ndarray:
@@ -426,20 +570,72 @@ class MobileVisualServo:
             return vector
         return vector * (limit / norm)
 
-    def _slew_towards(self, desired: np.ndarray, now_s: float) -> VelocityCommand:
+    def _limit_se2(
+        self,
+        linear: np.ndarray,
+        angular: float,
+    ) -> tuple[np.ndarray, float]:
+        """Scale linear/angular together so orbit geometry survives speed caps."""
+
+        scale = 1.0
+        linear_norm = float(np.linalg.norm(linear))
+        if linear_norm > self.config.max_linear_speed_mps:
+            scale = min(scale, self.config.max_linear_speed_mps / linear_norm)
+        if abs(angular) > self.config.max_angular_speed_radps:
+            scale = min(scale, self.config.max_angular_speed_radps / abs(angular))
+        return linear * scale, float(angular) * scale
+
+    def _slew_towards(
+        self,
+        desired_linear: np.ndarray,
+        desired_angular: float,
+        now_s: float,
+    ) -> VelocityCommand:
         assert self._last_update_s is not None
-        previous = np.asarray(
+        previous_linear = np.asarray(
             (self._last_command.vx_mps, self._last_command.vy_mps),
             dtype=np.float64,
         )
+        previous_angular = self._last_command.wz_radps
         dt_s = max(0.0, now_s - self._last_update_s)
-        max_delta = self.config.max_linear_acceleration_mps2 * dt_s
-        delta = self._limit_norm(desired - previous, max_delta)
-        velocity = self._limit_norm(
-            previous + delta,
+        max_linear_delta = self.config.max_linear_acceleration_mps2 * dt_s
+        max_angular_delta = self.config.max_angular_acceleration_radps2 * dt_s
+        linear_delta = desired_linear - previous_linear
+        angular_delta = float(desired_angular - previous_angular)
+
+        # Use one dimensionless scale for the complete twist delta.  Applying
+        # independent clamps would distort the orbit feed-forward during
+        # acceleration even though the steady-state speed cap is coupled.
+        slew_scale = 1.0
+        linear_delta_norm = float(np.linalg.norm(linear_delta))
+        if linear_delta_norm > max_linear_delta:
+            slew_scale = min(
+                slew_scale,
+                0.0
+                if max_linear_delta <= 0.0
+                else max_linear_delta / linear_delta_norm,
+            )
+        if abs(angular_delta) > max_angular_delta:
+            slew_scale = min(
+                slew_scale,
+                0.0
+                if max_angular_delta <= 0.0
+                else max_angular_delta / abs(angular_delta),
+            )
+        linear_delta = linear_delta * slew_scale
+        angular_delta = angular_delta * slew_scale
+        linear = self._limit_norm(
+            previous_linear + linear_delta,
             self.config.max_linear_speed_mps,
         )
-        command = VelocityCommand(float(velocity[0]), float(velocity[1]), 0.0)
+        angular = float(
+            np.clip(
+                previous_angular + angular_delta,
+                -self.config.max_angular_speed_radps,
+                self.config.max_angular_speed_radps,
+            )
+        )
+        command = VelocityCommand(float(linear[0]), float(linear[1]), angular)
         self._last_command = command
         return command
 
@@ -451,8 +647,9 @@ class MobileVisualServo:
         self,
         *,
         reason: str,
-        filtered: np.ndarray | None = None,
-        error: np.ndarray | None = None,
+        filtered_pose: np.ndarray | None = None,
+        error_xy: np.ndarray | None = None,
+        yaw_error: float | None = None,
         accepted: bool = False,
         handoff: bool = False,
         command: VelocityCommand | None = None,
@@ -463,12 +660,18 @@ class MobileVisualServo:
             command=selected_command,
             filtered_xy_m=(
                 None
-                if filtered is None
-                else (float(filtered[0]), float(filtered[1]))
+                if filtered_pose is None
+                else (float(filtered_pose[0]), float(filtered_pose[1]))
             ),
             error_xy_m=(
-                None if error is None else (float(error[0]), float(error[1]))
+                None
+                if error_xy is None
+                else (float(error_xy[0]), float(error_xy[1]))
             ),
+            filtered_long_axis_yaw_rad=(
+                None if filtered_pose is None else float(filtered_pose[2])
+            ),
+            yaw_error_rad=None if yaw_error is None else float(yaw_error),
             measurement_accepted=accepted,
             handoff_ready=handoff,
             reason=reason,
@@ -503,7 +706,7 @@ class RBY1StreamConfig:
     control_hold_time_s: float = 1.0
     minimum_time_s: float = 0.05
     linear_acceleration_limit_mps2: float = 0.15
-    angular_acceleration_limit_radps2: float = 0.5
+    angular_acceleration_limit_radps2: float = 0.20
     send_timeout_ms: int = 250
     zero_repetitions: int = 3
     shutdown_timeout_ms: int = 2000
@@ -560,15 +763,15 @@ class RBY1MobilityStream:
         return self
 
     def send(self, command: VelocityCommand) -> Any:
-        """Send one bounded XY command; non-zero yaw is rejected."""
+        """Send one bounded SE(2) command."""
 
         if not self._execute:
             raise RobotMotionDisabledError("robot motion is disabled")
         stream = self._require_stream()
-        if abs(command.wz_radps) > 1e-12:
-            raise ValueError("mobile visual servo is XY-only; wz must be zero")
         if command.linear_norm_mps > MAX_ALLOWED_LINEAR_SPEED_MPS + 1e-12:
             raise ValueError("linear velocity exceeds the 0.08 m/s safety limit")
+        if abs(command.wz_radps) > MAX_ALLOWED_ANGULAR_SPEED_RADPS + 1e-12:
+            raise ValueError("angular velocity exceeds the 0.10 rad/s safety limit")
         try:
             feedback = stream.send_command(
                 self._command_builder(command),
@@ -725,7 +928,7 @@ class RBY1MobilityStream:
                 )
             )
             .set_minimum_time(self.config.minimum_time_s)
-            .set_velocity(linear, 0.0)
+            .set_velocity(linear, command.wz_radps)
             .set_acceleration_limit(
                 linear_acceleration,
                 self.config.angular_acceleration_limit_radps2,
@@ -1108,10 +1311,10 @@ class RBY1MobilityCommandPump:
 
     @staticmethod
     def _validate_command(command: VelocityCommand) -> None:
-        if abs(command.wz_radps) > 1e-12:
-            raise ValueError("mobile visual servo is XY-only; wz must be zero")
         if command.linear_norm_mps > MAX_ALLOWED_LINEAR_SPEED_MPS + 1e-12:
             raise ValueError("linear velocity exceeds the 0.08 m/s safety limit")
+        if abs(command.wz_radps) > MAX_ALLOWED_ANGULAR_SPEED_RADPS + 1e-12:
+            raise ValueError("angular velocity exceeds the 0.10 rad/s safety limit")
 
     def _raise_if_failed_locked(self) -> None:
         if self._last_error is not None:

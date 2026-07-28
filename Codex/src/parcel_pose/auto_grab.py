@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import importlib
 import importlib.util
+import math
 from pathlib import Path
 import threading
 import time
@@ -18,6 +19,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from .angles import line_angle_difference_rad
 from .evaluation import BasePoseDiagnostic
 from .mobile_servo import (
     MobileVisualServo,
@@ -65,6 +67,16 @@ class AutoGrabConfig:
             raise ValueError("robot address cannot be empty")
         if not str(self.power).strip():
             raise ValueError("power device pattern cannot be empty")
+        if abs(
+            line_angle_difference_rad(
+                self.servo.target_long_axis_yaw_rad,
+                math.pi / 2.0,
+            )
+        ) > 1e-9:
+            raise ValueError(
+                "the current grabbing_box posture requires horizontal "
+                "long-axis yaw=90 deg mod 180"
+            )
         if (
             not np.isfinite(self.fixed_posture_tolerance_deg)
             or self.fixed_posture_tolerance_deg <= 0.0
@@ -199,22 +211,46 @@ def _validate_fixed_camera_posture(robot: Any, tolerance_deg: float) -> None:
             )
 
 
-def _grasp_yaw_gate_reason(
+def _horizontal_grasp_family_gate_reason(
     base_pose: BasePoseDiagnostic | None,
-    maximum_residual_deg: float,
 ) -> str | None:
-    """Return a fail-closed reason unless yaw is near a supported symmetry axis."""
+    """Reject poses outside the 90-degree family used by this arm posture."""
 
-    if base_pose is None:
-        return "grasp_yaw_unavailable"
+    if base_pose is None or base_pose.yaw_mod_180_deg is None:
+        return None
     reference = base_pose.canonical_reference_deg
     residual = base_pose.canonical_residual_deg
-    if reference not in (0, 90) or residual is None or not np.isfinite(residual):
+    if reference != 90 or residual is None or not np.isfinite(residual):
+        return (
+            "unsupported_grasp_orientation: current grabbing_box posture "
+            "requires horizontal long-axis reference=90 deg"
+        )
+    return None
+
+
+def _grasp_yaw_gate_reason(
+    base_pose: BasePoseDiagnostic | None,
+    target_yaw_rad: float,
+    maximum_residual_deg: float,
+) -> str | None:
+    """Fail closed unless yaw matches the current horizontal-grasp posture."""
+
+    if base_pose is None or base_pose.yaw_mod_180_deg is None:
         return "grasp_yaw_unavailable"
-    if abs(float(residual)) > maximum_residual_deg:
+    family_failure = _horizontal_grasp_family_gate_reason(base_pose)
+    if family_failure is not None:
+        return family_failure
+    measured_yaw_rad = math.radians(float(base_pose.yaw_mod_180_deg))
+    if not np.isfinite(measured_yaw_rad):
+        return "grasp_yaw_unavailable"
+    residual_deg = math.degrees(
+        line_angle_difference_rad(measured_yaw_rad, target_yaw_rad)
+    )
+    if abs(residual_deg) > maximum_residual_deg:
         return (
             "grasp_yaw_out_of_tolerance: "
-            f"reference={reference} deg residual={float(residual):+.2f} deg "
+            f"target={math.degrees(target_yaw_rad):.1f} deg "
+            f"residual={residual_deg:+.2f} deg "
             f"limit={maximum_residual_deg:.2f} deg"
         )
     return None
@@ -422,6 +458,21 @@ class AutoGrabRuntime:
                 self.config.fixed_posture_tolerance_deg,
             )
             self._grabbing.prepare_robot(self._robot, power=self.config.power)
+            move_to_mobile_ready = getattr(
+                self._grabbing,
+                "move_arms_to_mobile_ready_pose",
+                None,
+            )
+            if not callable(move_to_mobile_ready):
+                raise AutoGrabError(
+                    "shared grabbing_box module does not provide the required "
+                    "mobile-ready arm command"
+                )
+            if not bool(move_to_mobile_ready(self._robot)):
+                raise AutoGrabError(
+                    "both arms did not reach the verified mobile-ready pose; "
+                    "mobility stream was not started"
+                )
             _validate_fixed_camera_posture(
                 self._robot,
                 self.config.fixed_posture_tolerance_deg,
@@ -460,7 +511,7 @@ class AutoGrabRuntime:
         pose_timestamp_s: float,
         now_s: float,
     ) -> bool:
-        """Publish one bounded XY command for the fixed-rate mobility pump."""
+        """Publish one bounded XY+yaw command for the mobility pump."""
 
         if (
             not self._started
@@ -469,17 +520,27 @@ class AutoGrabRuntime:
             or self._pump is None
         ):
             raise AutoGrabError("auto-grab runtime is not active")
+        orientation_failure = _horizontal_grasp_family_gate_reason(base_pose)
         measurement = None
-        if base_pose is not None:
+        if (
+            orientation_failure is None
+            and base_pose is not None
+            and base_pose.yaw_mod_180_deg is not None
+        ):
             x_m, y_m, _ = base_pose.box_center_xyz_m
             measurement = PoseMeasurement(
                 (x_m, y_m),
                 timestamp_s=pose_timestamp_s,
+                long_axis_yaw_rad=math.radians(base_pose.yaw_mod_180_deg),
             )
-        decision = self._servo.step(measurement, now_s=now_s)
+        if orientation_failure is None:
+            decision = self._servo.step(measurement, now_s=now_s)
+        else:
+            decision = self._servo.abort(orientation_failure, now_s)
         if decision.handoff_ready:
             yaw_failure = _grasp_yaw_gate_reason(
                 base_pose,
+                self.config.servo.target_long_axis_yaw_rad,
                 self.config.max_grasp_yaw_residual_deg,
             )
             if yaw_failure is not None:
@@ -639,9 +700,13 @@ class AutoGrabRuntime:
             return
         self._last_state = decision.state
         target_x, target_y = self.config.servo.target_xy_m
+        target_yaw_deg = math.degrees(
+            self.config.servo.target_long_axis_yaw_rad
+        )
         print(
             f"[auto-grab] state={decision.state.value} reason={decision.reason} "
-            f"target=({target_x:.3f}, {target_y:.3f}) m"
+            f"target=({target_x:.3f}, {target_y:.3f}) m, "
+            f"long-axis yaw={target_yaw_deg:.1f} deg"
         )
 
 

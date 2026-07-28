@@ -8,7 +8,7 @@ import pytest
 
 from parcel_pose.auto_grab import AutoGrabConfig, AutoGrabError, AutoGrabRuntime
 from parcel_pose.evaluation import BasePoseDiagnostic
-from parcel_pose.mobile_servo import RBY1CommandPumpConfig
+from parcel_pose.mobile_servo import RBY1CommandPumpConfig, ServoConfig
 
 
 CALIBRATED_TORSO_DEG = (0.0, 55.0, -59.988, 6.532, 0.0, 0.0)
@@ -31,10 +31,16 @@ def _pose(
     x: float = 0.740,
     y: float = 0.0,
     *,
-    canonical_reference_deg: int | None = 0,
+    canonical_reference_deg: int | None = 90,
     canonical_residual_deg: float | None = 0.0,
+    yaw_deg: float | None = None,
 ) -> BasePoseDiagnostic:
-    yaw = float(canonical_reference_deg or 0) + float(canonical_residual_deg or 0.0)
+    yaw = (
+        float(yaw_deg)
+        if yaw_deg is not None
+        else float(canonical_reference_deg or 0)
+        + float(canonical_residual_deg or 0.0)
+    )
     return BasePoseDiagnostic(
         box_center_xyz_m=(x, y, 0.82),
         top_center_xyz_m=(x, y, 0.90),
@@ -53,7 +59,7 @@ class _HeaderBuilder:
 
 class _SE2Builder:
     def __init__(self) -> None:
-        self.velocity = (0.0, 0.0)
+        self.velocity = (0.0, 0.0, 0.0)
 
     def set_command_header(self, value):
         return self
@@ -62,8 +68,10 @@ class _SE2Builder:
         return self
 
     def set_velocity(self, linear, angular):
-        assert angular == 0.0
-        self.velocity = tuple(float(value) for value in np.asarray(linear))
+        self.velocity = (
+            *(float(value) for value in np.asarray(linear)),
+            float(angular),
+        )
         return self
 
     def set_acceleration_limit(self, linear, angular):
@@ -240,15 +248,27 @@ def _sdk(events: list[tuple], robot: _Robot):
     )
 
 
-def _grabbing(events: list[tuple]):
+def _grabbing(
+    events: list[tuple],
+    *,
+    mobile_ready_result: bool = True,
+):
     def prepare(robot, *, power):
         events.append(("prepare", power, robot))
+
+    def move_to_mobile_ready(robot):
+        events.append(("mobile_ready", robot))
+        return mobile_ready_result
 
     def run(robot):
         events.append(("grasp", robot))
         return True
 
-    return SimpleNamespace(prepare_robot=prepare, run_grabbing_sequence=run)
+    return SimpleNamespace(
+        prepare_robot=prepare,
+        move_arms_to_mobile_ready_pose=move_to_mobile_ready,
+        run_grabbing_sequence=run,
+    )
 
 
 def test_execution_must_be_explicit_before_any_robot_is_created() -> None:
@@ -264,6 +284,13 @@ def test_execution_must_be_explicit_before_any_robot_is_created() -> None:
         runtime.start()
 
     assert events == []
+
+
+def test_current_grasp_posture_rejects_a_vertical_yaw_target() -> None:
+    with pytest.raises(ValueError, match="horizontal long-axis yaw=90"):
+        AutoGrabConfig(
+            servo=ServoConfig(target_long_axis_yaw_rad=0.0)
+        )
 
 
 @pytest.mark.parametrize(
@@ -335,6 +362,55 @@ def test_wrong_fixed_camera_posture_disconnects_before_prepare_or_stream(
     assert "grasp" not in names
 
 
+def test_mobile_ready_failure_disconnects_before_mobility_stream_creation() -> None:
+    events: list[tuple] = []
+    robot = _Robot(events)
+    runtime = AutoGrabRuntime(
+        execute=True,
+        sdk_module=_sdk(events, robot),
+        grabbing_module=_grabbing(events, mobile_ready_result=False),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(AutoGrabError, match="mobile-ready pose"):
+        runtime.start()
+
+    names = [event[0] for event in events]
+    assert names.index("prepare") < names.index("mobile_ready")
+    assert names[-1] == "disconnect"
+    assert "create_stream" not in names
+    assert "velocity" not in names
+    assert "grasp" not in names
+
+
+def test_mobile_ready_cannot_disturb_fixed_camera_posture_before_stream() -> None:
+    events: list[tuple] = []
+    robot = _Robot(events)
+    grabbing = _grabbing(events)
+
+    def disturb_torso(candidate):
+        events.append(("mobile_ready", candidate))
+        candidate.position[1] += np.deg2rad(2.0)
+        return True
+
+    grabbing.move_arms_to_mobile_ready_pose = disturb_torso
+    runtime = AutoGrabRuntime(
+        execute=True,
+        sdk_module=_sdk(events, robot),
+        grabbing_module=grabbing,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(AutoGrabError, match="torso"):
+        runtime.start()
+
+    names = [event[0] for event in events]
+    assert names.index("mobile_ready") < names.index("disconnect")
+    assert "create_stream" not in names
+    assert "velocity" not in names
+    assert "grasp" not in names
+
+
 def test_stable_target_keeps_zero_stream_through_stop_check_then_grasps() -> None:
     events: list[tuple] = []
     robot = _Robot(events)
@@ -364,6 +440,10 @@ def test_stable_target_keeps_zero_stream_through_stop_check_then_grasps() -> Non
     runtime.close()
 
     names = [event[0] for event in events]
+    prepare_index = names.index("prepare")
+    mobile_ready_index = names.index("mobile_ready")
+    create_stream_index = names.index("create_stream")
+    first_velocity_index = names.index("velocity")
     state_start_index = names.index("state_update_start")
     state_stop_index = names.index("state_update_stop")
     cancel_index = names.index("stream_cancel")
@@ -371,7 +451,11 @@ def test_stable_target_keeps_zero_stream_through_stop_check_then_grasps() -> Non
     grasp_index = names.index("grasp")
     disconnect_index = names.index("disconnect")
     assert (
-        state_start_index
+        prepare_index
+        < mobile_ready_index
+        < create_stream_index
+        < first_velocity_index
+        < state_start_index
         < state_stop_index
         < cancel_index
         < wait_index
@@ -382,12 +466,20 @@ def test_stable_target_keeps_zero_stream_through_stop_check_then_grasps() -> Non
     assert all(
         event[-1] is robot
         for event in events
-        if event[0] in {"create_robot", "connect", "prepare", "create_stream", "grasp"}
+        if event[0]
+        in {
+            "create_robot",
+            "connect",
+            "prepare",
+            "mobile_ready",
+            "create_stream",
+            "grasp",
+        }
     )
     assert [event for event in events if event[0] == "velocity"][-3:] == [
-        ("velocity", (0.0, 0.0)),
-        ("velocity", (0.0, 0.0)),
-        ("velocity", (0.0, 0.0)),
+        ("velocity", (0.0, 0.0, 0.0)),
+        ("velocity", (0.0, 0.0, 0.0)),
+        ("velocity", (0.0, 0.0, 0.0)),
     ]
 
 
@@ -405,7 +497,7 @@ def test_invalid_pose_stops_without_triggering_grasp() -> None:
     assert not runtime.update(None, pose_timestamp_s=0.1, now_s=0.1)
     runtime.close()
 
-    assert ("velocity", (0.0, 0.0)) in events
+    assert ("velocity", (0.0, 0.0, 0.0)) in events
     assert not runtime.grasp_invoked
     assert all(event[0] != "grasp" for event in events)
     names = [event[0] for event in events]
@@ -428,13 +520,26 @@ def test_stale_estimator_result_sends_zero_and_cannot_reach_handoff() -> None:
     assert not runtime.update(_pose(), pose_timestamp_s=0.0, now_s=0.301)
     assert [event for event in events if event[0] == "velocity"][-1] == (
         "velocity",
-        (0.0, 0.0),
+        (0.0, 0.0, 0.0),
     )
     assert not runtime.grasp_invoked
     runtime.close()
 
 
-def test_yaw_outside_supported_canonical_residual_aborts_without_grasp() -> None:
+@pytest.mark.parametrize(
+    "pose",
+    [
+        _pose(canonical_reference_deg=0, canonical_residual_deg=0.0),
+        _pose(
+            canonical_reference_deg=None,
+            canonical_residual_deg=None,
+            yaw_deg=45.0,
+        ),
+    ],
+)
+def test_non_horizontal_yaw_is_zeroed_and_rejected_by_current_grasp_mode(
+    pose: BasePoseDiagnostic,
+) -> None:
     events: list[tuple] = []
     robot = _Robot(events)
     runtime = AutoGrabRuntime(
@@ -445,25 +550,24 @@ def test_yaw_outside_supported_canonical_residual_aborts_without_grasp() -> None
     )
     runtime.start()
 
-    with pytest.raises(AutoGrabError, match="grasp_yaw_out_of_tolerance"):
-        for index in range(1, 9):
-            now = 0.1 * index
-            runtime.update(
-                _pose(canonical_reference_deg=0, canonical_residual_deg=9.0),
-                pose_timestamp_s=now,
-                now_s=now,
-            )
+    with pytest.raises(AutoGrabError, match="requires horizontal"):
+        runtime.update(
+            pose,
+            pose_timestamp_s=0.1,
+            now_s=0.1,
+        )
 
     assert not runtime.grasp_invoked
     assert all(event[0] != "grasp" for event in events)
-    assert [event for event in events if event[0] == "velocity"][-1] == (
-        "velocity",
-        (0.0, 0.0),
-    )
+    assert runtime._pump is not None
+    assert runtime._pump._latest_command.is_zero
     runtime.close()
 
 
-def test_ninety_degree_canonical_yaw_is_eligible_for_handoff() -> None:
+@pytest.mark.parametrize("residual_deg", [-2.0, 1.0])
+def test_horizontal_yaw_on_either_signed_display_side_can_handoff(
+    residual_deg: float,
+) -> None:
     events: list[tuple] = []
     robot = _Robot(events)
     runtime = AutoGrabRuntime(
@@ -478,7 +582,10 @@ def test_ninety_degree_canonical_yaw_is_eligible_for_handoff() -> None:
     for index in range(1, 9):
         now = 0.1 * index
         ready = runtime.update(
-            _pose(canonical_reference_deg=90, canonical_residual_deg=-2.0),
+            _pose(
+                canonical_reference_deg=90,
+                canonical_residual_deg=residual_deg,
+            ),
             pose_timestamp_s=now,
             now_s=now,
         )

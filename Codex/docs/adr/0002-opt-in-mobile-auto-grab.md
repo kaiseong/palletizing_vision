@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted, 2026-07-28.
+Accepted and amended for horizontal-yaw alignment and pre-mobile arm posture,
+2026-07-28.
 
 ## Context
 
@@ -32,22 +33,37 @@ and true arm/base simultaneity requires one combined whole-body stream.
 3. Restrict execution to a controller-reported RB-Y1 Model M v1.2 and verify
    that torso/head remain within 1 degree of the fixed calibration posture
    before opening a command stream.
-4. Use bounded XY-only proportional velocity control through one SDK command
-   stream. A sole 20 Hz sender thread refreshes the latest published command
+4. After power/servo/control-manager preparation, move only the two arms to the
+   operator-provided mobile-ready joint targets with a completed Joint
+   Impedance one-shot. Use 5 seconds minimum motion time, `60 Nm/rad`
+   stiffness, damping ratio `1.0`, a finite 1-second hold, and a 10-second
+   timeout. Verify every measured arm joint within 2 degrees and recheck the
+   fixed torso/head pose before creating the mobility stream. Any command or
+   verification failure disconnects without base motion.
+5. Use bounded simultaneous XY+yaw proportional velocity control through one
+   SDK SE(2) command stream. The current shared grasp posture fixes the parcel
+   long-axis target to base `90 deg mod 180`, which appears at the live
+   overlay's `+90/-90` signed seam. Compute yaw error as the shortest
+   unoriented-line difference, and add `wz * [box_y, -box_x]` orbit
+   feed-forward so turning does not unnecessarily displace the relative box
+   centre. Scale translation and yaw together to `0.08 m/s` and `0.10 rad/s`
+   caps. A sole 20 Hz sender thread refreshes the latest published command
    with a finite 1.0-second hold and substitutes zero when the producer is
    stale. Startup requires validated SE(2) feedback to reach `Running`, and
-   terminal/idle/malformed feedback fails closed. Do not command yaw; require
-   the observed box orientation to be within 8 degrees of a supported 0- or
-   90-degree symmetry axis before grasp.
-5. Treat pose loss, timeout, camera failure, stream failure, operator exit, and
+   terminal/idle/malformed feedback fails closed. Require current and filtered
+   yaw to converge with the centre before arrival, then independently verify
+   the final long-axis yaw is within 8 degrees of the 90-degree target. A
+   vertical 0-degree or ambiguous-family pose is zeroed and rejected before a
+   non-zero command because it belongs to the future vertical-grasp branch.
+6. Treat pose loss, timeout, camera failure, stream failure, operator exit, and
    posture/model/yaw mismatch as stop-without-grasp conditions. Timestamp each
    pose before estimation so the stale-frame watchdog includes inference time.
-6. Require multi-frame arrival hysteresis. Then permanently latch zero, confirm
+7. Require multi-frame arrival hysteresis. Then permanently latch zero, confirm
    at least three pumped zero sends, and require fresh/ready 20 Hz mobility
    state with low wheel velocity continuously for at least 0.35 seconds while
    the stream remains alive. Join the sole sender, cancel the stream, and
    confirm completion before any arm command.
-7. Refactor `grabbing_box.py` so its motion sequence accepts the already
+8. Refactor `grabbing_box.py` so its motion sequence accepts the already
    connected/prepared robot. The standalone CLI continues to own its own
    connection, while auto-grab reuses one connection through alignment and
    lift.
@@ -57,22 +73,30 @@ and true arm/base simultaneity requires one combined whole-body stream.
 - The user can measure estimator latency with `python live_view.py` without any
   robot-side effect.
 - Automatic execution is deliberately fail-closed and clearly opt-in.
+- No mobility stream exists until the two arms have reached and measurably
+  matched the mobile-ready posture. Torso/head are not part of that arm command.
 - Mobile and grasp commands cannot overlap. RB-Y1 priority arbitration does
   not provide independent simultaneous mobility/body controllers; failed
   sender join or stream cancellation blocks the grasp.
 - A base that does not measurably settle within 2 seconds blocks the grasp.
 - The +50 mm correction is auditable but does not constitute base validation.
-- Orientation is observed but not controlled in this phase; an incompatible or
-  unavailable yaw blocks the existing grasp.
+- Orientation is controlled together with translation for the current
+  horizontal-grasp posture. A later vertical-grasp posture needs an explicit
+  0-degree target and separate grasp branch; it must not share this handoff.
 
 ## Verification requirements
 
 - Regression tests prove the +50 mm correction is applied once and survives
   calibration serialization.
-- Pure closed-loop tests cover speed/slew bounds, outliers, dropout, pose-loss
+- Pure closed-loop tests cover speed/slew bounds, line-angle wrapping, orbit
+  feed-forward, simultaneous XY/yaw convergence, outliers, dropout, pose-loss
   stop, timeout, arrival hysteresis, and exactly-once handoff.
 - Fake-SDK integration tests prove `zero pump -> measured stop -> sender join ->
   cancel -> wait -> grasp` ordering on the same robot object and prove every
   failure path omits the grasp.
+- Builder and fake-SDK tests prove the exact arm targets, arm-only Joint
+  Impedance configuration, and `prepare -> mobile ready -> create stream`
+  ordering; timeout, bad feedback, or measured arm mismatch must create no
+  mobility stream.
 - No verification step may connect to or command a physical robot outside an
   explicit on-robot operator run.

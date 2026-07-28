@@ -359,26 +359,59 @@ The default controller address is `192.168.30.1:50051`; override it with
 closed on a different reported model/version. Before opening the mobility
 stream it also verifies the calibrated fixed posture within 1 degree: torso
 `[0, 55, -59.988, 6.532, 0, 0]` degrees and head `[0, 49.846]` degrees.
+After robot preparation and before the mobility stream exists, both arms move
+for 5 seconds under Joint Impedance control to the mobile-ready posture below.
+Torso and head are omitted from this command, then rechecked, so the fixed
+camera transform is preserved.
+
+```text
+right [6.644, -21.489, -17.252, -129.031, -83.302, 53.394, 37.071] deg
+left  [6.644,  21.488,  17.245, -129.036,  83.304, 53.392, -37.070] deg
+```
+
+The ready command uses `60 Nm/rad` arm stiffness, damping ratio `1.0`, a
+1-second final hold, and a 10-second command timeout. The measured arm joints
+must finish within 2 degrees of every target. Failure or interruption closes
+the connection without creating a mobility stream.
 
 The automatic path uses the corrected box-volume center and performs:
 
 ```text
-acquire 3 valid poses
-  -> publish XY commands toward x=0.740 m, y=0.000 m
+connect and validate RB-Y1 M v1.2 + fixed torso/head
+  -> prepare power/servos/control manager
+  -> arm-only mobile-ready Joint Impedance move + measured verification
+  -> create a zeroed mobility stream
+  -> acquire 3 valid poses
+  -> require horizontal canonical family (reference=90 deg)
+  -> publish simultaneous XY+yaw commands toward x=0.740 m, y=0.000 m
+     and horizontal long-axis yaw=90 deg modulo 180
   -> sole 20 Hz mobility pump keeps the SDK stream alive
   -> stable arrival hold
   -> latch zero and acknowledge 3 pumped zero commands
   -> measured mobility-joint stop confirmation while pumping zero
   -> stream cancel + completion wait
-  -> existing start_pose -> impedance grab -> impedance lift
+  -> existing all-body start_pose -> Cartesian impedance grab
+     -> Cartesian impedance lift
 ```
 
-The mobile command is proportional XY control with `wz=0`, a vector speed cap
-of `0.08 m/s`, a `0.15 m/s^2` slew/SDK acceleration limit, a three-frame
-median, and a 30 mm jump gate. Vision only publishes the latest command; one
-dedicated sender thread is the sole SDK stream writer and refreshes it at 20
-Hz with a finite 1.0-second control hold. If vision stops publishing for 0.30
-seconds, the sender substitutes zero instead of refreshing a stale non-zero
+The current automatic mode is intentionally tied to the existing horizontal
+grasp posture. Under the calibrated transform, a visually horizontal box long
+axis is base yaw `90 deg mod 180`; the live overlay may show either `+90` or
+`-90` because those values are the same unoriented line and meet at the signed
+display seam. A future vertical grasp posture should use a separate `0 deg`
+target/motion branch rather than weakening this handoff condition.
+
+The mobile command uses simultaneous proportional XY and 180-degree-symmetric
+yaw control. It adds the orbit feed-forward `wz * [box_y, -box_x]` so base
+rotation does not make the stationary box centre drift unnecessarily in base
+coordinates. Linear and angular demands are scaled together to caps of
+`0.08 m/s` and `0.10 rad/s`; controller slew limits are `0.15 m/s^2` and
+`0.20 rad/s^2`. A three-frame median/line-medoid filter, 30 mm centre jump
+gate, and 15 degree line-yaw jump gate reject isolated pose jumps. Vision only
+publishes the latest command; one dedicated sender thread is the sole SDK
+stream writer and refreshes it at 20 Hz with a finite 1.0-second control hold.
+If vision stops publishing for 0.30 seconds, the sender substitutes zero
+instead of refreshing a stale non-zero
 velocity. This prevents estimator/display stalls from expiring the stream
 without allowing a frozen vision loop to keep renewing motion indefinitely.
 Startup and each zero acknowledgement require valid component/mobility/SE(2)
@@ -389,13 +422,15 @@ before estimator execution; a result older than 0.30 seconds is rejected
 instead of receiving a fresh post-inference timestamp. Missing/invalid/stale
 pose sends zero velocity; continuous pose loss for 2 seconds or a 30-second
 approach timeout aborts without grasping. Arrival requires both current and
-filtered positions inside 10 mm, then at least five valid frames and 0.35
-seconds inside a 15 mm outer band. At handoff, yaw must have a valid 0- or
-90-degree canonical reference with at most 8 degrees residual. The controller
-does not rotate the base; an incompatible yaw aborts instead of forcing a
-grasp. At arrival the pump is permanently zero-latched, and measured wheel
-speeds must remain at or below 0.05 rad/s throughout at least 0.35 seconds of
-continuous 20 Hz state updates while that zero stream stays alive. All mobility
+filtered positions inside 10 mm and both current and filtered long-axis yaw
+inside 3 degrees of the horizontal 90-degree target, then at least five valid
+frames and 0.35 seconds inside 15 mm / 5 degree outer bands. The handoff has an
+independent final 8-degree check against that same 90-degree target; a vertical
+0-degree or ambiguous-family box is zeroed and rejected before this mode can
+move or grasp it. At arrival the pump is permanently zero-latched,
+and measured wheel speeds must remain at or below 0.05 rad/s throughout at
+least 0.35 seconds of continuous 20 Hz state updates while that zero stream
+stays alive. All mobility
 joints must report ready and the state stream must remain fresh. Failure to
 settle within 2 seconds blocks the arms. After settling, the sender thread is
 joined and the mobility stream is cancelled and awaited before any body
@@ -404,9 +439,14 @@ stream and the separate `grabbing_box.py` body one-shots to execute in
 parallel: keeping both streams alive could cause the body command to be
 refused or silently not execute. The state subscription is stopped before the
 grasp FT monitor starts, and the same robot connection is reused throughout.
+The mobile-ready Joint Impedance command is therefore a completed one-shot
+before the stream is created. After the stream is released at arrival, the
+existing `start_pose` command takes ownership of torso, head, and both arms via
+Joint Position control; grab and lift then switch the arms to Cartesian-space
+impedance control.
 
 Pressing `q`, `Esc`, or `Ctrl-C` before handoff, a camera/stream exception, a
-posture/identity mismatch, an incompatible yaw, or failure to confirm stream
+posture/identity mismatch, unavailable yaw, or failure to confirm stream
 cancellation stops/disconnects without calling `grabbing_box`. If `Ctrl-C`
 or an SDK/feedback exception arrives after an arm command has begun, the
 one-shot SDK handler is explicitly cancelled and awaited before the error is

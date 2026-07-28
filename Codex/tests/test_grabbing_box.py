@@ -6,6 +6,7 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -37,6 +38,290 @@ def test_start_pose_matches_latest_recorded_grasp_posture(grabbing_box):
         "left_arm": [-0.375, 0.391, 0.238, -1.576, 1.013, 1.467, 0.003],
         "head": [0.000, 0.870],
     }
+
+
+def test_mobile_ready_pose_matches_operator_recorded_arm_targets(grabbing_box):
+    right_deg = np.asarray(
+        [6.644, -21.489, -17.252, -129.031, -83.302, 53.394, 37.071],
+        dtype=np.float64,
+    )
+    left_deg = np.asarray(
+        [6.644, 21.488, 17.245, -129.036, 83.304, 53.392, -37.070],
+        dtype=np.float64,
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(grabbing_box.MOBILE_READY_RIGHT_ARM_DEG),
+        right_deg,
+    )
+    np.testing.assert_array_equal(
+        np.asarray(grabbing_box.MOBILE_READY_LEFT_ARM_DEG),
+        left_deg,
+    )
+    np.testing.assert_allclose(
+        grabbing_box.MOBILE_READY_RIGHT_ARM_RAD,
+        np.deg2rad(right_deg),
+        rtol=0.0,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        grabbing_box.MOBILE_READY_LEFT_ARM_RAD,
+        np.deg2rad(left_deg),
+        rtol=0.0,
+        atol=1e-12,
+    )
+
+
+def _install_mobile_ready_builder_fakes(grabbing_box, monkeypatch):
+    class HeaderBuilder:
+        def __init__(self):
+            self.hold_time = None
+
+        def set_control_hold_time(self, value):
+            self.hold_time = float(value)
+            return self
+
+    class JointImpedanceBuilder:
+        def __init__(self):
+            self.header = None
+            self.position = None
+            self.minimum_time = None
+            self.stiffness = None
+            self.damping_ratio = None
+            self.torque_limit_calls = []
+
+        def set_command_header(self, value):
+            self.header = value
+            return self
+
+        def set_position(self, value):
+            self.position = np.asarray(value, dtype=np.float64)
+            return self
+
+        def set_minimum_time(self, value):
+            self.minimum_time = float(value)
+            return self
+
+        def set_stiffness(self, value):
+            self.stiffness = np.asarray(value, dtype=np.float64)
+            return self
+
+        def set_damping_ratio(self, value):
+            self.damping_ratio = float(value)
+            return self
+
+        def set_torque_limit(self, value):
+            self.torque_limit_calls.append(value)
+            return self
+
+    class BodyBuilder:
+        def __init__(self):
+            self.right_arm = None
+            self.left_arm = None
+
+        def set_right_arm_command(self, value):
+            self.right_arm = value
+            return self
+
+        def set_left_arm_command(self, value):
+            self.left_arm = value
+            return self
+
+    class ComponentBuilder:
+        def __init__(self):
+            self.body = None
+
+        def set_body_command(self, value):
+            self.body = value
+            return self
+
+    class RobotCommandBuilder:
+        def __init__(self):
+            self.component = None
+
+        def set_command(self, value):
+            self.component = value
+            return self
+
+    monkeypatch.setattr(
+        grabbing_box.rby,
+        "CommandHeaderBuilder",
+        HeaderBuilder,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        grabbing_box.rby,
+        "JointImpedanceControlCommandBuilder",
+        JointImpedanceBuilder,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        grabbing_box.rby,
+        "BodyComponentBasedCommandBuilder",
+        BodyBuilder,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        grabbing_box.rby,
+        "ComponentBasedCommandBuilder",
+        ComponentBuilder,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        grabbing_box.rby,
+        "RobotCommandBuilder",
+        RobotCommandBuilder,
+        raising=False,
+    )
+
+
+def test_mobile_ready_command_is_arm_only_joint_impedance(
+    grabbing_box,
+    monkeypatch,
+):
+    _install_mobile_ready_builder_fakes(grabbing_box, monkeypatch)
+
+    command = grabbing_box.build_mobile_ready_command(
+        minimum_time=3.25,
+        hold_time=0.75,
+    )
+
+    body = command.component.body
+    assert body.right_arm is not None
+    assert body.left_arm is not None
+    for arm, target in (
+        (body.right_arm, grabbing_box.MOBILE_READY_RIGHT_ARM_RAD),
+        (body.left_arm, grabbing_box.MOBILE_READY_LEFT_ARM_RAD),
+    ):
+        np.testing.assert_allclose(arm.position, target, rtol=0.0, atol=1e-12)
+        np.testing.assert_array_equal(arm.stiffness, np.full(7, 60.0))
+        assert arm.minimum_time == pytest.approx(3.25)
+        assert arm.header.hold_time == pytest.approx(0.75)
+        assert arm.damping_ratio == pytest.approx(1.0)
+        assert arm.torque_limit_calls == []
+
+
+class _MobileReadyHandler:
+    def __init__(self, events, *, wait_result=True):
+        self.events = events
+        self.wait_result = wait_result
+
+    def wait_for(self, timeout_ms):
+        self.events.append(("wait_for", timeout_ms))
+        return self.wait_result
+
+    def get(self):
+        self.events.append(("get_feedback",))
+        return types.SimpleNamespace(
+            finish_code=sys.modules["rby1_sdk"].RobotCommandFeedback.FinishCode.Ok
+        )
+
+    def cancel(self):
+        self.events.append(("cancel",))
+
+
+class _MobileReadyRobot:
+    def __init__(self, grabbing_box, events, *, position=None, wait_result=True):
+        self.grabbing_box = grabbing_box
+        self.events = events
+        self.wait_result = wait_result
+        if position is None:
+            position = np.concatenate(
+                (
+                    grabbing_box.MOBILE_READY_RIGHT_ARM_RAD,
+                    grabbing_box.MOBILE_READY_LEFT_ARM_RAD,
+                )
+            )
+        self.position = np.asarray(position, dtype=np.float64)
+        self.robot_model = types.SimpleNamespace(
+            right_arm_idx=np.arange(7, dtype=np.int64),
+            left_arm_idx=np.arange(7, 14, dtype=np.int64),
+        )
+
+    def is_connected(self):
+        self.events.append(("is_connected",))
+        return True
+
+    def send_command(self, command, *args, **kwargs):
+        self.events.append(("send_command", command, args, kwargs))
+        return _MobileReadyHandler(self.events, wait_result=self.wait_result)
+
+    def model(self):
+        self.events.append(("model",))
+        return self.robot_model
+
+    def get_state(self):
+        self.events.append(("get_state",))
+        return types.SimpleNamespace(position=self.position.copy())
+
+
+def test_move_arms_to_mobile_ready_waits_then_verifies_measured_joints(
+    grabbing_box,
+    monkeypatch,
+):
+    events = []
+    command = object()
+    monkeypatch.setattr(
+        grabbing_box,
+        "build_mobile_ready_command",
+        lambda: command,
+    )
+    robot = _MobileReadyRobot(grabbing_box, events)
+
+    assert grabbing_box.move_arms_to_mobile_ready_pose(robot) is True
+
+    names = [event[0] for event in events]
+    assert names.index("send_command") < names.index("wait_for")
+    assert names.index("wait_for") < names.index("get_feedback")
+    assert names.index("get_feedback") < names.index("get_state")
+    send = next(event for event in events if event[0] == "send_command")
+    assert send[1] is command
+    timeout_ms = next(event[1] for event in events if event[0] == "wait_for")
+    assert 0 < timeout_ms <= 30_000
+
+
+def test_move_arms_to_mobile_ready_rejects_measured_joint_mismatch(
+    grabbing_box,
+    monkeypatch,
+):
+    events = []
+    monkeypatch.setattr(
+        grabbing_box,
+        "build_mobile_ready_command",
+        lambda: object(),
+    )
+    position = np.concatenate(
+        (
+            grabbing_box.MOBILE_READY_RIGHT_ARM_RAD.copy(),
+            grabbing_box.MOBILE_READY_LEFT_ARM_RAD.copy(),
+        )
+    )
+    position[3] += np.deg2rad(10.0)
+    robot = _MobileReadyRobot(grabbing_box, events, position=position)
+
+    assert grabbing_box.move_arms_to_mobile_ready_pose(robot) is False
+
+    assert ("get_state",) in events
+
+
+def test_move_arms_to_mobile_ready_timeout_cancels_without_state_verification(
+    grabbing_box,
+    monkeypatch,
+):
+    events = []
+    monkeypatch.setattr(
+        grabbing_box,
+        "build_mobile_ready_command",
+        lambda: object(),
+    )
+    robot = _MobileReadyRobot(grabbing_box, events, wait_result=False)
+
+    assert grabbing_box.move_arms_to_mobile_ready_pose(robot) is False
+
+    names = [event[0] for event in events]
+    assert "cancel" in names
+    assert "get_feedback" not in names
+    assert "get_state" not in names
 
 
 class PrepareRobotFake:
