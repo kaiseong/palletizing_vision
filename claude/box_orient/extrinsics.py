@@ -78,11 +78,17 @@ HEAD2_TO_D435_XYZ_RPY_ZYX_DEG = np.array([0.049, -0.0115, 0.057, -90.0, 0.0, -90
 # for the grasp / placement position.
 DEPTH_START_POINT_M = {"d405": 0.0, "d435": -0.0042}
 
-# link_torso_5 -> link_head_1 with head_0 = 0 (static URDF chain).
+# link_torso_5 -> link_head_1 with head_0 = 0 (static URDF chain; rby1a/A-type
+# values -- verify against the M-type V1.2 URDF for exact position. Yaw uses only
+# rotation, so this translation does not affect the orientation estimate.)
 T5_TO_HEAD1_ZERO_HEAD0_XYZ_M = np.array([0.022, 0.0, 0.200073451525], dtype=np.float64)
-# head_1 pitch used by the recorded D405 picking poses (override for the D435
-# observation posture via head1_pitch_rad).
+# Recorded observation posture, head_1 pitch [rad] (override via head1_pitch_rad).
+#   D405 clips: 0.436 (25 deg).
+#   D435IF clips (RB-Y1 V1.2, M-type): head = [0, 49.846] deg;
+#       torso = [0, 55, -59.988, 6.532, 0, 0] deg (torso only positions T5).
 HEAD1_PITCH_RAD_D405_RECORDED = 0.436
+HEAD1_PITCH_RAD_D435_RECORDED = float(np.deg2rad(49.846))
+_RECORDED_PITCH = {"d405": HEAD1_PITCH_RAD_D405_RECORDED, "d435": HEAD1_PITCH_RAD_D435_RECORDED}
 
 _MOUNTS = {"d405": HEAD2_TO_D405_XYZ_RPY_ZYX_DEG, "d435": HEAD2_TO_D435_XYZ_RPY_ZYX_DEG}
 _CALIBRATED = {"d405": True, "d435": True}
@@ -103,7 +109,11 @@ def camera_to_t5_static(camera: str = "d405", *, head1_pitch_rad: float | None =
     key = str(camera).lower()
     if key not in _MOUNTS:
         raise ValueError(f"unknown camera {camera!r}; use 'd405' or 'd435'")
-    pitch = HEAD1_PITCH_RAD_D405_RECORDED if head1_pitch_rad is None else float(head1_pitch_rad)
+    pitch = (
+        _RECORDED_PITCH.get(key, HEAD1_PITCH_RAD_D405_RECORDED)
+        if head1_pitch_rad is None
+        else float(head1_pitch_rad)
+    )
     t_head2_from_camera = _head2_from_camera(key)
     t_t5_from_head2 = make_transform(T5_TO_HEAD1_ZERO_HEAD0_XYZ_M) @ make_transform(
         [0.0, 0.0, 0.0], _rot_y(pitch)
