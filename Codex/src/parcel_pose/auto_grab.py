@@ -115,7 +115,7 @@ class AutoGrabConfig:
             )
 
 
-def _load_grabbing_box() -> ModuleType:
+def _load_grabbing_sequence() -> ModuleType:
     """Lazy-load the package-local grasp sequence only for robot execution."""
 
     try:
@@ -436,7 +436,7 @@ class AutoGrabRuntime:
                         "rby1_sdk is required for --auto-grab on the robot PC"
                     ) from exc
             if self._grabbing is None:
-                self._grabbing = _load_grabbing_box()
+                self._grabbing = _load_grabbing_sequence()
 
             self._robot = self._sdk.create_robot(self.config.address, "m")
             connected = self._robot.connect()

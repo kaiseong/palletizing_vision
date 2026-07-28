@@ -42,12 +42,14 @@ python3.12 -m pip install -e .
 박스, 팔, 손, 공구를 모두 치우고 책상만 보이는 상태에서 10초 녹화한다.
 
 ```bash
-python record.py --session-name empty_table --duration-sec 10 \
+PYTHONPATH=src python3.12 -m parcel_pose.cli record \
+  --output ../recordings/codex_640x480 \
+  --session-name empty_table --duration-sec 10 \
   --robot-state-json configs/rby1m_v1_2_fixed_pose.json
 ```
 
-`record.py`가 `640x480 @ 30 FPS`, 기본 config, 저장 위치
-`../recordings/codex_640x480/`를 자동으로 적용한다.
+기본 config가 `640x480 @ 30 FPS`를 적용하고, `--output`이 저장 위치를
+지정한다.
 
 기본 config의 책상 ROI `[120, 190, 420, 360]`는 현재 고정된 카메라와
 책상 배치에서 검증한 값이다. 카메라, head, torso 또는 책상을 움직였다면
@@ -71,7 +73,9 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli calibrate-plane \
 한 pose마다 박스를 완전히 멈춘 뒤 10초 녹화한다.
 
 ```bash
-python record.py --session-name box_0 --duration-sec 10 \
+PYTHONPATH=src python3.12 -m parcel_pose.cli record \
+  --output ../recordings/codex_640x480 \
+  --session-name box_0 --duration-sec 10 \
   --robot-state-json configs/rby1m_v1_2_fixed_pose.json
 ```
 

@@ -84,7 +84,7 @@ Target runtime is Python 3.12 on JetPack 6.2.2. Connected-component filtering re
 ```bash
 cd /home/kgs/workspace/Palletizing/Codex
 # Generic/headless development host only:
-python3.12 -m pip install -e '.[test,vision]'
+python3.12 -m pip install -e '.[vision]'
 ```
 
 The `vision` extra installs a headless PyPI OpenCV build for generic Python 3.12
@@ -99,7 +99,7 @@ the activated environment. A user-level `python3.12` can appear before conda in
 conda activate lerobot
 cd ~/kgs_ws/palletizing_vision/Codex
 python -c 'import sys, cv2; print(sys.executable); print(cv2.__version__, cv2.currentUIFramework())'
-python -m pip install -e '.[test]'
+python -m pip install -e .
 ```
 
 `live-view` needs a non-empty UI framework in the first command. A blank value
@@ -133,13 +133,15 @@ Codex/
 └── pyproject.toml      # Python 3.12 package/install metadata
 ```
 
-The root `Palletizing/grabbing_box.py`, `robot.py`, `claude/`, recordings, and
-generated `out/` videos are not runtime dependencies. `tests/`, `docs/`, and
-most of `scripts/` are optional verification/development material. Keep
+The supported deployment is this source tree with `pip install -e .`; a
+standalone non-editable wheel is not a complete deployment unit because the
+robot-specific calibration JSON files intentionally remain in `configs/`.
+
+Recordings and generated `out/` videos are not runtime dependencies. The
+repository intentionally excludes alternate implementations, test sources,
+comparison renderers, and legacy root-level robot entrypoints. Keep
 `scripts/build_jetson_pyrealsense2.sh` only when the target Jetson still needs
-the RealSense Python binding built locally. The comparison-only
-`scripts/render_algorithm_comparison.py` is intentionally not standalone
-because it also loads the Claude implementation.
+the RealSense Python binding built locally.
 
 Python packages and hardware bindings are installed on the robot PC rather
 than copied as project folders: NumPy, GUI-capable OpenCV, `pyrealsense2`, and
@@ -174,17 +176,18 @@ remain `nominal_unverified`; they are never relabelled as absolute/validated.
 
 ## Record raw D435 evidence
 
-Record an empty-table session first, then full/cropped box sessions. Raw streams are authoritative; aligned color-on-depth is optional debug evidence.
-The complete Python 3.12 command sequence and required capture matrix are in
-[`../RECORDING_GUIDE.md`](../RECORDING_GUIDE.md).
+Record an empty-table session first, then full/cropped box sessions. Raw streams
+are authoritative; aligned color-on-depth is optional debug evidence.
 
 ```bash
-python record.py --session-name empty_table --duration-sec 10
+PYTHONPATH=src python3.12 -m parcel_pose.cli record \
+  --output ../recordings/codex_640x480 \
+  --session-name empty_table \
+  --duration-sec 10
 ```
 
-The wrapper fixes raw Depth/RGB at `640x480 @ 30 FPS`, uses the nominal config,
-and stores sessions below `../recordings/codex_640x480/`. Advanced users can
-still call `python3.12 -m parcel_pose.cli record ...` directly.
+The config fixes raw Depth/RGB at `640x480 @ 30 FPS`; `--output` selects the
+session root.
 
 Recommended capture set:
 
@@ -251,54 +254,6 @@ The video preserves the recording's total timestamp duration and distinguishes
 validated registration from FK-plus-nominal-mount output. Without independent
 ground truth, its summary reports availability, continuity, and latency—not
 center/yaw accuracy.
-
-## Estimator-only performance gate
-
-Use the benchmark runner when changing hot-path geometry. It preloads all depth
-frames, runs one full warmup, measures five full passes of the estimator only,
-and refuses comparisons across different fixtures, runtime environments, or
-settings. Capture the baseline before editing the estimator:
-
-```bash
-env PYTHONPATH=src PYTHONHASHSEED=0 \
-  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-  NUMEXPR_NUM_THREADS=1 \
-taskset -c 2-5 python3.12 -m parcel_pose.benchmark capture \
-  --session ../recordings_/codex_640x480/box_complex \
-  --calibration ../out/box_complex_eval/calibration_fk_nominal.json \
-  --config configs/d435_rby1_nominal.json \
-  --warmup-passes 1 --repeats 5 \
-  --output ../out/perf/baseline.json
-```
-
-Run the candidate under exactly the same power, affinity, dependency, and
-thermal conditions:
-
-```bash
-env PYTHONPATH=src PYTHONHASHSEED=0 \
-  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-  NUMEXPR_NUM_THREADS=1 \
-taskset -c 2-5 python3.12 -m parcel_pose.benchmark compare \
-  --baseline ../out/perf/baseline.json \
-  --session ../recordings_/codex_640x480/box_complex \
-  --calibration ../out/box_complex_eval/calibration_fk_nominal.json \
-  --config configs/d435_rby1_nominal.json \
-  --warmup-passes 1 --repeats 5 \
-  --output ../out/perf/candidate.json
-```
-
-The default gate requires identical availability, abstention, observability,
-and canonical decisions; center/yaw/confidence must remain within tight numeric
-tolerances. It also requires at least 8% better p50, 10% better p95, and 8%
-higher estimator throughput. A timing comparison does not establish physical
-accuracy because `box_complex` has no independent ground truth.
-
-On the development host (x86_64, Python 3.13.12), direct scalar sorting in the
-fixed-window search changed p50 from `112.29` to `79.83 ms`, p95 from `117.26`
-to `82.12 ms`, and throughput from `8.97` to `12.55 FPS`, with zero numeric or
-decision differences across all 547 frames. These are not Jetson measurements.
-Capture a fresh baseline on the Orin with a fixed `nvpmodel`/clock/thermal state
-before using the result to select a servo update rate.
 
 ## Live perception
 
@@ -491,12 +446,14 @@ those values independently before unattended operation.
 ## Verification
 
 ```bash
-python3.12 -m compileall -q src tests
-python3.12 -m pytest -q
+python3.12 -m compileall -q src live_view.py
 PYTHONPATH=src python3.12 -m parcel_pose.cli --help
+PYTHONPATH=src python3.12 -c 'import parcel_pose.cli, parcel_pose.realtime, parcel_pose.auto_grab'
 ```
 
-Local verification covers synthetic tilted planes, fixed-size fitting, holes/outliers, crops, long/short ambiguity, angle boundaries, transform composition, output safety, raw recording round-trip, deterministic replay, and SDK-free imports.
+These checks are hardware-free: `pyrealsense2` and `rby1_sdk` stay lazy until
+their live or robot paths are explicitly started. Camera capture and physical
+robot motion still require verification on the Jetson/RB-Y1 system.
 
 The default fitter caps deterministic plane support at 6,000 points. This keeps
 more geometric support than the faster 4,000-point setting, which proved brittle
