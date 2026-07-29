@@ -859,6 +859,7 @@ def _controller_scene_sample(
     frame_id: int,
     accepted_observation_sequence: int,
     capture_timestamp_s: float,
+    accepted_monotonic_s: float,
     maximum_box_height_m: float,
     box_bottom_uncertainty_m: float,
 ) -> dict[str, Any]:
@@ -891,10 +892,19 @@ def _controller_scene_sample(
         float(held_proxy.center_base_xyz_m[2])
         - 0.5 * float(maximum_box_height_m)
     )
+    capture_age_at_acceptance_s = (
+        float(accepted_monotonic_s) - float(capture_timestamp_s)
+    )
     return {
         "frame_id": int(frame_id),
         "accepted_observation_sequence": int(accepted_observation_sequence),
         "capture_timestamp_s": float(capture_timestamp_s),
+        "accepted_monotonic_s": float(accepted_monotonic_s),
+        "capture_age_at_acceptance_s": float(capture_age_at_acceptance_s),
+        "fresh_at_acceptance": bool(
+            0.0 <= capture_age_at_acceptance_s
+            < _MAX_LIVE_CONTROL_RESULT_AGE_S
+        ),
         "held_top_distinct_from_stack": bool(
             held is not None and held.valid and held.distinct_from_stack
         ),
@@ -1421,6 +1431,7 @@ def _telemetry_record(
     odometry_error: str | None = None,
     motion_interlocks_ok: bool = False,
     motion_interlock_reason: str = "",
+    grip_result: Any | None = None,
     dispatch_result: str = "dry_run_no_actuation",
     T_base_depth: np.ndarray | None = None,
     slot1_hole_reference: Slot1HoleReference | None = None,
@@ -1472,6 +1483,9 @@ def _telemetry_record(
         "acquisition": None if acquisition is None else acquisition.to_dict(),
         "l_corner_gate": None if l_gate is None else asdict(l_gate),
         "hole_gate": None if hole_gate is None else asdict(hole_gate),
+        "grip_clearance_interlock": (
+            None if grip_result is None else to_jsonable(grip_result)
+        ),
         "odometry": None if odometry is None else asdict(odometry),
         "odometry_error": odometry_error,
         "alignment": {
@@ -1889,12 +1903,14 @@ def run_pallet_live(
                             frame_id=frame.depth_frame_number,
                             accepted_observation_sequence=accepted_scene_sequence,
                             capture_timestamp_s=frame_source_monotonic_s,
+                            accepted_monotonic_s=decision_now_s,
                             maximum_box_height_m=maximum_box_height_m,
                             box_bottom_uncertainty_m=box_bottom_uncertainty_m,
                         )
                     )
                 else:
                     scene_window.clear()
+                grip_result: Any | None = None
                 if execute:
                     assert controller is not None
                     wheel_status = controller.wheel_stop_status()
@@ -1915,14 +1931,18 @@ def run_pallet_live(
                     )
                     zero_acknowledged = _zero_command_acknowledged(controller)
                     if frame_result_fresh:
-                        grip = controller.evaluate_grip_and_clearance_dwell(
+                        grip_result = controller.evaluate_grip_and_clearance_dwell(
                             list(scene_window),
                             allow_fixed_ready_geometry_only=(
                                 allow_geometry_only_grip_check
                             ),
                         )
-                        motion_interlocks_ok = bool(getattr(grip, "passed", False))
-                        grip_reasons = tuple(getattr(grip, "reasons", ()))
+                        motion_interlocks_ok = bool(
+                            getattr(grip_result, "passed", False)
+                        )
+                        grip_reasons = tuple(
+                            getattr(grip_result, "reasons", ())
+                        )
                         motion_interlock_reason = (
                             "" if motion_interlocks_ok else ";".join(grip_reasons)
                         )
@@ -2097,6 +2117,7 @@ def run_pallet_live(
                     odometry_error=odometry_error,
                     motion_interlocks_ok=motion_interlocks_ok,
                     motion_interlock_reason=motion_interlock_reason,
+                    grip_result=grip_result,
                     dispatch_result=dispatch_result,
                     T_base_depth=T_base_depth,
                     slot1_hole_reference=slot1_hole_reference,

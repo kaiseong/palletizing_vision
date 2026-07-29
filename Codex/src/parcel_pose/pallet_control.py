@@ -215,6 +215,7 @@ class PalletControlConfig:
     held_top_downward_drift_m: float = 0.005
     held_top_direct_plane_dwell_frames: int = 5
     held_top_sample_fresh_after_s: float = 0.20
+    clearance_scene_max_span_s: float = 0.50
     maximum_box_height_m: float = 0.164
     minimum_clearance_m: float = 0.050
     ft_max_force_n: float | None = None
@@ -455,6 +456,12 @@ class PalletControlConfig:
                     defaults.held_top_sample_fresh_after_s,
                 )
             ),
+            clearance_scene_max_span_s=float(
+                grip_interlock.get(
+                    "maximum_scene_evidence_span_s",
+                    defaults.clearance_scene_max_span_s,
+                )
+            ),
             maximum_box_height_m=float(
                 held_box.get("maximum_height_m", defaults.maximum_box_height_m)
             ),
@@ -513,6 +520,7 @@ class PalletControlConfig:
             "held_top_std_m",
             "held_top_downward_drift_m",
             "held_top_sample_fresh_after_s",
+            "clearance_scene_max_span_s",
             "maximum_box_height_m",
             "minimum_clearance_m",
         ):
@@ -561,6 +569,8 @@ class PalletControlConfig:
             )
         if self.held_top_sample_fresh_after_s > 0.20 + 1e-12:
             raise ValueError("held-top evidence freshness cannot exceed 0.20 seconds")
+        if self.clearance_scene_max_span_s > 0.50 + 1e-12:
+            raise ValueError("clearance scene evidence span cannot exceed 0.50 seconds")
         if self.maximum_box_height_m < 0.164 - 1e-12:
             raise ValueError("maximum box height cannot be below measured 164 mm")
         if self.minimum_clearance_m < 0.050 - 1e-12:
@@ -976,9 +986,22 @@ class GripContinuityResult:
     held_top_std_m: float | None
     held_top_downward_drift_m: float | None
     clearance_lower_bound_m: float | None
+    scene_evidence_span_s: float | None = None
+    scene_latest_age_s: float | None = None
+    scene_max_capture_age_at_acceptance_s: float | None = None
     force_torque_verified: bool = False
     clearance_source: str = "unavailable"
     fixed_ready_geometry_only_authorized: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ClearanceSceneSample:
+    held_z_m: float
+    held_uncertainty_m: float
+    stack_z_m: float
+    stack_uncertainty_m: float
+    capture_timestamp_s: float
+    accepted_monotonic_s: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -1972,10 +1995,11 @@ class RBY1PalletController:
                 ):
                     reasons.append("abrupt_force_change")
 
-        direct_plane_run: list[tuple[float, float, float, float]] = []
+        direct_plane_run: list[_ClearanceSceneSample] = []
         previous_frame_id: int | None = None
         previous_observation_sequence: int | None = None
-        previous_timestamp_s: float | None = None
+        previous_capture_timestamp_s: float | None = None
+        previous_accepted_monotonic_s: float | None = None
         previous_stack_source: str | None = None
         continuity_rejection: str | None = None
         for accepted_window_index, scene in enumerate(scene_window, start=1):
@@ -2011,15 +2035,19 @@ class RBY1PalletController:
                 accepted_window_index,
             )
             timestamp_raw = _read_field(scene, "capture_timestamp_s")
+            accepted_raw = _read_field(scene, "accepted_monotonic_s")
             try:
                 frame_id = int(frame_id_raw)
                 observation_sequence = int(observation_sequence_raw)
-                timestamp_s = float(timestamp_raw)
+                capture_timestamp_s = float(timestamp_raw)
+                accepted_monotonic_s = float(accepted_raw)
             except (TypeError, ValueError):
                 direct_plane_run.clear()
                 previous_frame_id = None
                 previous_observation_sequence = None
-                previous_timestamp_s = None
+                previous_capture_timestamp_s = None
+                previous_accepted_monotonic_s = None
+                previous_stack_source = None
                 continuity_rejection = "held_top_frame_identity_unavailable"
                 continue
             identity_valid = (
@@ -2029,27 +2057,34 @@ class RBY1PalletController:
                 and not isinstance(observation_sequence_raw, bool)
                 and observation_sequence > 0
                 and observation_sequence_raw == observation_sequence
-                and math.isfinite(timestamp_s)
+                and math.isfinite(capture_timestamp_s)
+                and not isinstance(accepted_raw, bool)
+                and math.isfinite(accepted_monotonic_s)
             )
-            age_s = now_s - timestamp_s
+            capture_age_at_acceptance_s = (
+                accepted_monotonic_s - capture_timestamp_s
+            )
+            accepted_fresh = (
+                identity_valid
+                and 0.0 <= capture_age_at_acceptance_s
+                <= self.config.held_top_sample_fresh_after_s
+            )
             if (
                 not identity_valid
                 or not distinct
                 or held is None
                 or stack is None
-                or age_s < 0.0
-                or age_s > self.config.held_top_sample_fresh_after_s
+                or not accepted_fresh
             ):
                 direct_plane_run.clear()
                 previous_frame_id = None
                 previous_observation_sequence = None
-                previous_timestamp_s = None
+                previous_capture_timestamp_s = None
+                previous_accepted_monotonic_s = None
+                previous_stack_source = None
                 continuity_rejection = (
-                    "held_top_evidence_stale"
-                    if identity_valid
-                    and (
-                        age_s < 0.0 or age_s > self.config.held_top_sample_fresh_after_s
-                    )
+                    "clearance_evidence_stale_at_acceptance"
+                    if identity_valid and not accepted_fresh
                     else invalid_reason
                 )
                 continue
@@ -2071,7 +2106,8 @@ class RBY1PalletController:
                 direct_plane_run.clear()
                 previous_frame_id = None
                 previous_observation_sequence = None
-                previous_timestamp_s = None
+                previous_capture_timestamp_s = None
+                previous_accepted_monotonic_s = None
                 previous_stack_source = None
                 continuity_rejection = (
                     "fixed_ready_stack_plane_source_invalid"
@@ -2087,30 +2123,56 @@ class RBY1PalletController:
                 elif (
                     previous_observation_sequence is None
                     or observation_sequence != previous_observation_sequence + 1
-                    or previous_timestamp_s is None
-                    or timestamp_s <= previous_timestamp_s
+                    or previous_capture_timestamp_s is None
+                    or capture_timestamp_s <= previous_capture_timestamp_s
+                    or previous_accepted_monotonic_s is None
+                    or accepted_monotonic_s <= previous_accepted_monotonic_s
                     or stack_source != previous_stack_source
                 ):
                     direct_plane_run.clear()
                     continuity_rejection = "clearance_evidence_not_contiguous"
 
-            direct_plane_run.append((held_value, held_sigma, stack_value, stack_sigma))
+            direct_plane_run.append(
+                _ClearanceSceneSample(
+                    held_z_m=held_value,
+                    held_uncertainty_m=held_sigma,
+                    stack_z_m=stack_value,
+                    stack_uncertainty_m=stack_sigma,
+                    capture_timestamp_s=capture_timestamp_s,
+                    accepted_monotonic_s=accepted_monotonic_s,
+                )
+            )
             previous_frame_id = frame_id
             previous_observation_sequence = observation_sequence
-            previous_timestamp_s = timestamp_s
+            previous_capture_timestamp_s = capture_timestamp_s
+            previous_accepted_monotonic_s = accepted_monotonic_s
             previous_stack_source = stack_source
 
         required_direct_frames = self.config.held_top_direct_plane_dwell_frames
         if len(direct_plane_run) > required_direct_frames:
             direct_plane_run = direct_plane_run[-required_direct_frames:]
-        held_top_z = [sample[0] for sample in direct_plane_run]
-        held_top_uncertainty = [sample[1] for sample in direct_plane_run]
-        stack_top_z = [sample[2] for sample in direct_plane_run]
-        stack_top_uncertainty = [sample[3] for sample in direct_plane_run]
+        held_top_z = [sample.held_z_m for sample in direct_plane_run]
+        held_top_uncertainty = [
+            sample.held_uncertainty_m for sample in direct_plane_run
+        ]
+        stack_top_z = [sample.stack_z_m for sample in direct_plane_run]
+        stack_top_uncertainty = [
+            sample.stack_uncertainty_m for sample in direct_plane_run
+        ]
+        accepted_timestamps = [
+            sample.accepted_monotonic_s for sample in direct_plane_run
+        ]
+        capture_ages_at_acceptance = [
+            sample.accepted_monotonic_s - sample.capture_timestamp_s
+            for sample in direct_plane_run
+        ]
 
         held_std: float | None = None
         held_drift: float | None = None
         clearance: float | None = None
+        evidence_span_s: float | None = None
+        latest_age_s: float | None = None
+        max_capture_age_at_acceptance_s: float | None = None
         clearance_source = (
             "fixed_ready_dual_eef_box_bottom_to_stack_plane"
             if allow_fixed_ready_geometry_only
@@ -2122,6 +2184,21 @@ class RBY1PalletController:
             )
             reasons.append("insufficient_contiguous_held_top_frames")
         else:
+            evidence_span_s = accepted_timestamps[-1] - accepted_timestamps[0]
+            latest_age_s = now_s - accepted_timestamps[-1]
+            max_capture_age_at_acceptance_s = max(capture_ages_at_acceptance)
+            if (
+                not math.isfinite(latest_age_s)
+                or latest_age_s < 0.0
+                or latest_age_s > self.config.held_top_sample_fresh_after_s
+            ):
+                reasons.append("held_top_evidence_stale")
+            if (
+                not math.isfinite(evidence_span_s)
+                or evidence_span_s < 0.0
+                or evidence_span_s > self.config.clearance_scene_max_span_s
+            ):
+                reasons.append("clearance_evidence_span_too_long")
             held_array = np.asarray(held_top_z, dtype=np.float64)
             held_std = float(np.std(held_array))
             held_drift = max(0.0, float(held_array[0] - held_array[-1]))
@@ -2160,6 +2237,11 @@ class RBY1PalletController:
             held_top_std_m=held_std,
             held_top_downward_drift_m=held_drift,
             clearance_lower_bound_m=clearance,
+            scene_evidence_span_s=evidence_span_s,
+            scene_latest_age_s=latest_age_s,
+            scene_max_capture_age_at_acceptance_s=(
+                max_capture_age_at_acceptance_s
+            ),
             force_torque_verified=force_torque_verified,
             clearance_source=clearance_source,
             fixed_ready_geometry_only_authorized=(

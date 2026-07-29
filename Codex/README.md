@@ -385,6 +385,13 @@ it with the stack top plane. Direct close-range RGB-D evidence for the carried
 box top is not trusted in this commissioning path because the held box is near
 the camera and can be cropped, occluded by the robot, or depth-noisy.
 
+The clearance dwell deliberately uses three separate time checks. Every depth
+sample must have been accepted within `0.20 s` of capture, the newest accepted
+sample must still be within `0.20 s`, and the five-frame evidence run must span
+no more than `0.50 s`. This supports the measured approximately 10 Hz pallet
+pipeline without weakening the independent `0.15 s` current-frame actuation
+gate. Do not replace these checks with one enlarged global freshness timeout.
+
 An already-released `ReadyHoldHandoff` is also retained only as a data/test
 model. `GripHandoff` remains a typed design scaffold. Both ownership forms are
 still rejected for integrated box-pick-to-pallet takeover because the existing

@@ -32,6 +32,14 @@ between processed observations. Requiring adjacent hardware counters for the
 grip/clearance dwell makes the interlock impossible to satisfy even though the
 accepted observations themselves are fresh and sequential.
 
+A Jetson live run at commit `8af7223` exposed a second timing mismatch. The
+processed capture cadence was approximately 10 Hz and a five-frame window
+spanned a median `0.367 s`, but the controller required every historical frame
+to remain within `0.20 s` of the current evaluation time. The five-frame gate
+therefore could not complete: all 308 commands remained zero even though 303
+frames had stable coarse edge evidence and conservative vertical clearance was
+about `0.207 m`.
+
 ## Decision
 
 - Keep strict `LCornerObservation.valid` unchanged. A disconnected edge pair
@@ -51,6 +59,12 @@ accepted observations themselves are fresh and sequential.
   hardware frame counter. The dwell requires consecutive accepted fresh
   observations and strictly increasing source counters/timestamps, not
   numerically adjacent sensor counters.
+- Separate current-frame freshness from historical clearance-dwell timing.
+  Each scene must be fresh when accepted, the newest accepted scene must remain
+  fresh, and five consecutive scenes must fit inside an explicit `0.50 s`
+  evidence span. Keep the independent live actuation result-age cap at
+  `0.15 s`; do not raise it or reduce the five-frame dwell to accommodate the
+  measured 10 Hz processing cadence.
 - Treat grip/vertical-clearance evidence as a rolling fresh interlock during an
   authorized coarse step and continuous fine alignment. Stationary evidence is
   separately mandatory for step authorization, post-stop reacquisition,
