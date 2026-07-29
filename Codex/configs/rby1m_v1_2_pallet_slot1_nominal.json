@@ -11,7 +11,7 @@
       "left_arm": [-1.120, 0.383, 0.048, -1.066, 0.824, 1.109, -0.157],
       "head": [0.0, 0.870]
     },
-    "ready_transition_minimum_time_s": 5.0,
+    "ready_transition_minimum_time_s": 3.0,
     "ready_tolerance_deg": 1.0,
     "arm_joint_impedance_stiffness_nm_per_rad": [150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0],
     "arm_torque_limit": "sdk_default"
@@ -172,7 +172,7 @@
     "arrival_outer_m": 0.015,
     "arrival_yaw_inner_rad": 0.05235987755982989,
     "arrival_yaw_outer_rad": 0.08726646259971647,
-    "arrival_min_frames": 5,
+    "arrival_min_frames": 4,
     "arrival_min_duration_s": 0.35,
     "wheel_linear_stop_mps": 0.01,
     "wheel_angular_stop_radps": 0.02,
@@ -190,7 +190,7 @@
     "maximum_descent_m": 0.250,
     "descent_fraction": 0.6666666666666666,
     "maximum_planned_descent_m": 0.0,
-    "maximum_release_gap_m": 0.120,
+    "maximum_release_gap_m": 0.170,
     "release_axis_max_deviation_deg": 10.0,
     "alignment_hold_before_place_s": 1.0,
     "squeeze_offset_m": 0.150,

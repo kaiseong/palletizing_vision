@@ -73,58 +73,6 @@ def depth_to_meters(depth: ArrayLike, depth_scale: float | None = None) -> Float
     return array.astype(np.float64, copy=False)
 
 
-def deproject_depth(
-    depth: ArrayLike,
-    intrinsics: CameraIntrinsics,
-    *,
-    depth_scale: float | None = None,
-) -> FloatArray:
-    """Deproject a raw-depth grid using its own active-profile intrinsics."""
-
-    _validate_intrinsics(intrinsics)
-    depth_m = depth_to_meters(depth, depth_scale)
-    height, width = depth_m.shape
-    if int(intrinsics.width) != width or int(intrinsics.height) != height:
-        raise ValueError(
-            "depth shape does not match raw-depth intrinsics: "
-            f"{depth_m.shape} vs ({intrinsics.height}, {intrinsics.width})"
-        )
-    rows, cols = np.indices((height, width), dtype=np.float64)
-    z = depth_m
-    x = (cols - float(intrinsics.cx)) * z / float(intrinsics.fx)
-    y = (rows - float(intrinsics.cy)) * z / float(intrinsics.fy)
-    points = np.stack((x, y, z), axis=-1)
-    invalid = ~np.isfinite(z) | (z <= 0.0)
-    points[invalid] = np.nan
-    return points
-
-
-def pixel_rays(
-    pixels_uv: ArrayLike,
-    intrinsics: CameraIntrinsics,
-    *,
-    normalize: bool = False,
-) -> FloatArray:
-    """Create depth-optical rays ``[(u-cx)/fx, (v-cy)/fy, 1]``."""
-
-    _validate_intrinsics(intrinsics)
-    pixels = np.asarray(pixels_uv, dtype=np.float64)
-    if pixels.ndim == 1:
-        pixels = pixels.reshape(1, 2)
-    if pixels.ndim != 2 or pixels.shape[1] != 2:
-        raise ValueError(f"pixels_uv must have shape (N, 2), got {pixels.shape}")
-    rays = np.column_stack(
-        (
-            (pixels[:, 0] - float(intrinsics.cx)) / float(intrinsics.fx),
-            (pixels[:, 1] - float(intrinsics.cy)) / float(intrinsics.fy),
-            np.ones(pixels.shape[0], dtype=np.float64),
-        )
-    )
-    if normalize:
-        rays /= np.linalg.norm(rays, axis=1, keepdims=True)
-    return rays
-
-
 def intersect_rays_with_plane(
     rays: ArrayLike,
     plane: Plane,
@@ -336,38 +284,3 @@ class DepthPlaneProjector:
             },
         )
 
-
-def project_depth_to_plane(
-    depth: ArrayLike,
-    intrinsics: CameraIntrinsics,
-    plane: Plane,
-    *,
-    depth_scale: float | None = None,
-    slab_tolerance_m: float = 0.020,
-    min_depth_m: float = 0.20,
-    max_depth_m: float = 2.0,
-    support_mask: ArrayLike | None = None,
-    max_points: int | None = 50_000,
-) -> PlaneProjection:
-    """Gate raw depth around a plane, then ray-intersect exact plane geometry.
-
-    ``support_mask`` is optional associated RGB/candidate evidence.  It can
-    only remove points after the metric depth/plane gate; RGB never supplies
-    depth, scale, or the final projective geometry.
-    """
-
-    return DepthPlaneProjector(intrinsics, plane).project(
-        depth,
-        depth_scale=depth_scale,
-        slab_tolerance_m=slab_tolerance_m,
-        min_depth_m=min_depth_m,
-        max_depth_m=max_depth_m,
-        support_mask=support_mask,
-        max_points=max_points,
-    )
-
-
-# More explicit compatibility names used by calibration/replay code.
-ray_plane_intersections = intersect_rays_with_plane
-points_to_plane_xy = project_points_to_plane
-plane_xy_to_points = unproject_plane_points

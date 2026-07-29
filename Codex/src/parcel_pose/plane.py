@@ -233,7 +233,3 @@ def fit_plane_ransac(
     )
 
 
-# Clear aliases for callers that use calibration terminology.
-top_plane_from_table = offset_plane
-point_plane_signed_distances = signed_distances
-

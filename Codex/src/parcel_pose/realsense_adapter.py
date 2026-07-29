@@ -383,11 +383,7 @@ class RealSenseAdapter:
         self.stop()
 
 
-D435Adapter = RealSenseAdapter
-
-
 __all__ = [
-    "D435Adapter",
     "D435StreamConfig",
     "RealSenseAdapter",
     "RealSenseUnavailableError",

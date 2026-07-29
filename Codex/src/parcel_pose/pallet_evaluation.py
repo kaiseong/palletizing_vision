@@ -1196,7 +1196,4 @@ def evaluate_pallet_session(
     return summary
 
 
-replay_pallet_session = evaluate_pallet_session
-
-
-__all__ = ["evaluate_pallet_session", "replay_pallet_session"]
+__all__ = ["evaluate_pallet_session"]

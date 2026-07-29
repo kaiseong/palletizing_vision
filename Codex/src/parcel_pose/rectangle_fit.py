@@ -179,10 +179,6 @@ def _line_normalize(theta: float) -> float:
     return float(theta % math.pi)
 
 
-def _line_distance(a: float, b: float) -> float:
-    return abs((float(a) - float(b) + math.pi / 2.0) % math.pi - math.pi / 2.0)
-
-
 def _validate_points(points_xy: ArrayLike) -> FloatArray:
     points = np.asarray(points_xy, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 2:
@@ -656,6 +652,3 @@ def fit_fixed_rectangle(
         },
     )
 
-
-# Concise alias used in integration code.
-fit_rectangle = fit_fixed_rectangle

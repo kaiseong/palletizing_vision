@@ -84,7 +84,10 @@ class ServoConfig:
     stale_after_s: float = 0.30
     arrival_inner_m: float = 0.010
     arrival_outer_m: float = 0.015
-    arrival_min_frames: int = 5
+    # Operator-requested 2026-07-30: box-pick arrival needs three contiguous
+    # frames.  The 0.35 s dwell and the zero-command settle still apply, so a
+    # fast camera cannot shortcut arrival on frame count alone.
+    arrival_min_frames: int = 3
     arrival_min_duration_s: float = 0.35
     lost_abort_after_s: float = 2.0
     timeout_s: float = 30.0

@@ -157,15 +157,10 @@ def dumps_strict(payload: Any, *, indent: int | None = None, sort_keys: bool = T
     )
 
 
-def pose_estimate_to_json(estimate: PoseEstimate, *, indent: int | None = None) -> str:
-    return dumps_strict(pose_estimate_to_dict(estimate), indent=indent)
-
-
 __all__ = [
     "UnsafeOutputError",
     "dumps_strict",
     "pose_estimate_to_dict",
-    "pose_estimate_to_json",
     "to_jsonable",
     "validate_perception_only_keys",
 ]

@@ -206,3 +206,44 @@ def test_descent_plan_state_mismatch_is_rejected() -> None:
             descent_plan=drifted,
             requested_squeeze_offset_m=None,
         )
+
+
+def test_release_follows_the_torso_frame_not_the_base_frame() -> None:
+    """A yawed torso opens along its own Y axis."""
+
+    import dataclasses
+    import math as _math
+
+    controller = offline_controller()
+    yaw = _math.radians(25.0)
+    rotation = np.asarray(
+        ((_math.cos(yaw), -_math.sin(yaw), 0.0),
+         (_math.sin(yaw), _math.cos(yaw), 0.0),
+         (0.0, 0.0, 1.0)),
+        dtype=np.float64,
+    )
+    torso = np.eye(4, dtype=np.float64)
+    torso[:3, :3] = rotation
+    torso[:3, 3] = (0.0, 0.0, 0.90)
+
+    # Hands separated along the rotated torso Y so the grip axis matches.
+    torso_y = rotation @ np.asarray((0.0, 1.0, 0.0))
+    right = tuple(np.asarray((0.450, 0.0, 0.300)) - 0.130 * torso_y)
+    left = tuple(np.asarray((0.450, 0.0, 0.300)) + 0.130 * torso_y)
+    state = dataclasses.replace(
+        measured_state(right_xyz=right, left_xyz=left), T_base_torso=torso
+    )
+    plan = descent_plan(planned_delta_z_m=0.0, right_xyz=right, left_xyz=left)
+    _, release = release_from(controller, state, plan)
+    spread = controller.config.placement_release_spread_m
+
+    # Deviation is zero because the grip axis is exactly the torso Y axis.
+    assert release.release_axis_deviation_rad == pytest.approx(0.0, abs=1e-9)
+    assert release.inter_eef_axis_base == pytest.approx(tuple(-torso_y))
+    # Each hand travels one spread along torso Y, which now has a base X part.
+    delta_right = release.right_T_base_eef[:3, 3] - plan.right_target_base[:3, 3]
+    assert delta_right == pytest.approx(-spread * torso_y)
+    assert abs(delta_right[0]) > 1e-3  # would be exactly 0 for a base-Y opening
+    # Vertical motion stays exactly zero.
+    assert release.right_T_base_eef[2, 3] == plan.right_target_base[2, 3]
+    assert release.left_T_base_eef[2, 3] == plan.left_target_base[2, 3]

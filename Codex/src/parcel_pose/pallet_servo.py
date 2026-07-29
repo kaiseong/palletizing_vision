@@ -187,7 +187,10 @@ class PalletServoConfig:
     arrival_outer_m: float = 0.015
     arrival_yaw_inner_rad: float = math.radians(3.0)
     arrival_yaw_outer_rad: float = math.radians(5.0)
-    arrival_min_frames: int = 5
+    # Operator-requested 2026-07-30: four contiguous frames for the loaded
+    # pallet approach (box-pick uses three).  The 0.35 s dwell still runs in
+    # parallel, so a fast camera cannot shortcut arrival on frame count alone.
+    arrival_min_frames: int = 4
     arrival_min_duration_s: float = 0.35
     wheel_linear_stop_mps: float = 0.010
     wheel_angular_stop_radps: float = 0.020
@@ -244,8 +247,8 @@ class PalletServoConfig:
         ):
             raise ValueError("arrival_min_frames must be an integer")
         object.__setattr__(self, "arrival_min_frames", int(self.arrival_min_frames))
-        if self.arrival_min_frames < 5:
-            raise ValueError("arrival_min_frames cannot be less than 5")
+        if self.arrival_min_frames < 3:
+            raise ValueError("arrival_min_frames cannot be less than 3")
         if self.arrival_outer_m <= self.arrival_inner_m:
             raise ValueError("arrival_outer_m must exceed arrival_inner_m")
         if self.arrival_yaw_outer_rad <= self.arrival_yaw_inner_rad:

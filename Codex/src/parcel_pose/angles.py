@@ -71,24 +71,14 @@ def classify_canonical_angle_deg(
     return CanonicalAngleResult(reference, residual, margin, "constrained")
 
 
-# Compact aliases used by callers that already operate in degrees.
-normalize_line_deg = normalize_line_angle_deg
-normalize_signed_line_deg = normalize_signed_line_angle_deg
-line_difference_deg = line_angle_difference_deg
-classify_reference_deg = classify_canonical_angle_deg
-
 
 __all__ = [
     "CanonicalAngleResult",
     "classify_canonical_angle_deg",
-    "classify_reference_deg",
     "line_angle_difference_deg",
     "line_angle_difference_rad",
-    "line_difference_deg",
     "normalize_line_angle_deg",
     "normalize_line_angle_rad",
-    "normalize_line_deg",
     "normalize_signed_line_angle_deg",
     "normalize_signed_line_angle_rad",
-    "normalize_signed_line_deg",
 ]

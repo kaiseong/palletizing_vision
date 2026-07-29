@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>슬롯 1 위치 정렬 설명</title>
+<style>
+ body { font-family:'NanumGothic'; font-size:10.5pt; line-height:1.62; color:#1a1a1a; }
+ h1 { font-size:20pt; margin:0 0 4pt 0; }
+ h2 { font-size:14pt; margin:20pt 0 6pt 0; border-bottom:1.5pt solid #333; padding-bottom:3pt; }
+ h3 { font-size:11.5pt; margin:13pt 0 4pt 0; color:#1b3a5c; }
+ p, li { font-size:10.5pt; }
+ .sub { color:#555; font-size:9.5pt; margin:0 0 14pt 0; }
+ .box { border:1pt solid #bbb; background:#f7f7f7; padding:7pt 10pt; margin:8pt 0; }
+ .warn { border:1pt solid #e0a0a0; background:#fdf3f3; padding:7pt 10pt; margin:8pt 0; }
+ .key { border-left:4pt solid #2b6cb0; background:#f0f6ff; padding:6pt 10pt; margin:8pt 0; }
+ table { border-collapse:collapse; margin:8pt 0; width:100%; }
+ th,td { border:0.6pt solid #999; padding:3.5pt 6pt; font-size:9.5pt; text-align:left; vertical-align:top; }
+ th { background:#e9edf2; }
+ code { font-family:'NanumGothicCoding','DejaVu Sans Mono'; font-size:9.5pt; background:#eef0f2; }
+ pre { font-family:'NanumGothicCoding','DejaVu Sans Mono'; font-size:9pt; background:#f4f5f7;
+       border:0.6pt solid #ccc; padding:6pt 8pt; }
+ .cap { font-size:9pt; color:#555; margin:2pt 0 12pt 0; }
+ .pb { page-break-before:always; }
+</style></head><body>
+
+<h1>RB-Y1 팔레타이징 — 슬롯 1 위치를 어떻게 맞추는가</h1>
+<p class="sub">대상: 슬롯 1 정렬 경로 (<code>pallet.py live --auto-palletize-slot1</code>) &nbsp;|&nbsp;
+근거 코드: <code>pallet_servo.py</code>, <code>pallet_runtime.py</code>,
+<code>configs/rby1m_v1_2_pallet_slot1_nominal.json</code> &nbsp;|&nbsp; 2026-07-30</p>
+
+<div class="key">
+<b>한 문장 요약</b><br>
+카메라로 지금 보이는 팔레트 중앙 구멍의 중심을, <b>작업자가 예전에 손으로 맞춰둔 좌표</b>와 비교해서
+그 차이가 0이 되도록 모바일 베이스를 움직입니다. 차이가 충분히 작아진 상태가 일정 시간 유지되고,
+<b>실제 바퀴가 멈춘 것까지 확인되면</b> "도착"으로 판정합니다.
+</div>
+
+<h2>1. 큰 그림</h2>
+
+<img src="fig1.png" width="700">
+<p class="cap">그림 1. 로봇 base 좌표에서 본 팔레트와 기준점. 초록 화살표를 0으로 만드는 것이 정렬의 전부다.</p>
+
+<p>정렬에 등장하는 것은 딱 세 가지입니다.</p>
+<table>
+<tr><th width="20%">이름</th><th width="30%">무엇인가</th><th>어디서 오는가</th></tr>
+<tr><td><b>현재 관측</b></td><td>지금 카메라에 보이는 팔레트 적층의 중심과 방향</td>
+    <td>D435 depth로 적층 윗면 평면을 찾고, 중앙 홀 또는 외곽 L코너를 실측 치수 모델에 맞춰 계산</td></tr>
+<tr><td><b>시연 기준점</b></td><td>"여기가 슬롯 1을 놓을 수 있는 자리"라고 기록해 둔 값</td>
+    <td>설정 파일에 박혀 있는 고정값. 작업자가 눈으로 맞춘 자세에서 16프레임 평균</td></tr>
+<tr><td><b>오차</b></td><td>현재 관측 − 시연 기준점 (x, y, yaw 세 개)</td>
+    <td>매 카메라 프레임마다 새로 계산</td></tr>
+</table>
+
+<h3>정확히 무엇을 무엇에 맞추는가 (자주 오해하는 지점)</h3>
+<div class="key">
+맞추는 대상은 <b>중앙 네모 구멍의 중심 (x, y)</b>와 <b>그 방향 (yaw)</b>, 세 개입니다.<br>
+목표는 설정에 적힌 <b>[0.865000, 0.139523] m, -90도</b>입니다.<br>
+즉 "추정한 구멍 중심이 지정한 좌표에 오도록" 맞추는 것이 맞습니다.
+</div>
+
+<p>다만 세 가지를 구분해야 합니다.</p>
+
+<p><b>(1) 움직이는 것은 팔레트가 아니라 로봇입니다.</b>
+두 값 모두 <b>base 좌표</b>, 즉 로봇에 붙어 있는 좌표계로 표현됩니다. 팔레트는 가만히 있고
+로봇이 움직이므로, "구멍 중심의 base 좌표를 [0.865, 0.1395]로 만든다"는 것은 실제로는
+<b>로봇이 팔레트에 대해 정해진 자리로 이동한다</b>는 뜻입니다.</p>
+
+<p><b>(2) 서보가 쫓는 것은 구멍 중심이고, 슬롯 1 지점이 아닙니다.</b>
+슬롯 1은 구멍 중심에서 고정 오프셋(+0.20175 m, +0.128 m)만큼 떨어진 곳으로 계산됩니다(그림 1 점선).
+서보는 그 오프셋을 쓰지 않습니다. 구멍 중심만 기준점에 맞춥니다.<br>
+그래도 되는 이유는, 기준점 자체가 <b>"이 자리에 서면 고정 ready 자세의 양팔이 슬롯 1 위에 온다"</b>는
+관계를 작업자가 시연으로 확인한 값이기 때문입니다. 팔은 정렬 중 고정된 자세로 있습니다.</p>
+
+<p><b>(3) 구멍이 안 보일 때도 맞추는 양은 같습니다.</b>
+멀어서 중앙 구멍이 보이지 않으면 외곽 L코너로 <b>같은 구멍 중심을 역산</b>해 씁니다.
+관측 방법만 바뀌고 비교 대상은 언제나 구멍 중심입니다. 그래서 소스가 바뀌면 필터를 재시작합니다.</p>
+
+<div class="box">
+<b>한 줄로:</b> 추정한 중앙 구멍 중심 (x, y)과 방향(yaw)이 지정한 [0.865, 0.139523] m, -90도가 되도록
+<b>모바일 베이스를</b> 움직입니다. 팔은 그동안 고정입니다.
+</div>
+
+<h3>시연 기준점의 실제 값</h3>
+<pre>"slot1_hole_reference": {
+    "center_base_xy_m": [0.865000, 0.139523],     &lt;- 목표 위치 (base 좌표, 미터)
+    "yaw_base_deg": -90.0,                        &lt;- 목표 방향
+    "source_selection": "complete_hole_dwell_complete_frames",
+    "source_frame_count": 16,                     &lt;- 16프레임 평균
+    "center_std_xy_m": [0.000604, 0.000728],      &lt;- 프레임 간 산포 0.6~0.7 mm
+    "calibration_status": "nominal_unverified_operator_demonstrated"
+}</pre>
+
+<div class="warn">
+<b>중요 — 이건 "정답 위치"가 아닙니다.</b><br>
+작업자가 눈대중으로 맞춘 자리를 기록한 값입니다. 산포 0.6 mm는 <b>같은 자리를 얼마나 일관되게
+읽는지(재현성)</b>를 뜻하고, 그 자리가 실제 슬롯 1의 정중앙인지(정확도)는 검증되지 않았습니다.
+설정의 상태 표기도 <code>nominal_unverified_operator_demonstrated</code>입니다.
+</div>
+
+<h2 class="pb">2. 팔레트를 어떻게 "본다"는 것인가</h2>
+
+<p>RGB 사각형 검출이 아닙니다. 깊이 카메라로 <b>금속적 평면과 실측 치수</b>를 맞춥니다. 순서는 이렇습니다.</p>
+
+<ol>
+<li>depth로 적층 윗면 평면(stack top plane)을 찾는다</li>
+<li>그 평면 위 점들을 위에서 내려다본 격자로 만든다</li>
+<li>중앙 구멍이 <b>온전히 보이면</b> 그 구멍을 실측 <b>148×149 mm</b> 모델에 맞춘다 → 중심과 방향을 직접 얻음</li>
+<li>멀어서 구멍이 안 보이면, 보이는 <b>가까운 쪽 외곽선</b>과 <b>오른쪽 측면 외곽선</b>이 만드는
+    ㄱ자 코너(L코너)를 실측 <b>660×658 mm</b> 외곽 모델에 맞춰 중심을 역산한다</li>
+</ol>
+
+<table>
+<tr><th width="26%">관측 소스</th><th width="17%">로그 표기</th><th>권한</th></tr>
+<tr><td>중앙 홀 직접 관측</td><td><code>complete_hole</code></td><td>정렬 전체 (x, y, yaw)</td></tr>
+<tr><td>외곽 L코너 (엄격)</td><td><code>fixed_outer_l_corner</code></td><td>정렬 전체 (x, y, yaw)</td></tr>
+<tr><td>외곽 edge (느슨)</td><td>coarse</td><td><b>전진만.</b> 좌우·회전·후진·하강·릴리스 금지</td></tr>
+</table>
+
+<p>느슨한 근거에 작은 전진만 허용하는 이유는, 그 정보로는 좌우 위치를 신뢰할 수 없기 때문입니다.
+전진 총량도 <b>0.15 m</b>로 묶여 있고 속도는 <b>0.030 m/s</b>입니다.</p>
+
+<h3>u_right와 v_far — 팔레트 기준 방향</h3>
+<p>팔레트에는 자체 방향이 있습니다. <code>u_right</code>는 로봇이 봤을 때 오른쪽,
+<code>v_far</code>는 로봇에서 먼 쪽입니다. 슬롯 1의 위치는 적층 중심에서
+<code>+0.20175 m</code>(v_far), <code>+0.128 m</code>(u_right)만큼 떨어진 곳으로 정의됩니다(그림 1의 점선).</p>
+<p>이 방향을 뒤집으면 슬롯이 엉뚱한 곳으로 가므로, 코드는 <code>axis_branch = "image_right"</code>와
+"v_far는 base +X 방향"을 계약으로 고정합니다. 관측의 축 방향이 기준과 다르면 그 관측은 거부됩니다.</p>
+
+<h2 class="pb">3. 오차에서 속도를 만드는 방법</h2>
+
+<p>세 방향을 <b>순서대로</b> 맞추지 않습니다. 20 Hz로 <code>vx</code>, <code>vy</code>,
+<code>wz</code>를 <b>동시에</b> 계산합니다. 앞뒤 먼저 맞추고 좌우를 맞추는 식이 아닙니다.</p>
+
+<pre>wz = 0.8  x  yaw 오차
+vx = 0.7  x  x 오차  +  (관측점 y) x wz
+vy = 0.7  x  y 오차  -  (관측점 x) x wz</pre>
+
+<p>뒤에 붙은 항이 핵심입니다. 베이스가 회전하면 관측 대상이 시야에서 옆으로 밀려나므로,
+<b>회전이 만들어낼 이동분을 미리 상쇄</b>해 줍니다. 이것이 없으면 회전할 때 위치가 흐트러지고
+서로를 쫓아다니게 됩니다.</p>
+
+<h3>속도에 걸리는 세 겹의 제한</h3>
+<table>
+<tr><th width="24%">제한</th><th width="26%">값</th><th>이유</th></tr>
+<tr><td>속도 상한</td><td>직선 0.05 m/s, 회전 0.08 rad/s</td>
+    <td>상한을 넘으면 <b>세 성분을 같은 비율로</b> 줄인다. 방향이 변하지 않게 하려고</td></tr>
+<tr><td>가속 제한</td><td>0.12 m/s², 0.18 rad/s²</td><td>급출발·급정지로 든 상자가 흔들리지 않게</td></tr>
+<tr><td>하드 리밋</td><td>0.08 m/s, 0.10 rad/s</td><td>설정으로도 넘을 수 없는 코드 내 상한</td></tr>
+</table>
+
+<h2>4. 잘못된 관측을 걸러내는 장치</h2>
+
+<table>
+<tr><th width="22%">장치</th><th width="20%">기준</th><th>동작</th></tr>
+<tr><td>중앙값 필터</td><td>3프레임</td><td>튀는 값 1개는 결과에 영향을 주지 않음. 3장이 모이기 전에는 정지</td></tr>
+<tr><td>점프 거부</td><td>30 mm, 15도</td><td>한 프레임에 이만큼 튀면 그 관측을 <b>버린다</b></td></tr>
+<tr><td>재시딩</td><td>3프레임 연속</td><td>단, 튄 자리에서 3프레임 연속 일관되면 "실제로 옮겨졌다"로 보고 새로 시작</td></tr>
+<tr><td>오래됨</td><td>0.30 초</td><td>이보다 오래된 관측이면 정지</td></tr>
+<tr><td>시간 역행</td><td>—</td><td>타임스탬프가 뒤로 가면 즉시 FAULT</td></tr>
+<tr><td>보정량 한계</td><td>0.25 m</td><td>오차가 이보다 크면 뭔가 잘못된 것으로 보고 FAULT</td></tr>
+<tr><td>시작 yaw 한계</td><td>15도</td><td>처음부터 이보다 많이 틀어져 있으면 시작하지 않음</td></tr>
+<tr><td>소스 변경</td><td>—</td><td>홀 ↔ L코너로 근거가 바뀌면 필터를 재시작</td></tr>
+</table>
+
+<div class="box">
+<b>공통 원칙:</b> 확실하지 않으면 <b>움직이지 않습니다</b>. 억지로 추정해서 움직이는 경우는 없습니다.
+</div>
+
+<h2 class="pb">5. "도착"의 판정 — 다섯 관문</h2>
+
+<img src="fig2.png" width="720">
+<p class="cap">그림 2. (a) 들어가는 문턱과 나가는 문턱이 다르다. (b) 프레임 수와 시간을 둘 다 채워야 한다.</p>
+
+<h3>관문 1 — 두 값이 동시에 안에 있어야</h3>
+<p>필터 통과값 하나만 보지 않습니다. <b>raw 관측과 필터값이 둘 다</b> 범위 안에 있어야 합니다.
+한쪽만 좋으면 통과하지 않습니다.</p>
+
+<table>
+<tr><th width="24%"></th><th width="24%">진입 (inner)</th><th>유지 (outer)</th></tr>
+<tr><td>위치 오차</td><td>10 mm 이내</td><td>15 mm 이내</td></tr>
+<tr><td>yaw 오차</td><td>3도 이내</td><td>5도 이내</td></tr>
+</table>
+
+<p>들어가는 문턱은 좁고 나가는 문턱은 넓습니다(히스테리시스). 문턱 근처에서 미세하게 떨릴 때
+도착 판정이 깜빡이는 것을 막습니다.</p>
+
+<h3>관문 2 — 프레임 수와 시간, 둘 다</h3>
+<p><b>5프레임</b> 그리고 <b>0.35초</b>를 모두 채워야 합니다. 프레임만 빨리 채우고 시간이 부족하면
+통과하지 못합니다. 순간적으로 스쳐 지나간 것을 도착으로 오인하지 않기 위한 조건입니다.</p>
+<p>도중에 outer(15 mm / 5도)를 벗어나면 카운터가 <b>0으로 초기화</b>됩니다.</p>
+
+<h3>관문 3 — 속도 명령을 정확히 0으로</h3>
+<p>조건을 채우면 곧바로 도착이 아니라 <code>ARRIVAL_WHEEL_STOP</code> 상태로 가고,
+속도 명령을 정확히 0으로 내립니다. 이 순간의 시각을 기록합니다.</p>
+
+<h3>관문 4 — 실제로 바퀴가 멈췄는지 확인 (가장 중요)</h3>
+<div class="key">
+"0을 명령했다"는 것과 "멈췄다"는 것은 다릅니다. 관성, 슬립, 지연 때문에 명령 후에도 계속 밀려갑니다.
+그래서 <b>실측 바퀴 속도</b>로 확인합니다.
+</div>
+<ul>
+<li>직선 속도 &lt; <b>0.010 m/s</b> 그리고 회전 속도 &lt; <b>0.020 rad/s</b></li>
+<li>이 상태가 <b>0.35초</b> 유지</li>
+<li>측정 시각이 <b>0을 명령한 시각보다 나중</b>이어야 함 — 명령 전에 측정된 "멈춘 상태"로는 통과 불가</li>
+<li>매 측정이 직전보다 새로워야 함 — 같은 값 재사용 불가</li>
+<li>측정 자체가 <b>0.20초</b> 이내로 신선해야 함</li>
+</ul>
+
+<h3>관문 5 — 멈춘 자리가 여전히 맞는 자리인지</h3>
+<p>바퀴가 멈춘 그 순간에도 자세가 outer(15 mm / 5도) 안에 있어야 합니다. 밀려서 벗어나 있으면
+<code>arrival_cancelled_after_wheel_stop</code>으로 <b>도착을 취소</b>하고 다시 정렬로 돌아갑니다.</p>
+
+<p>다섯 관문을 모두 통과하면 <code>ARRIVED_HOLD</code>입니다.</p>
+
+<h2 class="pb">6. 전체 상태 흐름</h2>
+<img src="fig3.png" width="740">
+<p class="cap">그림 3. 도착까지의 상태 전이와 각 관문.</p>
+
+<h2>7. 실행 로그 읽는 법</h2>
+<p>실제 실행에서 이런 줄이 나옵니다.</p>
+<pre>[pallet] frame=90  vision=fixed_outer_l_corner  state=TRACKING            dispatch=nonzero_proposal_accepted  interlock=PASS
+[pallet] frame=120 vision=fixed_outer_l_corner  state=ARRIVAL_WHEEL_STOP  reason=wheel_stop_dwell             interlock=PASS
+[pallet] frame=150 vision=fixed_outer_l_corner  state=ARRIVED_HOLD        reason=arrived_wheels_stopped       interlock=PASS</pre>
+
+<table>
+<tr><th width="22%">필드</th><th>의미</th></tr>
+<tr><td><code>vision=</code></td><td>지금 무엇을 보고 있는지. <code>unavailable</code>이면 관측 실패로 정렬 불가</td></tr>
+<tr><td><code>state=</code></td><td>서보 상태. 그림 3의 박스 이름</td></tr>
+<tr><td><code>dispatch=</code></td><td><code>nonzero_proposal_accepted</code>면 실제로 주행 중.
+    <code>motion_interlock_selected_zero</code>면 계산은 했지만 인터록이 0으로 바꿈</td></tr>
+<tr><td><code>interlock=</code></td><td><code>PASS</code>가 아니면 그 이유로 주행이 막힌 것.
+    상자 파지 상태와 상자 바닥–적층 간격을 검사하는 별도 게이트</td></tr>
+</table>
+
+<h2>8. 이 방식이 보장하는 것과 하지 않는 것</h2>
+
+<table>
+<tr><th width="50%">보장한다</th><th>보장하지 않는다</th></tr>
+<tr><td>
+<b>재현성.</b> 예전에 작업자가 맞춘 그 자리를 10 mm / 3도 안으로 다시 찾아간다<br><br>
+<b>안전한 정지.</b> 명령이 아니라 실측 바퀴 속도로 정지를 확인한다<br><br>
+<b>불확실할 때의 정지.</b> 관측 상실·오래됨·점프·축 불일치에서 움직이지 않는다
+</td><td>
+<b>절대 정확도.</b> 그 자리가 실제 슬롯 1 정중앙인지는 독립 측정이 없다<br><br>
+<b>배치 품질.</b> 10 mm는 서보의 수렴 판정값이고, 적재 허용 오차 기준이 아니다<br><br>
+<b>반복 성공률.</b> 몇 번 연속 성공해야 합격인지 기준이 아직 없다
+</td></tr>
+</table>
+
+<div class="warn">
+<b>불확실성이 두 겹입니다.</b><br>
+(1) 시연 기준점 자체가 눈대중입니다.<br>
+(2) 카메라와 로봇 base 사이의 등록(registration)도 <code>nominal</code>이고, 경험적으로 얻은
+<code>y +50 mm</code> 보정만 들어가 있습니다.<br><br>
+그래서 실기 자동 주행에는 <code>--allow-nominal-registration</code>으로 이 위험을 명시적으로
+승인해야 실행됩니다. 실제 정확도를 알려면 <b>배치 후 상자 위치를 다시 측정해 목표와 비교</b>해야
+하고, 그 기능은 아직 구현되지 않았습니다.
+</div>
+
+<h2 class="pb">9. 숫자 요약</h2>
+<table>
+<tr><th width="34%">항목</th><th width="22%">값</th><th>설정 키</th></tr>
+<tr><td>목표 위치 (base)</td><td>[0.865000, 0.139523] m</td><td><code>slot1_hole_reference.center_base_xy_m</code></td></tr>
+<tr><td>목표 방향</td><td>-90도</td><td><code>slot1_hole_reference.yaw_base_deg</code></td></tr>
+<tr><td>적층 외곽 (실측)</td><td>660 x 658 mm</td><td><code>outer_size_m</code></td></tr>
+<tr><td>중앙 홀 (실측)</td><td>148 x 149 mm</td><td><code>opening_size_m</code></td></tr>
+<tr><td>슬롯 1 오프셋</td><td>+0.20175 m (v_far), +0.128 m (u_right)</td><td><code>slot1_offset_*</code></td></tr>
+<tr><td>위치 게인</td><td>0.7 /s</td><td><code>position_gain_per_s</code></td></tr>
+<tr><td>yaw 게인</td><td>0.8 /s</td><td><code>yaw_gain_per_s</code></td></tr>
+<tr><td>최대 직선 속도</td><td>0.05 m/s</td><td><code>max_linear_speed_mps</code></td></tr>
+<tr><td>최대 회전 속도</td><td>0.08 rad/s</td><td><code>max_angular_speed_radps</code></td></tr>
+<tr><td>중앙값 필터</td><td>3 프레임</td><td><code>filter_window</code> (3 고정)</td></tr>
+<tr><td>점프 거부</td><td>30 mm / 15도</td><td><code>jump_threshold_m</code></td></tr>
+<tr><td>관측 유효 기간</td><td>0.30 s</td><td><code>stale_after_s</code></td></tr>
+<tr><td>보정량 한계</td><td>0.25 m</td><td><code>max_correction_m</code></td></tr>
+<tr><td>도착 진입</td><td>10 mm / 3도</td><td><code>arrival_inner_m</code>, <code>arrival_yaw_inner_rad</code></td></tr>
+<tr><td>도착 유지</td><td>15 mm / 5도</td><td><code>arrival_outer_m</code>, <code>arrival_yaw_outer_rad</code></td></tr>
+<tr><td>도착 프레임 수</td><td>5</td><td><code>arrival_min_frames</code></td></tr>
+<tr><td>도착 유지 시간</td><td>0.35 s</td><td><code>arrival_min_duration_s</code></td></tr>
+<tr><td>바퀴 정지 판정</td><td>0.010 m/s, 0.020 rad/s</td><td><code>wheel_linear_stop_mps</code>, <code>wheel_angular_stop_radps</code></td></tr>
+<tr><td>바퀴 정지 유지</td><td>0.35 s</td><td><code>wheel_stop_duration_s</code></td></tr>
+<tr><td>전진 획득 예산</td><td>0.15 m @ 0.030 m/s</td><td><code>acquisition.budget_m</code></td></tr>
+</table>
+
+<h2>10. 코드 위치</h2>
+<table>
+<tr><th width="42%">역할</th><th>파일</th></tr>
+<tr><td>오차 → 속도 계산, 도착 판정</td><td><code>src/parcel_pose/pallet_servo.py</code></td></tr>
+<tr><td>관측 소스 선택, 기준점 결합</td><td><code>src/parcel_pose/pallet_runtime.py</code> (<code>_servo_measurement</code>)</td></tr>
+<tr><td>적층 평면·홀·L코너 인식</td><td><code>src/parcel_pose/pallet_geometry.py</code></td></tr>
+<tr><td>전진 획득 권한 관리</td><td><code>src/parcel_pose/pallet_acquisition.py</code></td></tr>
+<tr><td>기준점과 모든 수치</td><td><code>configs/rby1m_v1_2_pallet_slot1_nominal.json</code></td></tr>
+</table>
+
+</body></html>

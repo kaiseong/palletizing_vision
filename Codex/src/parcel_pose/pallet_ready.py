@@ -19,9 +19,13 @@ import numpy as np
 from .pallet_control import (
     EXPECTED_ROBOT_MODEL,
     EXPECTED_ROBOT_VERSION,
+    READY_TRANSITION_MINIMUM_TIME_FLOOR_S,
     PalletControlConfig,
     ReadyPose,
 )
+
+
+READY_MINIMUM_TIME_FLOOR_S = READY_TRANSITION_MINIMUM_TIME_FLOOR_S
 
 
 _SERVO_DEVICE_PATTERN = ".*"
@@ -202,7 +206,7 @@ def _build_ready_command(
     pose: ReadyPose,
     minimum_time_s: float,
 ) -> Any:
-    minimum_time_s = max(5.0, float(minimum_time_s))
+    minimum_time_s = max(READY_MINIMUM_TIME_FLOOR_S, float(minimum_time_s))
 
     def position_command(target: tuple[float, ...]) -> Any:
         return (
@@ -409,7 +413,10 @@ def ensure_slot1_ready_from_config(
 
         if not prepare_for_stream:
             _prepare_robot(owned_robot, power)
-        minimum_time_s = max(5.0, config.ready_transition_minimum_time_s)
+        minimum_time_s = max(
+            READY_MINIMUM_TIME_FLOOR_S,
+            config.ready_transition_minimum_time_s,
+        )
         print(
             "[pallet] slot-1 ready transition required "
             f"(max_error={math.degrees(before.maximum_error_rad):.3f} deg, "

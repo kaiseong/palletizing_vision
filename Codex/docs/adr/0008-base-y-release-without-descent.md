@@ -35,8 +35,9 @@ Two observations from the regression harness shaped the fix:
 
 Release the carton at the aligned pose by opening both hands along base Y only.
 
-- **No vertical descent.** `planned_delta = min(gap * descent_fraction,
-  maximum_planned_descent_m)` with `maximum_planned_descent_m = 0.0`.  The
+- **Bounded descent (commissioned to 15 mm).** `planned_delta = min(gap *
+  descent_fraction, maximum_planned_descent_m)`.  The shipped cap started at
+  `0.0` and is now `0.015 m` after the measured gap came in at 159 mm.  The
   descent plan, the clearance floor, the freshness gates, and the
   `_lower_geometry_reached` check all stay wired, so restoring a descent later
   is a configuration change, not a code change.
@@ -88,3 +89,24 @@ Release the carton at the aligned pose by opening both hands along base Y only.
   schema, the runtime telemetry, containment escape, and the CLI error split.
 - `ruff check`, `python -m compileall`, and
   `pallet.py replay` on `pallet_slot1` and `pallet_demo` all pass.
+
+## Commissioning addendum — 2026-07-30
+
+Measured gap on the physical setup: **159 mm** (`predicted_box_bottom_gap_m`,
+five frames, spread ±0.2 mm; stack top `z = 0.4465 m`, carton bottom
+`z = 0.6056 m`).  Two consequences:
+
+- `maximum_release_gap_m` had to rise from `0.120` to `0.170` or every plan was
+  refused with `descent_gap_above_release_limit`.
+- `maximum_planned_descent_m` was set to `0.015` at the operator's request, so
+  the carton is released about **144 mm** above the stack.  A taller descent
+  lowers the drop but walks back toward the `2/3 gap` (~106 mm) value that
+  caused the singularity, so the cap must be raised one step at a time with
+  padding on the stack.
+
+The physical alternative remains better than any cap: raising the pallet or
+stack surface by ~100 mm brings the gap to ~59 mm, which works with zero
+descent and a 59 mm drop.
+
+Neither the 15 mm descent nor the base-Y release has been executed on the robot
+yet.

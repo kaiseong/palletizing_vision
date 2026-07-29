@@ -176,21 +176,6 @@ def fit_empty_table_plane_result(
     )
 
 
-def fit_empty_table_plane(
-    points_depth: Any,
-    *,
-    trim_residual_m: float = 0.006,
-    iterations: int = 300,
-) -> Plane:
-    """Compatibility wrapper returning the robust plane only."""
-
-    return fit_empty_table_plane_result(
-        points_depth,
-        tolerance_m=trim_residual_m,
-        iterations=iterations,
-    ).plane
-
-
 def _plane_fit_diagnostics(
     result: PlaneFitResult,
     frame_samples: list[tuple[int, NDArray[np.float64]]],
@@ -386,7 +371,6 @@ def calibrate_table_plane_from_session(
 __all__ = [
     "calibrate_table_plane_from_session",
     "factory_extrinsics_to_transform",
-    "fit_empty_table_plane",
     "fit_empty_table_plane_result",
     "load_calibration",
     "load_json",

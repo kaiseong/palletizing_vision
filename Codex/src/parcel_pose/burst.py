@@ -328,23 +328,4 @@ def aggregate_pose_burst(
     )
 
 
-class PoseBurstAggregator:
-    def __init__(self, config: BurstConfig | None = None) -> None:
-        self.config = BurstConfig() if config is None else config
-
-    def aggregate(
-        self,
-        estimates: Iterable[PoseEstimate],
-        *,
-        min_timestamp_ms: float | None = None,
-    ) -> PoseEstimate:
-        return aggregate_pose_burst(
-            estimates,
-            min_valid_frames=self.config.min_valid_frames,
-            max_center_jitter_m=self.config.max_center_jitter_m,
-            max_yaw_jitter_deg=self.config.max_yaw_jitter_deg,
-            min_timestamp_ms=min_timestamp_ms,
-        )
-
-
-__all__ = ["BurstConfig", "PoseBurstAggregator", "aggregate_pose_burst"]
+__all__ = ["BurstConfig", "aggregate_pose_burst"]

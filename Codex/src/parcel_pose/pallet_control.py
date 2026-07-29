@@ -45,6 +45,10 @@ READY_HEAD_RAD = (0.0, 0.870)
 ARM_STIFFNESS = (150.0,) * 7
 TORQUE_POLICY = "sdk_default"
 
+# Slowest admissible slot-1 ready one-shot.  A loaded full-body Position move
+# below this is a jerk risk for the carried carton.
+READY_TRANSITION_MINIMUM_TIME_FLOOR_S = 3.0
+
 HARD_MAX_LINEAR_SPEED_MPS = 0.08
 HARD_MAX_ANGULAR_SPEED_RADPS = 0.10
 
@@ -158,40 +162,50 @@ def _read_field(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
-def resolve_base_y_release_axis(
+def resolve_release_axis(
     inter_eef_axis_base: Sequence[float],
+    reference_axis_base: Sequence[float],
     *,
     max_deviation_rad: float,
 ) -> tuple[np.ndarray, float]:
-    """Snap a measured inter-EEF axis onto the exact base ``+/-Y`` opening axis.
+    """Snap a measured inter-EEF axis onto a commanded opening axis.
 
-    Slot-1 release opens the hands along base Y only, so the commanded target
-    keeps its base X and Z components untouched.  The returned axis is exactly
-    ``(0, +/-1, 0)`` with the sign of the measured axis, and the returned angle
-    is the deviation between the measured axis and that opening axis.  This
-    function only reports the deviation; the caller owns the accept/reject
+    Slot-1 release opens the hands along one fixed direction, so the commanded
+    target moves on that axis only.  ``reference_axis_base`` is that direction
+    expressed in the base frame; the slot-1 path passes the torso-tip frame's
+    ``Y`` axis so the opening matches the box-pick grip convention regardless of
+    torso yaw.  The returned axis is the unit reference axis signed to agree
+    with the measured hand order, and the returned angle is the deviation
+    between the measured axis and it.
+
+    This function only reports the deviation; the caller owns the accept/reject
     decision so a single place in the controller can fail closed.
     """
 
     axis = np.asarray(inter_eef_axis_base, dtype=np.float64).reshape(3)
-    if not np.all(np.isfinite(axis)):
-        raise ValueError("inter_eef_axis_base must be finite")
-    norm = float(np.linalg.norm(axis))
-    if not math.isfinite(norm) or norm <= 1e-9:
+    reference = np.asarray(reference_axis_base, dtype=np.float64).reshape(3)
+    if not np.all(np.isfinite(axis)) or not np.all(np.isfinite(reference)):
+        raise ValueError("release axes must be finite")
+    axis_norm = float(np.linalg.norm(axis))
+    reference_norm = float(np.linalg.norm(reference))
+    if not math.isfinite(axis_norm) or axis_norm <= 1e-9:
         raise ValueError("inter_eef_axis_base must be a non-zero direction")
+    if not math.isfinite(reference_norm) or reference_norm <= 1e-9:
+        raise ValueError("reference_axis_base must be a non-zero direction")
     limit = float(max_deviation_rad)
     if not math.isfinite(limit) or limit <= 0.0:
         raise ValueError("max_deviation_rad must be finite and positive")
-    unit = axis / norm
-    lateral = float(unit[1])
-    if abs(lateral) <= _RELEASE_AXIS_SIGN_EPSILON:
+    unit = axis / axis_norm
+    reference_unit = reference / reference_norm
+    projection = float(unit @ reference_unit)
+    if abs(projection) <= _RELEASE_AXIS_SIGN_EPSILON:
         raise ValueError(
-            "inter_eef_axis_base has no decidable base-Y sign; the hands are "
-            "not separated along base Y"
+            "inter_eef_axis_base is perpendicular to the reference axis, so the "
+            "opening direction has no decidable sign"
         )
-    sign = 1.0 if lateral > 0.0 else -1.0
-    release_axis = np.array((0.0, sign, 0.0), dtype=np.float64)
-    deviation_rad = math.acos(float(np.clip(abs(lateral), 0.0, 1.0)))
+    sign = 1.0 if projection > 0.0 else -1.0
+    release_axis = sign * reference_unit
+    deviation_rad = math.acos(float(np.clip(abs(projection), 0.0, 1.0)))
     return release_axis, deviation_rad
 
 
@@ -226,7 +240,8 @@ class PalletControlConfig:
     address: str = "192.168.30.1:50051"
     priority: int = 10
     ready_pose: ReadyPose = field(default_factory=ReadyPose)
-    ready_transition_minimum_time_s: float = 5.0
+    # Operator-requested 2026-07-30: the slot-1 ready one-shot runs in 3 s.
+    ready_transition_minimum_time_s: float = 3.0
     ready_tolerance_rad: float = math.radians(1.0)
     transition_timeout_s: float = 15.0
     initial_state_timeout_s: float = 2.0
@@ -650,8 +665,11 @@ class PalletControlConfig:
             "placement_nullspace_cost_weight",
         ):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
-        if self.ready_transition_minimum_time_s < 5.0:
-            raise ValueError("ready transition must take at least 5 seconds")
+        if self.ready_transition_minimum_time_s < READY_TRANSITION_MINIMUM_TIME_FLOOR_S:
+            raise ValueError(
+                "ready transition must take at least "
+                f"{READY_TRANSITION_MINIMUM_TIME_FLOOR_S:.1f} seconds"
+            )
         if self.ready_pose != ReadyPose():
             raise ValueError("ready pose must remain the approved slot-1 pose")
         if self.ready_tolerance_rad > math.radians(1.0) + 1e-12:
@@ -1151,6 +1169,359 @@ class StreamTelemetry:
     arm_mode: ArmStreamMode = ArmStreamMode.JOINT_READY_HOLD
     placement_started: bool = False
     placement_target_sequence: int | None = None
+def evaluate_grip_continuity(
+    config: PalletControlConfig,
+    scene_window: Sequence[Any],
+    *,
+    now_s: float,
+    cartesian_arm_motion: bool,
+    states: Sequence[MeasuredRobotState],
+    ready_joint_errors: Callable[[MeasuredRobotState], tuple[np.ndarray, bool]],
+) -> GripContinuityResult:
+    """Decide loaded-hold continuity and conservative vertical clearance.
+
+    Pure decision function: it holds no lock, reads no controller state, and
+    sends nothing.  The controller snapshots ``now_s``, ``cartesian_arm_motion``
+    and ``states`` under its condition variable and passes them in, so this
+    interlock is testable without an SDK, a stream, or a thread.
+
+    ``ready_joint_errors`` returns ``(errors, all_ready)`` for one measured
+    state, matching :meth:`RBY1PalletController._ready_joint_errors`.  Its error
+    vector is the torso, right-arm, left-arm, head concatenation, which is why
+    the arm slice below indexes into that layout.
+    """
+
+    reasons: list[str] = []
+    dwell_s = (
+        0.0
+        if len(states) < 2
+        else states[-1].received_monotonic_s - states[0].received_monotonic_s
+    )
+    if len(states) < config.grip_min_samples:
+        reasons.append("insufficient_fresh_robot_state_samples")
+    if dwell_s < config.grip_dwell_s * 0.95:
+        reasons.append("insufficient_grip_dwell")
+
+    arm_error_max: float | None = None
+    separations: list[np.ndarray] = []
+    for state in states:
+        if not cartesian_arm_motion:
+            errors, all_ready = ready_joint_errors(state)
+            arm_indices = np.r_[
+                np.arange(6, 13, dtype=np.int64),
+                np.arange(13, 20, dtype=np.int64),
+            ]
+            arm_errors = np.abs(errors[arm_indices])
+            current_max = float(np.max(arm_errors))
+            arm_error_max = (
+                current_max
+                if arm_error_max is None
+                else max(arm_error_max, current_max)
+            )
+            if not all_ready:
+                reasons.append("target_joint_not_ready")
+        if state.T_base_right_eef is None or state.T_base_left_eef is None:
+            reasons.append("fresh_eef_fk_unavailable")
+        else:
+            separations.append(
+                state.T_base_right_eef[:3, 3] - state.T_base_left_eef[:3, 3]
+            )
+
+    if not cartesian_arm_motion and (
+        arm_error_max is None
+        or arm_error_max > config.arm_tracking_tolerance_rad
+    ):
+        reasons.append("arm_tracking_error")
+
+    separation_p2p: float | None = None
+    separation_std: float | None = None
+    if len(separations) >= 2:
+        separation_array = np.asarray(separations, dtype=np.float64)
+        separation_norm = np.linalg.norm(separation_array, axis=1)
+        separation_p2p = float(np.ptp(separation_norm))
+        separation_std = float(np.max(np.std(separation_array, axis=0)))
+        if separation_p2p > config.eef_separation_peak_to_peak_m:
+            reasons.append("eef_separation_peak_to_peak")
+        if separation_std > config.eef_separation_axis_std_m:
+            reasons.append("eef_separation_axis_std")
+    else:
+        reasons.append("insufficient_eef_separation_samples")
+
+    direct_plane_run: list[_ClearanceSceneSample] = []
+    previous_frame_id: int | None = None
+    previous_observation_sequence: int | None = None
+    previous_capture_timestamp_s: float | None = None
+    previous_accepted_monotonic_s: float | None = None
+    previous_stack_source: str | None = None
+    previous_stack_z_m: float | None = None
+    previous_stack_uncertainty_m: float | None = None
+    continuity_rejection: str | None = None
+    for accepted_window_index, scene in enumerate(scene_window, start=1):
+        pose_source = str(_read_field(scene, "held_box_pose_source", ""))
+        distinct = pose_source == "fresh_dual_eef_fixed_ready_nominal_box_offset"
+        held = _read_field(scene, "held_box_bottom_z_base_m")
+        held_uncertainty_field = "held_box_bottom_uncertainty_m"
+        invalid_reason = "fixed_ready_box_bottom_geometry_invalid"
+        stack_source = str(_read_field(scene, "stack_top_source", ""))
+        stack_source_valid = stack_source in {
+            "complete_stack_plane",
+            "metric_stack_plane_candidate",
+            "metric_fixed_outer_l_corner_plane",
+            "metric_inner_opening_plane",
+            "metric_coarse_l_corner_plane",
+            "metric_forward_edge_pair_plane",
+        }
+        stack = _read_field(scene, "stack_top_z_base_m")
+        frame_id_raw = _read_field(scene, "frame_id")
+        observation_sequence_raw = _read_field(
+            scene,
+            "accepted_observation_sequence",
+            accepted_window_index,
+        )
+        timestamp_raw = _read_field(scene, "capture_timestamp_s")
+        accepted_raw = _read_field(scene, "accepted_monotonic_s")
+        try:
+            frame_id = int(frame_id_raw)
+            observation_sequence = int(observation_sequence_raw)
+            capture_timestamp_s = float(timestamp_raw)
+            accepted_monotonic_s = float(accepted_raw)
+        except (TypeError, ValueError):
+            direct_plane_run.clear()
+            previous_frame_id = None
+            previous_observation_sequence = None
+            previous_capture_timestamp_s = None
+            previous_accepted_monotonic_s = None
+            previous_stack_source = None
+            previous_stack_z_m = None
+            previous_stack_uncertainty_m = None
+            continuity_rejection = "clearance_eef_box_bottom_frame_identity_unavailable"
+            continue
+        identity_valid = (
+            not isinstance(frame_id_raw, bool)
+            and frame_id >= 0
+            and frame_id_raw == frame_id
+            and not isinstance(observation_sequence_raw, bool)
+            and observation_sequence > 0
+            and observation_sequence_raw == observation_sequence
+            and math.isfinite(capture_timestamp_s)
+            and not isinstance(accepted_raw, bool)
+            and math.isfinite(accepted_monotonic_s)
+        )
+        capture_age_at_acceptance_s = (
+            accepted_monotonic_s - capture_timestamp_s
+        )
+        accepted_fresh = (
+            identity_valid
+            and 0.0 <= capture_age_at_acceptance_s
+            <= config.held_top_sample_fresh_after_s
+        )
+        if (
+            not identity_valid
+            or not distinct
+            or held is None
+            or stack is None
+            or not accepted_fresh
+        ):
+            direct_plane_run.clear()
+            previous_frame_id = None
+            previous_observation_sequence = None
+            previous_capture_timestamp_s = None
+            previous_accepted_monotonic_s = None
+            previous_stack_source = None
+            previous_stack_z_m = None
+            previous_stack_uncertainty_m = None
+            continuity_rejection = (
+                "clearance_evidence_stale_at_acceptance"
+                if identity_valid and not accepted_fresh
+                else invalid_reason
+            )
+            continue
+
+        held_value = float(held)
+        stack_value = float(stack)
+        held_sigma = float(_read_field(scene, held_uncertainty_field, math.nan))
+        stack_sigma = float(_read_field(scene, "stack_top_uncertainty_m", math.nan))
+        values_valid = (
+            all(
+                math.isfinite(value)
+                for value in (held_value, stack_value, held_sigma, stack_sigma)
+            )
+            and held_sigma >= 0.0
+            and stack_sigma >= 0.0
+            and stack_source_valid
+        )
+        if not values_valid:
+            direct_plane_run.clear()
+            previous_frame_id = None
+            previous_observation_sequence = None
+            previous_capture_timestamp_s = None
+            previous_accepted_monotonic_s = None
+            previous_stack_source = None
+            previous_stack_z_m = None
+            previous_stack_uncertainty_m = None
+            continuity_rejection = (
+                "fixed_ready_stack_plane_source_invalid"
+                if not stack_source_valid
+                else invalid_reason
+            )
+            continue
+
+        if previous_frame_id is not None:
+            if frame_id <= previous_frame_id:
+                direct_plane_run.clear()
+                continuity_rejection = "clearance_frame_not_monotonic"
+            elif (
+                previous_observation_sequence is None
+                or observation_sequence <= previous_observation_sequence
+                or previous_capture_timestamp_s is None
+                or capture_timestamp_s <= previous_capture_timestamp_s
+                or previous_accepted_monotonic_s is None
+                or accepted_monotonic_s <= previous_accepted_monotonic_s
+            ):
+                direct_plane_run.clear()
+                continuity_rejection = "clearance_evidence_not_monotonic"
+            elif stack_source != previous_stack_source:
+                source_dt_s = accepted_monotonic_s - previous_accepted_monotonic_s
+                previous_stack_upper = (
+                    float(previous_stack_z_m)
+                    + float(previous_stack_uncertainty_m)
+                    + config.held_top_std_m
+                )
+                previous_stack_lower = (
+                    float(previous_stack_z_m)
+                    - float(previous_stack_uncertainty_m)
+                    - config.held_top_std_m
+                )
+                current_stack_upper = stack_value + stack_sigma + config.held_top_std_m
+                current_stack_lower = stack_value - stack_sigma - config.held_top_std_m
+                height_consistent = (
+                    current_stack_lower <= previous_stack_upper
+                    and previous_stack_lower <= current_stack_upper
+                )
+                if (
+                    source_dt_s < -1e-12
+                    or source_dt_s > config.clearance_evidence_fresh_after_s
+                    or not height_consistent
+                ):
+                    direct_plane_run.clear()
+                    continuity_rejection = "clearance_stack_height_source_change_rejected"
+
+        direct_plane_run.append(
+            _ClearanceSceneSample(
+                held_z_m=held_value,
+                held_uncertainty_m=held_sigma,
+                stack_z_m=stack_value,
+                stack_uncertainty_m=stack_sigma,
+                capture_timestamp_s=capture_timestamp_s,
+                accepted_monotonic_s=accepted_monotonic_s,
+            )
+        )
+        previous_frame_id = frame_id
+        previous_observation_sequence = observation_sequence
+        previous_capture_timestamp_s = capture_timestamp_s
+        previous_accepted_monotonic_s = accepted_monotonic_s
+        previous_stack_source = stack_source
+        previous_stack_z_m = stack_value
+        previous_stack_uncertainty_m = stack_sigma
+
+    required_direct_frames = config.held_top_direct_plane_dwell_frames
+    if len(direct_plane_run) > required_direct_frames:
+        direct_plane_run = direct_plane_run[-required_direct_frames:]
+    held_top_z = [sample.held_z_m for sample in direct_plane_run]
+    held_top_uncertainty = [
+        sample.held_uncertainty_m for sample in direct_plane_run
+    ]
+    stack_top_z = [sample.stack_z_m for sample in direct_plane_run]
+    stack_top_uncertainty = [
+        sample.stack_uncertainty_m for sample in direct_plane_run
+    ]
+    accepted_timestamps = [
+        sample.accepted_monotonic_s for sample in direct_plane_run
+    ]
+    capture_ages_at_acceptance = [
+        sample.accepted_monotonic_s - sample.capture_timestamp_s
+        for sample in direct_plane_run
+    ]
+
+    held_std: float | None = None
+    held_drift: float | None = None
+    clearance: float | None = None
+    box_bottom_lower_bound: float | None = None
+    stack_top_upper_bound: float | None = None
+    evidence_span_s: float | None = None
+    latest_age_s: float | None = None
+    max_capture_age_at_acceptance_s: float | None = None
+    clearance_source = "fixed_ready_dual_eef_box_bottom_to_stack_plane"
+    if len(held_top_z) < required_direct_frames:
+        reasons.append(
+            continuity_rejection or "insufficient_clearance_box_bottom_samples"
+        )
+        reasons.append("insufficient_clearance_box_bottom_samples")
+    else:
+        evidence_span_s = accepted_timestamps[-1] - accepted_timestamps[0]
+        latest_age_s = now_s - accepted_timestamps[-1]
+        max_capture_age_at_acceptance_s = max(capture_ages_at_acceptance)
+        if (
+            not math.isfinite(latest_age_s)
+            or latest_age_s < 0.0
+            or latest_age_s > config.clearance_evidence_fresh_after_s
+        ):
+            reasons.append("clearance_eef_box_bottom_evidence_stale")
+        if (
+            not math.isfinite(evidence_span_s)
+            or evidence_span_s < 0.0
+            or evidence_span_s > config.clearance_scene_max_span_s
+        ):
+            reasons.append("clearance_evidence_span_too_long")
+        held_array = np.asarray(held_top_z, dtype=np.float64)
+        held_std = float(np.std(held_array))
+        held_drift = max(0.0, float(held_array[0] - held_array[-1]))
+        if float(np.ptp(held_array)) > config.held_top_peak_to_peak_m:
+            reasons.append("fixed_ready_box_bottom_peak_to_peak")
+        if held_std > config.held_top_std_m:
+            reasons.append("fixed_ready_box_bottom_std")
+        if held_drift > config.held_top_downward_drift_m:
+            reasons.append("fixed_ready_box_bottom_downward_drift")
+        box_bottom_lower_bound = min(
+            z - uncertainty
+            for z, uncertainty in zip(held_top_z, held_top_uncertainty, strict=True)
+        )
+        stack_top_upper_bound = max(
+            z + uncertainty
+            for z, uncertainty in zip(
+                stack_top_z, stack_top_uncertainty, strict=True
+            )
+        )
+        clearance = box_bottom_lower_bound - stack_top_upper_bound
+        if clearance < config.minimum_clearance_m:
+            reasons.append("insufficient_vertical_clearance")
+
+    result = GripContinuityResult(
+        passed=not reasons,
+        reasons=tuple(dict.fromkeys(reasons)),
+        evaluated_monotonic_s=now_s,
+        state_sample_count=len(states),
+        scene_sample_count=len(direct_plane_run),
+        dwell_s=dwell_s,
+        arm_tracking_error_max_rad=arm_error_max,
+        eef_separation_peak_to_peak_m=separation_p2p,
+        eef_separation_axis_std_max_m=separation_std,
+        held_top_std_m=held_std,
+        held_top_downward_drift_m=held_drift,
+        clearance_lower_bound_m=clearance,
+        box_bottom_z_lower_bound_m=box_bottom_lower_bound,
+        stack_top_z_upper_bound_m=stack_top_upper_bound,
+        scene_evidence_span_s=evidence_span_s,
+        scene_latest_age_s=latest_age_s,
+        scene_max_capture_age_at_acceptance_s=(
+            max_capture_age_at_acceptance_s
+        ),
+        clearance_source=clearance_source,
+        fixed_ready_geometry_only_authorized=True,
+    )
+    return result
+
+
 
 
 class RBY1PalletController:
@@ -2346,333 +2717,13 @@ class RBY1PalletController:
                 if now_s - state.received_monotonic_s
                 <= self.config.grip_dwell_s + sample_margin_s
             ]
-        reasons: list[str] = []
-        dwell_s = (
-            0.0
-            if len(states) < 2
-            else states[-1].received_monotonic_s - states[0].received_monotonic_s
-        )
-        if len(states) < self.config.grip_min_samples:
-            reasons.append("insufficient_fresh_robot_state_samples")
-        if dwell_s < self.config.grip_dwell_s * 0.95:
-            reasons.append("insufficient_grip_dwell")
-
-        arm_error_max: float | None = None
-        separations: list[np.ndarray] = []
-        for state in states:
-            if not cartesian_arm_motion:
-                errors, all_ready = self._ready_joint_errors(state)
-                arm_indices = np.r_[
-                    np.arange(6, 13, dtype=np.int64),
-                    np.arange(13, 20, dtype=np.int64),
-                ]
-                arm_errors = np.abs(errors[arm_indices])
-                current_max = float(np.max(arm_errors))
-                arm_error_max = (
-                    current_max
-                    if arm_error_max is None
-                    else max(arm_error_max, current_max)
-                )
-                if not all_ready:
-                    reasons.append("target_joint_not_ready")
-            if state.T_base_right_eef is None or state.T_base_left_eef is None:
-                reasons.append("fresh_eef_fk_unavailable")
-            else:
-                separations.append(
-                    state.T_base_right_eef[:3, 3] - state.T_base_left_eef[:3, 3]
-                )
-
-        if not cartesian_arm_motion and (
-            arm_error_max is None
-            or arm_error_max > self.config.arm_tracking_tolerance_rad
-        ):
-            reasons.append("arm_tracking_error")
-
-        separation_p2p: float | None = None
-        separation_std: float | None = None
-        if len(separations) >= 2:
-            separation_array = np.asarray(separations, dtype=np.float64)
-            separation_norm = np.linalg.norm(separation_array, axis=1)
-            separation_p2p = float(np.ptp(separation_norm))
-            separation_std = float(np.max(np.std(separation_array, axis=0)))
-            if separation_p2p > self.config.eef_separation_peak_to_peak_m:
-                reasons.append("eef_separation_peak_to_peak")
-            if separation_std > self.config.eef_separation_axis_std_m:
-                reasons.append("eef_separation_axis_std")
-        else:
-            reasons.append("insufficient_eef_separation_samples")
-
-        direct_plane_run: list[_ClearanceSceneSample] = []
-        previous_frame_id: int | None = None
-        previous_observation_sequence: int | None = None
-        previous_capture_timestamp_s: float | None = None
-        previous_accepted_monotonic_s: float | None = None
-        previous_stack_source: str | None = None
-        previous_stack_z_m: float | None = None
-        previous_stack_uncertainty_m: float | None = None
-        continuity_rejection: str | None = None
-        for accepted_window_index, scene in enumerate(scene_window, start=1):
-            pose_source = str(_read_field(scene, "held_box_pose_source", ""))
-            distinct = pose_source == "fresh_dual_eef_fixed_ready_nominal_box_offset"
-            held = _read_field(scene, "held_box_bottom_z_base_m")
-            held_uncertainty_field = "held_box_bottom_uncertainty_m"
-            invalid_reason = "fixed_ready_box_bottom_geometry_invalid"
-            stack_source = str(_read_field(scene, "stack_top_source", ""))
-            stack_source_valid = stack_source in {
-                "complete_stack_plane",
-                "metric_stack_plane_candidate",
-                "metric_fixed_outer_l_corner_plane",
-                "metric_inner_opening_plane",
-                "metric_coarse_l_corner_plane",
-                "metric_forward_edge_pair_plane",
-            }
-            stack = _read_field(scene, "stack_top_z_base_m")
-            frame_id_raw = _read_field(scene, "frame_id")
-            observation_sequence_raw = _read_field(
-                scene,
-                "accepted_observation_sequence",
-                accepted_window_index,
-            )
-            timestamp_raw = _read_field(scene, "capture_timestamp_s")
-            accepted_raw = _read_field(scene, "accepted_monotonic_s")
-            try:
-                frame_id = int(frame_id_raw)
-                observation_sequence = int(observation_sequence_raw)
-                capture_timestamp_s = float(timestamp_raw)
-                accepted_monotonic_s = float(accepted_raw)
-            except (TypeError, ValueError):
-                direct_plane_run.clear()
-                previous_frame_id = None
-                previous_observation_sequence = None
-                previous_capture_timestamp_s = None
-                previous_accepted_monotonic_s = None
-                previous_stack_source = None
-                previous_stack_z_m = None
-                previous_stack_uncertainty_m = None
-                continuity_rejection = "clearance_eef_box_bottom_frame_identity_unavailable"
-                continue
-            identity_valid = (
-                not isinstance(frame_id_raw, bool)
-                and frame_id >= 0
-                and frame_id_raw == frame_id
-                and not isinstance(observation_sequence_raw, bool)
-                and observation_sequence > 0
-                and observation_sequence_raw == observation_sequence
-                and math.isfinite(capture_timestamp_s)
-                and not isinstance(accepted_raw, bool)
-                and math.isfinite(accepted_monotonic_s)
-            )
-            capture_age_at_acceptance_s = (
-                accepted_monotonic_s - capture_timestamp_s
-            )
-            accepted_fresh = (
-                identity_valid
-                and 0.0 <= capture_age_at_acceptance_s
-                <= self.config.held_top_sample_fresh_after_s
-            )
-            if (
-                not identity_valid
-                or not distinct
-                or held is None
-                or stack is None
-                or not accepted_fresh
-            ):
-                direct_plane_run.clear()
-                previous_frame_id = None
-                previous_observation_sequence = None
-                previous_capture_timestamp_s = None
-                previous_accepted_monotonic_s = None
-                previous_stack_source = None
-                previous_stack_z_m = None
-                previous_stack_uncertainty_m = None
-                continuity_rejection = (
-                    "clearance_evidence_stale_at_acceptance"
-                    if identity_valid and not accepted_fresh
-                    else invalid_reason
-                )
-                continue
-
-            held_value = float(held)
-            stack_value = float(stack)
-            held_sigma = float(_read_field(scene, held_uncertainty_field, math.nan))
-            stack_sigma = float(_read_field(scene, "stack_top_uncertainty_m", math.nan))
-            values_valid = (
-                all(
-                    math.isfinite(value)
-                    for value in (held_value, stack_value, held_sigma, stack_sigma)
-                )
-                and held_sigma >= 0.0
-                and stack_sigma >= 0.0
-                and stack_source_valid
-            )
-            if not values_valid:
-                direct_plane_run.clear()
-                previous_frame_id = None
-                previous_observation_sequence = None
-                previous_capture_timestamp_s = None
-                previous_accepted_monotonic_s = None
-                previous_stack_source = None
-                previous_stack_z_m = None
-                previous_stack_uncertainty_m = None
-                continuity_rejection = (
-                    "fixed_ready_stack_plane_source_invalid"
-                    if not stack_source_valid
-                    else invalid_reason
-                )
-                continue
-
-            if previous_frame_id is not None:
-                if frame_id <= previous_frame_id:
-                    direct_plane_run.clear()
-                    continuity_rejection = "clearance_frame_not_monotonic"
-                elif (
-                    previous_observation_sequence is None
-                    or observation_sequence <= previous_observation_sequence
-                    or previous_capture_timestamp_s is None
-                    or capture_timestamp_s <= previous_capture_timestamp_s
-                    or previous_accepted_monotonic_s is None
-                    or accepted_monotonic_s <= previous_accepted_monotonic_s
-                ):
-                    direct_plane_run.clear()
-                    continuity_rejection = "clearance_evidence_not_monotonic"
-                elif stack_source != previous_stack_source:
-                    source_dt_s = accepted_monotonic_s - previous_accepted_monotonic_s
-                    previous_stack_upper = (
-                        float(previous_stack_z_m)
-                        + float(previous_stack_uncertainty_m)
-                        + self.config.held_top_std_m
-                    )
-                    previous_stack_lower = (
-                        float(previous_stack_z_m)
-                        - float(previous_stack_uncertainty_m)
-                        - self.config.held_top_std_m
-                    )
-                    current_stack_upper = stack_value + stack_sigma + self.config.held_top_std_m
-                    current_stack_lower = stack_value - stack_sigma - self.config.held_top_std_m
-                    height_consistent = (
-                        current_stack_lower <= previous_stack_upper
-                        and previous_stack_lower <= current_stack_upper
-                    )
-                    if (
-                        source_dt_s < -1e-12
-                        or source_dt_s > self.config.clearance_evidence_fresh_after_s
-                        or not height_consistent
-                    ):
-                        direct_plane_run.clear()
-                        continuity_rejection = "clearance_stack_height_source_change_rejected"
-
-            direct_plane_run.append(
-                _ClearanceSceneSample(
-                    held_z_m=held_value,
-                    held_uncertainty_m=held_sigma,
-                    stack_z_m=stack_value,
-                    stack_uncertainty_m=stack_sigma,
-                    capture_timestamp_s=capture_timestamp_s,
-                    accepted_monotonic_s=accepted_monotonic_s,
-                )
-            )
-            previous_frame_id = frame_id
-            previous_observation_sequence = observation_sequence
-            previous_capture_timestamp_s = capture_timestamp_s
-            previous_accepted_monotonic_s = accepted_monotonic_s
-            previous_stack_source = stack_source
-            previous_stack_z_m = stack_value
-            previous_stack_uncertainty_m = stack_sigma
-
-        required_direct_frames = self.config.held_top_direct_plane_dwell_frames
-        if len(direct_plane_run) > required_direct_frames:
-            direct_plane_run = direct_plane_run[-required_direct_frames:]
-        held_top_z = [sample.held_z_m for sample in direct_plane_run]
-        held_top_uncertainty = [
-            sample.held_uncertainty_m for sample in direct_plane_run
-        ]
-        stack_top_z = [sample.stack_z_m for sample in direct_plane_run]
-        stack_top_uncertainty = [
-            sample.stack_uncertainty_m for sample in direct_plane_run
-        ]
-        accepted_timestamps = [
-            sample.accepted_monotonic_s for sample in direct_plane_run
-        ]
-        capture_ages_at_acceptance = [
-            sample.accepted_monotonic_s - sample.capture_timestamp_s
-            for sample in direct_plane_run
-        ]
-
-        held_std: float | None = None
-        held_drift: float | None = None
-        clearance: float | None = None
-        box_bottom_lower_bound: float | None = None
-        stack_top_upper_bound: float | None = None
-        evidence_span_s: float | None = None
-        latest_age_s: float | None = None
-        max_capture_age_at_acceptance_s: float | None = None
-        clearance_source = "fixed_ready_dual_eef_box_bottom_to_stack_plane"
-        if len(held_top_z) < required_direct_frames:
-            reasons.append(
-                continuity_rejection or "insufficient_clearance_box_bottom_samples"
-            )
-            reasons.append("insufficient_clearance_box_bottom_samples")
-        else:
-            evidence_span_s = accepted_timestamps[-1] - accepted_timestamps[0]
-            latest_age_s = now_s - accepted_timestamps[-1]
-            max_capture_age_at_acceptance_s = max(capture_ages_at_acceptance)
-            if (
-                not math.isfinite(latest_age_s)
-                or latest_age_s < 0.0
-                or latest_age_s > self.config.clearance_evidence_fresh_after_s
-            ):
-                reasons.append("clearance_eef_box_bottom_evidence_stale")
-            if (
-                not math.isfinite(evidence_span_s)
-                or evidence_span_s < 0.0
-                or evidence_span_s > self.config.clearance_scene_max_span_s
-            ):
-                reasons.append("clearance_evidence_span_too_long")
-            held_array = np.asarray(held_top_z, dtype=np.float64)
-            held_std = float(np.std(held_array))
-            held_drift = max(0.0, float(held_array[0] - held_array[-1]))
-            if float(np.ptp(held_array)) > self.config.held_top_peak_to_peak_m:
-                reasons.append("fixed_ready_box_bottom_peak_to_peak")
-            if held_std > self.config.held_top_std_m:
-                reasons.append("fixed_ready_box_bottom_std")
-            if held_drift > self.config.held_top_downward_drift_m:
-                reasons.append("fixed_ready_box_bottom_downward_drift")
-            box_bottom_lower_bound = min(
-                z - uncertainty
-                for z, uncertainty in zip(held_top_z, held_top_uncertainty, strict=True)
-            )
-            stack_top_upper_bound = max(
-                z + uncertainty
-                for z, uncertainty in zip(
-                    stack_top_z, stack_top_uncertainty, strict=True
-                )
-            )
-            clearance = box_bottom_lower_bound - stack_top_upper_bound
-            if clearance < self.config.minimum_clearance_m:
-                reasons.append("insufficient_vertical_clearance")
-
-        result = GripContinuityResult(
-            passed=not reasons,
-            reasons=tuple(dict.fromkeys(reasons)),
-            evaluated_monotonic_s=now_s,
-            state_sample_count=len(states),
-            scene_sample_count=len(direct_plane_run),
-            dwell_s=dwell_s,
-            arm_tracking_error_max_rad=arm_error_max,
-            eef_separation_peak_to_peak_m=separation_p2p,
-            eef_separation_axis_std_max_m=separation_std,
-            held_top_std_m=held_std,
-            held_top_downward_drift_m=held_drift,
-            clearance_lower_bound_m=clearance,
-            box_bottom_z_lower_bound_m=box_bottom_lower_bound,
-            stack_top_z_upper_bound_m=stack_top_upper_bound,
-            scene_evidence_span_s=evidence_span_s,
-            scene_latest_age_s=latest_age_s,
-            scene_max_capture_age_at_acceptance_s=(
-                max_capture_age_at_acceptance_s
-            ),
-            clearance_source=clearance_source,
-            fixed_ready_geometry_only_authorized=True,
+        result = evaluate_grip_continuity(
+            self.config,
+            scene_window,
+            now_s=now_s,
+            cartesian_arm_motion=cartesian_arm_motion,
+            states=states,
+            ready_joint_errors=self._ready_joint_errors,
         )
         with self._condition:
             self._grip_result = result
@@ -3419,9 +3470,14 @@ class RBY1PalletController:
         if T_base_torso is None:
             raise MeasuredStateError("T_base_torso unexpectedly missing")
         max_deviation_rad = self.config.placement_release_axis_max_deviation_rad
+        # The hands open along the torso-tip Y axis, matching the box-pick grip
+        # convention.  Expressing it in base keeps the frozen plan arithmetic in
+        # one frame while the commanded target is still emitted in torso coords.
+        torso_y_axis_base = np.asarray(T_base_torso[:3, 1], dtype=np.float64)
         try:
-            release_axis, deviation_rad = resolve_base_y_release_axis(
+            release_axis, deviation_rad = resolve_release_axis(
                 lowering_target.inter_eef_axis_base,
+                torso_y_axis_base,
                 max_deviation_rad=max_deviation_rad,
             )
         except ValueError as exc:
@@ -3891,6 +3947,7 @@ __all__ = [
     "HandoffPendingError",
     "HARD_MAX_ANGULAR_SPEED_RADPS",
     "HARD_MAX_LINEAR_SPEED_MPS",
+    "READY_TRANSITION_MINIMUM_TIME_FLOOR_S",
     "LoadedSlot1ReadyBootstrap",
     "MeasuredRobotState",
     "MeasuredStateError",
@@ -3909,5 +3966,6 @@ __all__ = [
     "TORSO_REFERENCE_LINK",
     "WheelStopStatus",
     "ZERO_MOBILITY",
-    "resolve_base_y_release_axis",
+    "evaluate_grip_continuity",
+    "resolve_release_axis",
 ]

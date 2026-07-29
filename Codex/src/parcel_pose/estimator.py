@@ -518,26 +518,4 @@ class ParcelPoseEstimator:
         )
 
 
-def estimate_pose(
-    depth: ArrayLike,
-    intrinsics: CameraIntrinsics,
-    calibration: Calibration,
-    *,
-    config: EstimatorConfig | None = None,
-    depth_scale: float | None = None,
-    timestamp_ms: float = 0.0,
-    frame_id: int = 0,
-    rgb_support_mask: ArrayLike | None = None,
-) -> PoseEstimate:
-    """Functional convenience wrapper around :class:`ParcelPoseEstimator`."""
-
-    return ParcelPoseEstimator(intrinsics, calibration, config).estimate(
-        depth,
-        depth_scale=depth_scale,
-        timestamp_ms=timestamp_ms,
-        frame_id=frame_id,
-        rgb_support_mask=rgb_support_mask,
-    )
-
-
-__all__ = ["EstimationEvidence", "ParcelPoseEstimator", "estimate_pose"]
+__all__ = ["EstimationEvidence", "ParcelPoseEstimator"]

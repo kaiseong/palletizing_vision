@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 import hashlib
 import json
 from pathlib import Path
@@ -200,19 +200,6 @@ class SessionReader:
             expected_index += 1
 
 
-def write_session(
-    root: str | Path,
-    metadata: SessionMetadata,
-    frames: Sequence[RecordedFrame],
-    *,
-    overwrite: bool = False,
-) -> Path:
-    with SessionWriter(root, metadata, overwrite=overwrite) as writer:
-        for frame in frames:
-            writer.add_frame(frame)
-    return Path(root)
-
-
 def replay_session(
     root: str | Path,
     processor: Callable[[RecordedFrame, SessionMetadata], Any] | None = None,
@@ -253,5 +240,4 @@ __all__ = [
     "SessionWriter",
     "recording_summary",
     "replay_session",
-    "write_session",
 ]

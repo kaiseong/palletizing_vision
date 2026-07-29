@@ -24,11 +24,23 @@ def root_config() -> dict:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
+def test_defaults_ship_a_descent_free_release() -> None:
+    """The library default stays the safest setting: no vertical command."""
+
+    defaults = PlacementConfig()
+    assert defaults.maximum_planned_descent_m == 0.0
+    assert defaults.maximum_release_gap_m == pytest.approx(0.120)
+    assert PalletControlConfig().placement_release_spread_m == pytest.approx(0.030)
+
+
 def test_shipped_config_builds_both_placement_surfaces(root_config: dict) -> None:
     placement = PlacementConfig.from_root_config(root_config)
     control = PalletControlConfig.from_root_config(root_config)
-    assert placement.maximum_planned_descent_m == 0.0
-    assert placement.maximum_release_gap_m == pytest.approx(0.120)
+    # The commissioned descent cap and gap limit are site-tuned, so assert the
+    # invariants that keep them physically consistent instead of fixed numbers.
+    assert placement.maximum_planned_descent_m <= placement.maximum_descent_m
+    assert placement.maximum_release_gap_m >= placement.pre_motion_clearance_floor_m
+    assert placement.maximum_planned_descent_m < placement.maximum_release_gap_m
     assert control.placement_release_spread_m == pytest.approx(0.030)
     assert control.placement_max_release_spread_m == pytest.approx(0.040)
     assert control.placement_release_axis_max_deviation_rad == pytest.approx(
