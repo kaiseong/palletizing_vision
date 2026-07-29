@@ -509,8 +509,14 @@ def _held_carton_footprint_mask(
     axis_long = np.array((math.cos(yaw), math.sin(yaw)), dtype=dense_dtype)
     axis_short = np.array((-axis_long[1], axis_long[0]), dtype=dense_dtype)
     relative_xy = points_base[workspace, :2] - center[:2]
-    along = relative_xy @ axis_long
-    across = relative_xy @ axis_short
+    along = (
+        relative_xy[:, 0] * axis_long[0]
+        + relative_xy[:, 1] * axis_long[1]
+    )
+    across = (
+        relative_xy[:, 0] * axis_short[0]
+        + relative_xy[:, 1] * axis_short[1]
+    )
     footprint = hint.footprint_size_m
     footprint_mask = np.zeros(workspace.shape, dtype=np.bool_)
     footprint_mask[workspace] = (np.abs(along) <= 0.5 * footprint[0] + 0.08) & (
@@ -1041,7 +1047,10 @@ class PalletStackEstimator:
                     calibration_status=calibration_status,
                 )
         config = self.config
-        coefficients = self._ray_coefficients(depth_intrinsics, transform)
+        stride = config.depth_pixel_stride
+        sampled = np.s_[::stride, ::stride]
+        depth = depth[sampled]
+        coefficients = self._ray_coefficients(depth_intrinsics, transform)[sampled]
         translation_base = np.asarray(transform[:3, 3], dtype=np.float32)
         points_base = depth[..., None] * coefficients + translation_base
         # Intrinsics and ``transform`` are finite-validated.  Any overflowed
@@ -1380,29 +1389,32 @@ class PalletStackEstimator:
             if held_footprint_mask is None:
                 raise ValueError("held box association requires an EEF footprint")
             association = closer_mask & held_footprint_mask
+            association_points = points_base[association]
             lower_held_z = float(center_base[2] + config.held_plane_min_separation_m)
             held_peak, _ = _dominant_height(
-                points_base[..., 2][association],
+                association_points[:, 2],
                 lower_m=lower_held_z,
                 upper_m=config.workspace_z_m[1],
                 bin_m=config.z_histogram_bin_m,
             )
-            held_seed_mask = association & (
-                np.abs(points_base[..., 2] - held_peak) <= config.plane_seed_band_m
-            )
+            held_seed_points = association_points[
+                np.abs(association_points[:, 2] - held_peak)
+                <= config.plane_seed_band_m
+            ]
             held_plane = _fit_trimmed_horizontal_plane(
-                points_base[held_seed_mask],
+                held_seed_points,
                 slab_m=config.plane_fit_tolerance_m,
                 max_points=config.plane_fit_max_points,
             )
             held_normal = np.asarray(held_plane.plane.normal, dtype=np.float64)
             dense_held_normal = np.asarray(held_normal, dtype=dense_dtype)
             dense_held_plane_d = dense_dtype.type(held_plane.plane.d)
-            held_mask = association & (
-                np.abs(points_base @ dense_held_normal - dense_held_plane_d)
+            held_evidence = association_points[
+                np.abs(
+                    association_points @ dense_held_normal - dense_held_plane_d
+                )
                 <= np.asarray(config.plane_slab_m, dtype=dense_dtype)
-            )
-            held_evidence = points_base[held_mask]
+            ]
             held_z = float(np.median(held_evidence[:, 2]))
             distinct = bool(
                 held_z - center_base[2] >= config.held_plane_min_separation_m

@@ -130,6 +130,7 @@
     "maximum_plane_p95_residual_m": 0.008,
     "minimum_plane_points": 600,
     "plane_fit_max_points": 12000,
+    "depth_pixel_stride": 2,
     "plane_ransac_tolerance_m": 0.008,
     "closer_plane_rejection_margin_m": 0.08,
     "stable_window_frames": 5,

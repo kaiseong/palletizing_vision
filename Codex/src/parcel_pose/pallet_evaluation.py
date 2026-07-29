@@ -510,6 +510,8 @@ def evaluate_pallet_session(
         acquisition_config.stationary_frames,
         max_yaw_spread_rad=estimator_config.gates.max_yaw_spread_rad,
         max_plane_height_spread_m=estimator_config.gates.max_plane_p95_residual_m,
+        metric_outer_size_m=estimator_config.geometry.outer_size_m,
+        max_metric_center_spread_m=estimator_config.gates.max_center_spread_m,
     )
     hole_gate = StationaryHoleGate(
         required_frames=5,
@@ -596,10 +598,15 @@ def evaluate_pallet_session(
                 <= ACQUISITION_AUDIT_LAST_FRAME
                 else "outside_fixed_interval"
             )
+            would_request_metric_handoff = bool(
+                l_corner_status is not None
+                and l_corner_status.metric_proxy_stable
+            )
             would_request_step = bool(
                 audit_phase == "evaluated"
                 and l_corner_status is not None
                 and l_corner_status.stable
+                and not would_request_metric_handoff
                 and (hole_status is None or not hole_status.dwell_complete)
             )
             acquisition_audit = {
@@ -624,6 +631,9 @@ def evaluate_pallet_session(
                 "complete_hole_raw_valid": bool(observation.valid),
                 "l_corner_gate": _gate_payload(l_corner_status),
                 "complete_hole_gate": _gate_payload(hole_status),
+                "would_request_metric_proxy_handoff": (
+                    would_request_metric_handoff
+                ),
                 "would_request_forward_step_from_geometry_only": would_request_step,
                 "odometry": {
                     "available": False,
@@ -848,6 +858,12 @@ def evaluate_pallet_session(
         for row in evaluated_acquisition_rows
         if row["l_corner_gate"] is not None and bool(row["l_corner_gate"]["stable"])
     ]
+    stable_metric_proxy_rows = [
+        row
+        for row in evaluated_acquisition_rows
+        if row["l_corner_gate"] is not None
+        and bool(row["l_corner_gate"]["metric_proxy_stable"])
+    ]
     complete_hole_rows = [
         row
         for row in acquisition_rows
@@ -923,10 +939,17 @@ def evaluate_pallet_session(
                 for row in reviewed_acquisition_rows
             ),
             "stable_evaluated_count": len(stable_l_corner_rows),
+            "metric_proxy_stable_evaluated_count": len(
+                stable_metric_proxy_rows
+            ),
             "required_stable_count": ACQUISITION_AUDIT_REQUIRED_STABLE_FRAMES,
             "expected_evaluated_count": ACQUISITION_AUDIT_EXPECTED_EVALUATED_FRAMES,
             "stable_frame_ordinals": [
                 row["frame_ordinal_zero_based"] for row in stable_l_corner_rows
+            ],
+            "metric_proxy_stable_frame_ordinals": [
+                row["frame_ordinal_zero_based"]
+                for row in stable_metric_proxy_rows
             ],
         },
         "complete_hole": {
@@ -945,6 +968,10 @@ def evaluate_pallet_session(
             bool(row["would_request_forward_step_from_geometry_only"])
             for row in evaluated_acquisition_rows
         ),
+        "geometry_only_would_request_metric_proxy_handoff_count": sum(
+            bool(row["would_request_metric_proxy_handoff"])
+            for row in evaluated_acquisition_rows
+        ),
         "configured_limits": {
             "forward_budget_m": acquisition_config.budget_m,
             "forward_step_m": acquisition_config.step_m,
@@ -957,7 +984,11 @@ def evaluate_pallet_session(
         "motion_authorized": False,
         "mobile_actuation_count": 0,
         "executed_forward_distance_m": 0.0,
-        "fine_controller_transition": "not_executed_offline_replay",
+        "fine_controller_transition": (
+            "metric_proxy_handoff_would_be_requested_offline_not_executed"
+            if stable_metric_proxy_rows
+            else "not_executed_offline_replay"
+        ),
         "motion_blockers": acquisition_blockers,
         "acceptance": {
             "applicable": fixed_interval_complete,

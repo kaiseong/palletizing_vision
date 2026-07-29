@@ -6,10 +6,11 @@ boolean evidence/gate decisions.  Consequently the controller can be exercised
 with a fake monotonic clock and synthetic SE(2) samples before it is connected
 to the RB-Y1 command arbiter.
 
-Partial L-corner geometry has one narrow authority: it may authorize one new
-forward step.  It never creates a pallet target, lateral command, yaw command,
-or fine-servo measurement.  A complete, dwell-qualified hole requests a
-zero-speed handoff to the existing fine controller.
+Relaxed partial L-corner geometry has one narrow authority: it may authorize
+one new forward step.  A strict metric corner, combined with the commissioned
+outer stack dimensions, may instead recover the centred-opening feature and
+request a zero-speed handoff to the existing coupled fine controller.  The
+coarse owner itself remains structurally forward-only.
 """
 
 from __future__ import annotations
@@ -400,8 +401,10 @@ class AcquisitionDecision:
 
     All timestamps use the same monotonic domain as ``now_s``.  A stable
     L-corner must include the first and last capture times of its stationary
-    window.  ``hole_dwell_complete`` means the complete-hole estimator has
-    already enforced its three-rim/two-direction geometry and dwell gates.
+    window.  ``metric_proxy_stable`` additionally requires strict corner
+    translation recovered with commissioned outer dimensions.
+    ``hole_dwell_complete`` means the complete-hole estimator has already
+    enforced its three-rim/two-direction geometry and dwell gates.
     """
 
     now_s: float
@@ -412,6 +415,9 @@ class AcquisitionDecision:
     l_corner_window_started_at_s: float | None = None
     l_corner_timestamp_s: float | None = None
     l_corner_topology_branch: str | None = None
+    metric_proxy_visible: bool = False
+    metric_proxy_stable: bool = False
+    metric_proxy_timestamp_s: float | None = None
     hole_visible: bool = False
     hole_visible_timestamp_s: float | None = None
     hole_dwell_complete: bool = False
@@ -437,6 +443,7 @@ class AcquisitionDecision:
         for name in (
             "l_corner_window_started_at_s",
             "l_corner_timestamp_s",
+            "metric_proxy_timestamp_s",
             "hole_visible_timestamp_s",
             "hole_window_started_at_s",
             "hole_timestamp_s",
@@ -462,6 +469,16 @@ class AcquisitionDecision:
             raise ValueError("L-corner window cannot end before it starts")
         if self.l_corner_visible and self.l_corner_timestamp_s is None:
             raise ValueError("visible L-corner requires l_corner_timestamp_s")
+        if self.metric_proxy_visible and not self.l_corner_visible:
+            raise ValueError("visible metric proxy requires a visible L-corner")
+        if self.metric_proxy_visible and self.metric_proxy_timestamp_s is None:
+            raise ValueError("visible metric proxy requires metric_proxy_timestamp_s")
+        if self.metric_proxy_stable and not (
+            self.metric_proxy_visible and self.l_corner_stable
+        ):
+            raise ValueError(
+                "stable metric proxy requires a stable, visible L-corner"
+            )
         branch = (
             None
             if self.l_corner_topology_branch is None
@@ -497,6 +514,7 @@ class LCornerGateStatus:
     window_started_at_s: float | None
     window_ended_at_s: float | None
     topology_branch: str | None
+    metric_proxy_stable: bool
     reason: str
 
 
@@ -506,15 +524,17 @@ class _LCornerGateSample:
     yaw_rad: float
     plane_height_m: float
     topology_branch: str
+    metric_center_xy_m: tuple[float, float] | None
 
 
 class StationaryLCornerGate:
     """Require five fresh, same-branch L observations captured while stopped.
 
-    Corner translation is intentionally not treated as a slot pose or a control
-    error.  The runtime supplies ``stationary=False`` for every moving or
-    pre-settle frame, which clears the window.  Stability is therefore limited
-    to the observable line branch, plane height, and line orientation.
+    Relaxed observations gate forward-only acquisition.  When fixed outer
+    dimensions are configured, a full window of strict metric corners also
+    proves a stable centred-opening proxy for early handoff to coupled PBVS.
+    The runtime supplies ``stationary=False`` for every moving or pre-settle
+    frame, which clears both windows.
     """
 
     def __init__(
@@ -523,6 +543,8 @@ class StationaryLCornerGate:
         *,
         max_yaw_spread_rad: float = math.radians(2.0),
         max_plane_height_spread_m: float = 0.008,
+        metric_outer_size_m: tuple[float, float] | None = None,
+        max_metric_center_spread_m: float = 0.008,
     ) -> None:
         self.required_frames = _integer_at_least(
             required_frames,
@@ -537,10 +559,26 @@ class StationaryLCornerGate:
             max_plane_height_spread_m,
             "max_plane_height_spread_m",
         )
+        if metric_outer_size_m is None:
+            self.metric_outer_size_m = None
+        else:
+            outer_size = tuple(metric_outer_size_m)
+            if len(outer_size) != 2:
+                raise ValueError("metric_outer_size_m must contain two values")
+            self.metric_outer_size_m = (
+                _positive(outer_size[0], "metric_outer_size_m[0]"),
+                _positive(outer_size[1], "metric_outer_size_m[1]"),
+            )
+        self.max_metric_center_spread_m = _positive(
+            max_metric_center_spread_m,
+            "max_metric_center_spread_m",
+        )
         if self.max_yaw_spread_rad > math.radians(2.0) + 1e-12:
             raise ValueError("max_yaw_spread_rad cannot exceed 2 degrees")
         if self.max_plane_height_spread_m > 0.008 + 1e-12:
             raise ValueError("max_plane_height_spread_m cannot exceed 8 mm")
+        if self.max_metric_center_spread_m > 0.008 + 1e-12:
+            raise ValueError("max_metric_center_spread_m cannot exceed 8 mm")
         self._samples: deque[_LCornerGateSample] = deque(maxlen=self.required_frames)
 
     def clear(self) -> None:
@@ -572,6 +610,16 @@ class StationaryLCornerGate:
                 "plane_height_base_m",
             )
             branch = str(getattr(observation, "topology_branch")).strip()
+            metric_center_xy_m: tuple[float, float] | None = None
+            if strict_valid and self.metric_outer_size_m is not None:
+                center = observation.fixed_outer_center_base(
+                    self.metric_outer_size_m
+                )
+                if center is not None:
+                    metric_center_xy_m = (
+                        _finite(center[0], "metric_center_x_m"),
+                        _finite(center[1], "metric_center_y_m"),
+                    )
         except (AttributeError, TypeError, ValueError):
             self.clear()
             return self._status(False, "l_corner_temporal_fields_invalid")
@@ -585,7 +633,13 @@ class StationaryLCornerGate:
             self.clear()
             return self._status(False, "l_corner_branch_flip")
         self._samples.append(
-            _LCornerGateSample(timestamp_s, yaw_rad, plane_height_m, branch)
+            _LCornerGateSample(
+                timestamp_s,
+                yaw_rad,
+                plane_height_m,
+                branch,
+                metric_center_xy_m,
+            )
         )
         if len(self._samples) < self.required_frames:
             return self._status(True, "l_corner_window_warmup")
@@ -599,7 +653,27 @@ class StationaryLCornerGate:
             return self._status(True, "l_corner_yaw_unstable")
         if max(heights) - min(heights) > self.max_plane_height_spread_m:
             return self._status(True, "l_corner_plane_height_unstable")
-        return self._status(True, "stationary_l_corner_gate_complete", stable=True)
+        metric_centers = tuple(sample.metric_center_xy_m for sample in self._samples)
+        metric_proxy_stable = False
+        if self.metric_outer_size_m is not None and all(
+            center is not None for center in metric_centers
+        ):
+            centers = tuple(
+                center for center in metric_centers if center is not None
+            )
+            center_spread = max(
+                max(center[axis] for center in centers)
+                - min(center[axis] for center in centers)
+                for axis in (0, 1)
+            )
+            if center_spread <= self.max_metric_center_spread_m:
+                metric_proxy_stable = True
+        return self._status(
+            True,
+            "stationary_l_corner_gate_complete",
+            stable=True,
+            metric_proxy_stable=metric_proxy_stable,
+        )
 
     def _status(
         self,
@@ -607,6 +681,7 @@ class StationaryLCornerGate:
         reason: str,
         *,
         stable: bool = False,
+        metric_proxy_stable: bool = False,
     ) -> LCornerGateStatus:
         first = self._samples[0] if self._samples else None
         last = self._samples[-1] if self._samples else None
@@ -617,6 +692,7 @@ class StationaryLCornerGate:
             window_started_at_s=None if first is None else first.timestamp_s,
             window_ended_at_s=None if last is None else last.timestamp_s,
             topology_branch=None if last is None else last.topology_branch,
+            metric_proxy_stable=bool(metric_proxy_stable),
             reason=str(reason),
         )
 
@@ -878,8 +954,8 @@ class CoarseFineAuthority:
     """One-way authority transfer from coarse acquisition to fine PBVS.
 
     The coarse owner cannot be restored within a session.  This prevents a
-    late partial-L observation from publishing after the complete-hole
-    controller has taken over.
+    late relaxed edge observation from publishing after strict metric proxy or
+    complete-hole geometry has transferred control to coupled PBVS.
     """
 
     def __init__(self) -> None:
@@ -1017,25 +1093,59 @@ class ForwardAcquireServo:
             self._reason = "acquisition_disabled_zero_budget"
             return self._output(decision, self._reason)
         if self._state is AcquisitionState.HANDOFF_ZERO:
-            ready = self._stop_verified(decision) and self._fresh_hole(decision)
+            ready = self._stop_verified(decision) and self._fresh_fine_geometry(
+                decision
+            )
             reason = "fine_handoff_ready_at_zero" if ready else "fine_handoff_zero_wait"
             return self._output(decision, reason, fine_handoff_requested=ready)
 
         hole_ready = self._fresh_hole(decision)
+        metric_proxy_ready = self._fresh_metric_proxy(decision)
         raw_hole_ready = self._fresh_raw_hole(decision)
-        if hole_ready:
+        if (
+            decision.metric_proxy_visible
+            and not metric_proxy_ready
+            and not hole_ready
+        ):
+            proxy_fresh = self._timestamp_fresh(
+                decision.metric_proxy_timestamp_s,
+                decision.now_s,
+                self.config.camera_freshness_s,
+            )
+            if not proxy_fresh:
+                if self._state is AcquisitionState.STEP:
+                    self._begin_brake(
+                        now_s,
+                        _AfterStop.SETTLE,
+                        "metric_proxy_stale_braking_for_stationary_revalidation",
+                    )
+                else:
+                    self._reason = "metric_proxy_stale"
+                return self._output(decision, self._reason)
             if self._state is AcquisitionState.STEP:
                 self._begin_brake(
                     now_s,
                     _AfterStop.SETTLE,
-                    "hole_seen_braking_for_post_stop_revalidation",
+                    "metric_proxy_not_stable_braking_for_stationary_revalidation",
+                )
+                return self._output(decision, self._reason)
+        if hole_ready or metric_proxy_ready:
+            geometry_source = "hole" if hole_ready else "metric_proxy"
+            if self._state is AcquisitionState.STEP:
+                self._begin_brake(
+                    now_s,
+                    _AfterStop.SETTLE,
+                    f"{geometry_source}_seen_braking_for_post_stop_revalidation",
                 )
                 return self._output(decision, self._reason)
             if self._state not in {
                 AcquisitionState.BRAKE,
                 AcquisitionState.WAIT_STOP,
             }:
-                return self._request_handoff_or_wait(decision)
+                return self._request_handoff_or_wait(
+                    decision,
+                    geometry_source=geometry_source,
+                )
         if (
             self.config.mode == ACQUISITION_MODE_CONTINUOUS_FORWARD
             and raw_hole_ready
@@ -1249,7 +1359,7 @@ class ForwardAcquireServo:
             self._reason = monitoring_reason
         if self._stop_verified(decision):
             if self._after_stop is _AfterStop.HANDOFF_ZERO:
-                if self._fresh_hole(decision):
+                if self._fresh_fine_geometry(decision):
                     self._state = AcquisitionState.HANDOFF_ZERO
                     return self._output(
                         decision,
@@ -1257,7 +1367,7 @@ class ForwardAcquireServo:
                         fine_handoff_requested=True,
                     )
                 self._state = AcquisitionState.PERCEPTION_HOLD
-                self._reason = "hole_lost_before_zero_handoff"
+                self._reason = "fine_geometry_lost_before_zero_handoff"
                 return self._output(decision, self._reason)
             if self._after_stop is _AfterStop.FAULT_HOLD:
                 self._latch_fault(self._after_stop_reason or "fault_after_stop")
@@ -1360,14 +1470,24 @@ class ForwardAcquireServo:
     def _request_handoff_or_wait(
         self,
         decision: AcquisitionDecision,
+        *,
+        geometry_source: str,
     ) -> AcquisitionOutput:
         if self._stop_verified(decision):
             self._state = AcquisitionState.HANDOFF_ZERO
-            self._reason = "fine_handoff_ready_at_zero"
+            self._reason = (
+                "fine_handoff_ready_at_zero"
+                if geometry_source == "hole"
+                else f"{geometry_source}_fine_handoff_ready_at_zero"
+            )
             return self._output(decision, self._reason, fine_handoff_requested=True)
         self._state = AcquisitionState.WAIT_STOP
         self._after_stop = _AfterStop.HANDOFF_ZERO
-        self._after_stop_reason = "hole_dwell_complete_waiting_for_zero"
+        self._after_stop_reason = (
+            "hole_dwell_complete_waiting_for_zero"
+            if geometry_source == "hole"
+            else f"{geometry_source}_ready_waiting_for_zero"
+        )
         self._brake_started_at_s = decision.now_s
         return self._output(decision, self._after_stop_reason)
 
@@ -1428,6 +1548,27 @@ class ForwardAcquireServo:
                 self.config.camera_freshness_s,
             )
         )
+
+    def _fresh_metric_proxy(self, decision: AcquisitionDecision) -> bool:
+        return bool(
+            decision.metric_proxy_stable
+            and self._timestamp_fresh(
+                decision.metric_proxy_timestamp_s,
+                decision.now_s,
+                self.config.camera_freshness_s,
+            )
+            and (
+                self._post_stop_not_before_s is None
+                or (
+                    decision.l_corner_window_started_at_s is not None
+                    and decision.l_corner_window_started_at_s
+                    >= self._post_stop_not_before_s - 1e-12
+                )
+            )
+        )
+
+    def _fresh_fine_geometry(self, decision: AcquisitionDecision) -> bool:
+        return self._fresh_hole(decision) or self._fresh_metric_proxy(decision)
 
     def _fresh_visible_l_corner(self, decision: AcquisitionDecision) -> bool:
         return decision.l_corner_visible and self._timestamp_fresh(

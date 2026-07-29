@@ -248,6 +248,7 @@ class PalletEstimatorConfig:
     plane_slab_m: float = 0.012
     plane_fit_max_points: int = 30_000
     min_plane_points: int = 1_000
+    depth_pixel_stride: int = 1
     grid_resolution_m: float = 0.002
     morphology_close_m: float = 0.010
     morphology_dilate_m: float = 0.004
@@ -336,6 +337,10 @@ class PalletEstimatorConfig:
             if value < 100:
                 raise ValueError(f"{name} must be at least 100")
             object.__setattr__(self, name, value)
+        depth_pixel_stride = int(self.depth_pixel_stride)
+        if isinstance(self.depth_pixel_stride, bool) or depth_pixel_stride not in (1, 2):
+            raise ValueError("depth_pixel_stride must be either 1 or 2")
+        object.__setattr__(self, "depth_pixel_stride", depth_pixel_stride)
         crop_margin = int(self.l_corner_image_crop_margin_px)
         if crop_margin < 0:
             raise ValueError("l_corner_image_crop_margin_px must be non-negative")
@@ -445,11 +450,14 @@ class BoundaryLineEvidence:
 
 @dataclass(frozen=True, slots=True)
 class LCornerObservation:
-    """Partial stack evidence with deliberately limited control authority.
+    """Metric near/right stack-corner evidence.
 
-    A valid observation constrains the selected near/right corner, stack-plane
-    height and line orientation.  It intentionally has no stack-center, hole,
-    or slot-target field, so it cannot be coerced into a fine-servo pose.
+    A strict valid observation constrains the selected near/right outer corner,
+    stack-plane height, and both horizontal axes.  It does not manufacture a
+    centre by itself, but :meth:`fixed_outer_center_base` may recover the stack
+    and centred-opening feature when the commissioned outer dimensions are
+    supplied.  Relaxed forward-acquisition observations deliberately retain no
+    corner/axis geometry and therefore cannot create lateral or yaw authority.
     """
 
     timestamp_s: float
@@ -596,6 +604,39 @@ class LCornerObservation:
             raise ValueError(
                 "forward-acquisition L-corner observations require a yaw measurement"
             )
+
+    def fixed_outer_center_base(
+        self,
+        outer_size_m: Sequence[float],
+    ) -> FloatArray | None:
+        """Recover the centred opening feature from fixed outer dimensions.
+
+        The fitted branch is the near/image-right outer corner, so the stack
+        centre is half an outer width to image-left and half an outer depth in
+        the far direction.  Anything except the strict metric branch returns
+        ``None`` and therefore cannot authorize lateral or yaw control.
+        """
+
+        if (
+            not self.valid
+            or self.topology_branch != "near_image_right_outer"
+            or self.corner_base is None
+            or self.u_right_base is None
+            or self.v_far_base is None
+        ):
+            return None
+        outer_u_m, outer_v_m = _float_pair(outer_size_m, "outer_size_m")
+        center = (
+            self.corner_base
+            - 0.5 * outer_u_m * self.u_right_base
+            + 0.5 * outer_v_m * self.v_far_base
+        )
+        result = np.asarray(center, dtype=np.float64)
+        if result.shape != (3,) or not np.all(np.isfinite(result)):
+            return None
+        result = result.copy()
+        result.setflags(write=False)
+        return result
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1029,6 +1070,7 @@ def load_pallet_estimator_config(
         "max_depth_m",
         "minimum_plane_points",
         "plane_fit_max_points",
+        "depth_pixel_stride",
         "plane_ransac_tolerance_m",
         "closer_plane_rejection_margin_m",
         "stable_window_frames",
@@ -1087,6 +1129,9 @@ def load_pallet_estimator_config(
         ),
         "min_plane_points": int(
             perception_raw.get("minimum_plane_points", defaults.min_plane_points)
+        ),
+        "depth_pixel_stride": int(
+            perception_raw.get("depth_pixel_stride", defaults.depth_pixel_stride)
         ),
         "held_plane_min_separation_m": float(
             perception_raw.get(

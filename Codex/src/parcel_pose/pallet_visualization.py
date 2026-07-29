@@ -514,12 +514,15 @@ def draw_pallet_overlay(
                 "L gate "
                 f"{int(_field(l_corner_gate, 'stationary_frames', 0))}/5 "
                 f"stable={bool(_field(l_corner_gate, 'stable', False))} "
+                "metric_proxy="
+                f"{bool(_field(l_corner_gate, 'metric_proxy_stable', False))} "
                 "hole_dwell="
                 f"{bool(_field(hole_gate, 'dwell_complete', False))}"
             )
             lines.append(
                 "motion=BLOCKED cmd(vx,vy,wz)=(0,0,0) "
-                "geometry_would_request="
+                "would_request proxy/forward="
+                f"{bool(acquisition_audit.get('would_request_metric_proxy_handoff', False))}/"
                 f"{bool(acquisition_audit.get('would_request_forward_step_from_geometry_only', False))}"
             )
         else:

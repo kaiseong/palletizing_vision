@@ -45,6 +45,7 @@ from .pallet_acquisition import (
 )
 from .pallet_models import (
     HeldBoxHint,
+    PalletGeometry,
     PalletSceneObservation,
     Slot1HoleReference,
     load_slot1_hole_reference,
@@ -701,36 +702,85 @@ def _servo_measurement(
     scene: PalletSceneObservation,
     reference: Slot1HoleReference,
     timestamp_s: float,
+    geometry: PalletGeometry | None = None,
 ) -> PalletServoObservation:
     stack = scene.stack
+    if stack.valid:
+        if (
+            stack.center_base is None
+            or stack.yaw_base_rad is None
+            or stack.axis_branch is None
+        ):
+            return PalletServoObservation.invalid(
+                timestamp_s,
+                "complete_hole_geometry_incomplete",
+                reference_source=reference.reference_source,
+            )
+        if stack.axis_branch != reference.axis_branch:
+            return PalletServoObservation.invalid(
+                timestamp_s,
+                "slot1_hole_reference_axis_branch_mismatch",
+                reference_source=reference.reference_source,
+            )
+        return PalletServoObservation(
+            timestamp_s=timestamp_s,
+            current_observed_feature_center_base=tuple(
+                float(value) for value in stack.center_base[:2]
+            ),
+            current_observed_feature_yaw_base_rad=float(stack.yaw_base_rad),
+            demonstrated_body_reference_center_base=reference.center_base_xy_m,
+            demonstrated_body_reference_yaw_base_rad=reference.yaw_base_rad,
+            axis_branch=stack.axis_branch,
+            reference_source=reference.reference_source,
+        )
+
+    coarse = scene.coarse
+    proxy_center = (
+        None
+        if geometry is None or coarse is None
+        else coarse.fixed_outer_center_base(geometry.outer_size_m)
+    )
     if (
-        not stack.valid
-        or stack.center_base is None
-        or stack.yaw_base_rad is None
-        or stack.axis_branch is None
+        coarse is not None
+        and coarse.valid
+        and proxy_center is not None
+        and coarse.yaw_base_rad is not None
     ):
-        return PalletServoObservation.invalid(
-            timestamp_s,
-            *stack.rejection_reasons,
+        return PalletServoObservation(
+            timestamp_s=timestamp_s,
+            current_observed_feature_center_base=(
+                float(proxy_center[0]),
+                float(proxy_center[1]),
+            ),
+            current_observed_feature_yaw_base_rad=float(coarse.yaw_base_rad),
+            demonstrated_body_reference_center_base=reference.center_base_xy_m,
+            demonstrated_body_reference_yaw_base_rad=reference.yaw_base_rad,
+            axis_branch=reference.axis_branch,
             reference_source=reference.reference_source,
         )
-    if stack.axis_branch != reference.axis_branch:
-        return PalletServoObservation.invalid(
-            timestamp_s,
-            "slot1_hole_reference_axis_branch_mismatch",
-            reference_source=reference.reference_source,
-        )
-    return PalletServoObservation(
-        timestamp_s=timestamp_s,
-        current_observed_feature_center_base=tuple(
-            float(value) for value in stack.center_base[:2]
-        ),
-        current_observed_feature_yaw_base_rad=float(stack.yaw_base_rad),
-        demonstrated_body_reference_center_base=reference.center_base_xy_m,
-        demonstrated_body_reference_yaw_base_rad=reference.yaw_base_rad,
-        axis_branch=stack.axis_branch,
+
+    rejection_reasons = tuple(stack.rejection_reasons)
+    if coarse is not None:
+        rejection_reasons += tuple(coarse.rejection_reasons)
+    return PalletServoObservation.invalid(
+        timestamp_s,
+        *(rejection_reasons or ("fine_geometry_unavailable",)),
         reference_source=reference.reference_source,
     )
+
+
+def _servo_measurement_source(
+    scene: PalletSceneObservation,
+    geometry: PalletGeometry,
+) -> str:
+    if scene.stack.valid:
+        return "complete_hole"
+    coarse = scene.coarse
+    if coarse is not None and coarse.fixed_outer_center_base(
+        geometry.outer_size_m
+    ) is not None:
+        return "fixed_outer_l_corner_proxy"
+    return "unavailable"
 
 
 def _controller_scene_sample(
@@ -800,6 +850,30 @@ def _controller_scene_sample(
         "held_box_bottom_uncertainty_m": float(box_bottom_uncertainty_m),
         "held_box_pose_source": held_proxy.source,
     }
+
+
+def _update_scene_window(
+    scene_window: deque[Any],
+    *,
+    frame_result_fresh: bool,
+    fresh_sample: Any | None,
+) -> bool:
+    """Keep accepted evidence across an isolated late processing result.
+
+    A late result still forces exact-zero mobility for that cycle.  It must not,
+    however, erase earlier evidence that was fresh when accepted: raw D435 frame
+    drops are allowed, and the clearance evaluator independently rejects old or
+    over-long evidence windows.  The next fresh observation can therefore
+    resume from the retained accepted sequence instead of paying another full
+    five-frame acquisition delay.
+    """
+
+    if not frame_result_fresh:
+        return False
+    if fresh_sample is None:
+        raise ValueError("a fresh scene sample is required for a fresh result")
+    scene_window.append(fresh_sample)
+    return True
 
 
 def _held_box_height_bounds(root: Mapping[str, Any]) -> tuple[float, float, float]:
@@ -1151,10 +1225,13 @@ def _annotate_fine_output(
     output: PalletServoOutput,
     *,
     handoff_started: bool = False,
+    measurement_source: str | None = None,
 ) -> PalletServoOutput:
     diagnostics = dict(output.diagnostics)
     diagnostics["controller_owner"] = "fine_slot1_servo"
     diagnostics["coarse_to_fine_handoff_started"] = bool(handoff_started)
+    if measurement_source is not None:
+        diagnostics["observed_feature_source"] = str(measurement_source)
     return PalletServoOutput(
         command=output.command,
         state=output.state,
@@ -1289,6 +1366,7 @@ def _draw_live_overlay(
     T_base_depth: np.ndarray,
     intrinsics: CameraIntrinsics,
     hole_reference: Slot1HoleReference,
+    geometry: PalletGeometry,
     *,
     execute: bool,
     acquisition: AcquisitionOutput | None = None,
@@ -1354,70 +1432,97 @@ def _draw_live_overlay(
                     1,
                     cv2.LINE_AA,
                 )
-        if (
-            stack.center_base is not None
-            and stack.u_right_base is not None
-            and stack.v_far_base is not None
-        ):
-            origin = np.asarray(stack.center_base)
-            axes = np.vstack(
-                (
-                    origin,
-                    origin + 0.12 * np.asarray(stack.u_right_base),
-                    origin + 0.12 * np.asarray(stack.v_far_base),
-                )
-            )
-            pixels = _project_base_points(axes, T_base_depth, intrinsics)
-            if np.all(np.isfinite(pixels)):
-                p0, pu, pv = (tuple(np.rint(point).astype(int)) for point in pixels)
-                cv2.arrowedLine(output, p0, pu, (0, 220, 0), 2, cv2.LINE_AA)
-                cv2.arrowedLine(output, p0, pv, (220, 100, 0), 2, cv2.LINE_AA)
+    coarse = scene.coarse
+    proxy_center = (
+        None
+        if coarse is None
+        else coarse.fixed_outer_center_base(geometry.outer_size_m)
+    )
+    if stack.valid and stack.center_base is not None:
+        feature_center = np.asarray(stack.center_base)
+        feature_u = stack.u_right_base
+        feature_v = stack.v_far_base
+        feature_label = "complete hole"
+    elif proxy_center is not None and coarse is not None:
+        feature_center = np.asarray(proxy_center)
+        feature_u = coarse.u_right_base
+        feature_v = coarse.v_far_base
+        feature_label = "L-corner proxy"
+    else:
+        feature_center = None
+        feature_u = None
+        feature_v = None
+        feature_label = ""
 
-        if stack.center_base is not None and stack.plane_height_base_m is not None:
-            feature_points = np.asarray(
+    if feature_center is not None and feature_u is not None and feature_v is not None:
+        axes = np.vstack(
+            (
+                feature_center,
+                feature_center + 0.12 * np.asarray(feature_u),
+                feature_center + 0.12 * np.asarray(feature_v),
+            )
+        )
+        pixels = _project_base_points(axes, T_base_depth, intrinsics)
+        if np.all(np.isfinite(pixels)):
+            p0, pu, pv = (tuple(np.rint(point).astype(int)) for point in pixels)
+            cv2.arrowedLine(output, p0, pu, (0, 220, 0), 2, cv2.LINE_AA)
+            cv2.arrowedLine(output, p0, pv, (220, 100, 0), 2, cv2.LINE_AA)
+
+    if feature_center is not None:
+        feature_points = np.asarray(
+            (
+                feature_center,
                 (
-                    stack.center_base,
-                    (
-                        hole_reference.center_base_xy_m[0],
-                        hole_reference.center_base_xy_m[1],
-                        stack.plane_height_base_m,
-                    ),
+                    hole_reference.center_base_xy_m[0],
+                    hole_reference.center_base_xy_m[1],
+                    feature_center[2],
                 ),
-                dtype=np.float64,
+            ),
+            dtype=np.float64,
+        )
+        feature_pixels = _project_base_points(
+            feature_points,
+            T_base_depth,
+            intrinsics,
+        )
+        if np.all(np.isfinite(feature_pixels)):
+            current_point, reference_point = (
+                tuple(np.rint(point).astype(int)) for point in feature_pixels
             )
-            feature_pixels = _project_base_points(
-                feature_points,
-                T_base_depth,
-                intrinsics,
+            cv2.drawMarker(
+                output,
+                current_point,
+                (0, 255, 255),
+                cv2.MARKER_TILTED_CROSS,
+                18,
+                2,
             )
-            if np.all(np.isfinite(feature_pixels)):
-                current_point, reference_point = (
-                    tuple(np.rint(point).astype(int)) for point in feature_pixels
-                )
-                cv2.drawMarker(
-                    output,
-                    current_point,
-                    (0, 255, 255),
-                    cv2.MARKER_TILTED_CROSS,
-                    18,
-                    2,
-                )
-                cv2.drawMarker(
-                    output,
-                    reference_point,
-                    (255, 40, 210),
-                    cv2.MARKER_CROSS,
-                    20,
-                    2,
-                )
-                cv2.line(
-                    output,
-                    current_point,
-                    reference_point,
-                    (255, 40, 210),
-                    1,
-                    cv2.LINE_AA,
-                )
+            cv2.putText(
+                output,
+                feature_label,
+                (current_point[0] + 6, current_point[1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.drawMarker(
+                output,
+                reference_point,
+                (255, 40, 210),
+                cv2.MARKER_CROSS,
+                20,
+                2,
+            )
+            cv2.line(
+                output,
+                current_point,
+                reference_point,
+                (255, 40, 210),
+                1,
+                cv2.LINE_AA,
+            )
 
     held_px = _project_base_points(
         np.asarray(held.center_base_xyz_m).reshape(1, 3),
@@ -1451,6 +1556,7 @@ def _draw_live_overlay(
         else (
             f"gates L={l_gate.stationary_frames}/5"
             f"({'OK' if l_gate.stable else 'wait'}) "
+            f"proxy={'OK' if l_gate.metric_proxy_stable else 'wait'} "
             f"hole={hole_gate.stationary_frames}"
             f"({'OK' if hole_gate.dwell_complete else 'wait'})"
         )
@@ -1481,7 +1587,9 @@ def _draw_live_overlay(
     lines = (
         f"PALLET SLOT 1: {mode}",
         f"owner: {owner}  servo: {servo_output.state.value}",
-        f"vision: hole={'valid' if scene.valid else 'abstain'}  stationary={stationary_source}",
+        "vision: feature="
+        f"{diagnostics.get('observed_feature_source', 'unavailable')} "
+        f"stationary={stationary_source}",
         gate_line,
         acquisition_line,
         placement_line,
@@ -1849,12 +1957,20 @@ def run_pallet_live(
     from .pallet_geometry import PalletStackEstimator
     from .pallet_models import load_pallet_estimator_config
 
-    estimator = PalletStackEstimator(load_pallet_estimator_config(root_config))
+    estimator_config = load_pallet_estimator_config(root_config)
+    estimator = PalletStackEstimator(estimator_config)
     slot1_hole_reference = load_slot1_hole_reference(root_config)
     acquisition_config = AcquisitionConfig.from_root_config(root_config)
     acquisition_servo = ForwardAcquireServo(acquisition_config)
-    l_corner_gate = StationaryLCornerGate(acquisition_config.stationary_frames)
     perception_config = _section(root_config, "perception")
+    l_corner_gate = StationaryLCornerGate(
+        acquisition_config.stationary_frames,
+        metric_outer_size_m=estimator_config.geometry.outer_size_m,
+        max_metric_center_spread_m=min(
+            0.008,
+            float(perception_config.get("live_center_spread_m", 0.008)),
+        ),
+    )
     hole_gate = StationaryHoleGate(
         required_frames=max(5, int(perception_config.get("stable_window_frames", 5))),
         minimum_duration_s=max(
@@ -2040,22 +2156,24 @@ def run_pallet_live(
                     frame_source_monotonic_s,
                     decision_now_s,
                 )
+                fresh_scene_sample: dict[str, Any] | None = None
                 if frame_result_fresh:
                     accepted_scene_sequence += 1
-                    scene_window.append(
-                        _controller_scene_sample(
-                            scene,
-                            held_proxy,
-                            frame_id=frame.depth_frame_number,
-                            accepted_observation_sequence=accepted_scene_sequence,
-                            capture_timestamp_s=frame_source_monotonic_s,
-                            accepted_monotonic_s=decision_now_s,
-                            maximum_box_height_m=maximum_box_height_m,
-                            box_bottom_uncertainty_m=box_bottom_uncertainty_m,
-                        )
+                    fresh_scene_sample = _controller_scene_sample(
+                        scene,
+                        held_proxy,
+                        frame_id=frame.depth_frame_number,
+                        accepted_observation_sequence=accepted_scene_sequence,
+                        capture_timestamp_s=frame_source_monotonic_s,
+                        accepted_monotonic_s=decision_now_s,
+                        maximum_box_height_m=maximum_box_height_m,
+                        box_bottom_uncertainty_m=box_bottom_uncertainty_m,
                     )
-                else:
-                    scene_window.clear()
+                _update_scene_window(
+                    scene_window,
+                    frame_result_fresh=frame_result_fresh,
+                    fresh_sample=fresh_scene_sample,
+                )
                 grip_result: Any | None = None
                 if execute:
                     assert controller is not None
@@ -2117,6 +2235,14 @@ def run_pallet_live(
                         or coarse.forward_acquisition_valid
                     )
                 )
+                raw_metric_proxy_visible = bool(
+                    frame_result_fresh
+                    and coarse is not None
+                    and coarse.fixed_outer_center_base(
+                        estimator_config.geometry.outer_size_m
+                    )
+                    is not None
+                )
                 raw_l_corner_timestamp_s = (
                     float(coarse.timestamp_s)
                     if raw_l_corner_visible and coarse is not None
@@ -2146,6 +2272,7 @@ def run_pallet_live(
                             scene,
                             slot1_hole_reference,
                             frame_source_monotonic_s,
+                            estimator_config.geometry,
                         )
                         if frame_result_fresh
                         else PalletServoObservation.invalid(
@@ -2157,7 +2284,11 @@ def run_pallet_live(
                         )
                     )
                     decision = _annotate_fine_output(
-                        servo.update(measurement, decision_now_s, wheel)
+                        servo.update(measurement, decision_now_s, wheel),
+                        measurement_source=_servo_measurement_source(
+                            scene,
+                            estimator_config.geometry,
+                        ),
                     )
                     decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
                 else:
@@ -2175,6 +2306,16 @@ def run_pallet_live(
                         l_corner_topology_branch=(
                             coarse.topology_branch
                             if raw_l_corner_visible and coarse is not None
+                            else None
+                        ),
+                        metric_proxy_visible=raw_metric_proxy_visible,
+                        metric_proxy_stable=(
+                            l_status.metric_proxy_stable
+                            and raw_metric_proxy_visible
+                        ),
+                        metric_proxy_timestamp_s=(
+                            float(coarse.timestamp_s)
+                            if raw_metric_proxy_visible and coarse is not None
                             else None
                         ),
                         hole_visible=raw_hole_visible,
@@ -2213,7 +2354,12 @@ def run_pallet_live(
                             wheel_stopped=stationary,
                         )
                         decision = _annotate_fine_output(
-                            servo.start(decision_now_s), handoff_started=True
+                            servo.start(decision_now_s),
+                            handoff_started=True,
+                            measurement_source=_servo_measurement_source(
+                                scene,
+                                estimator_config.geometry,
+                            ),
                         )
                         decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
                     else:
@@ -2343,6 +2489,7 @@ def run_pallet_live(
                     T_base_depth,
                     contract.depth_intrinsics,
                     slot1_hole_reference,
+                    estimator_config.geometry,
                     execute=execute,
                     acquisition=acquisition_output,
                     l_gate=l_status,
@@ -2394,8 +2541,12 @@ def run_pallet_live(
                             f"{(placement_output or last_placement_output).reason}"
                         )
                     )
+                    feature_source = decision.diagnostics.get(
+                        "observed_feature_source",
+                        "complete_hole" if scene.valid else "unavailable",
+                    )
                     print(
-                        f"[pallet] frame={frame_count} vision={'valid' if scene.valid else 'abstain'} "
+                        f"[pallet] frame={frame_count} vision={feature_source} "
                         f"state={decision.state.value} reason={decision.reason} "
                         f"dispatch={dispatch_result} interlock="
                         f"{motion_interlock_reason or 'PASS'}"

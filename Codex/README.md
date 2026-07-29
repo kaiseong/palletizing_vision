@@ -237,12 +237,12 @@ the complete opening is not visible:
 
 ```text
 loaded ready/body hold with exact zero mobility
-  -> five stationary acquisition-grade edge-pair observations
-  -> continuous 0.030 m/s forward-only cruise within the 0.150 m budget
-  -> raw complete-hole brake
-  -> zero + measured wheel stop + stationary complete-hole dwell
-  -> five complete-hole observations spanning at least 0.35 s
-  -> one-way handoff to the demonstrated hole-centre x/y/yaw fine servo
+  -> five stationary strict metric L-corner observations when available
+  -> fixed 660 x 658 mm outer geometry recovers a centred-opening proxy
+  -> zero-verified one-way handoff to coupled x/y/yaw fine servo
+  -> complete-hole geometry replaces the proxy whenever it becomes valid
+  -> otherwise, relaxed edge evidence permits only a bounded 0.030 m/s
+     forward acquisition until strict proxy or complete-hole geometry appears
   -> ARRIVED_HOLD
   -> exact-zero mobile lock
   -> 50 mm base-z Cartesian lowering
@@ -250,11 +250,16 @@ loaded ready/body hold with exact zero mobility
 ```
 
 The coarse observation consists of the completed stack's near/front boundary
-and one image-right boundary in metric 3D/BEV. When the held carton separates
-their visible segments, the estimator explicitly leaves the strict L corner
-invalid and its translation underconstrained. A separately qualified edge pair
-can authorize only bounded forward acquisition; it cannot command lateral
-motion, yaw, reverse, descent, or fine placement. For the fixed-ready
+and one image-right boundary in metric 3D/BEV. A strict near/image-right outer
+corner plus the measured `660 x 658 mm` outer footprint recovers the stack and
+centred-opening feature as
+`corner - outer_u/2 * u_right + outer_v/2 * v_far`. Five stable stationary
+strict observations therefore transfer directly to the existing coupled PBVS;
+this is not a second controller. When the held carton separates the visible
+segments, the estimator leaves the strict corner invalid and its translation
+underconstrained. That separately qualified relaxed edge pair can authorize
+only bounded forward acquisition; it cannot command lateral motion, yaw,
+reverse, descent, or fine placement. For the fixed-ready
 clearance proxy, the stack top may come from either complete-hole geometry or
 the metric partial-stack plane. Forward acquisition remains a separate decision
 and independently requires the stationary five-frame edge gate.
@@ -271,9 +276,10 @@ forward acquisition budget. The absolute design ceiling remains an unreachable
 authorizes one forward cruise at `0.030 m/s`; the target is the remaining
 budget minus the configured 6 mm physical stopping allowance. Fresh
 `T_odom_base` measures the authorized cruise and zero-command coasting through
-verified wheel stop while monitoring lateral/yaw drift. A fresh raw complete
-hole during cruise commands braking before stationary hole dwell. Reverse
-odometry keeps its separate, tighter 3 mm tolerance.
+verified wheel stop while monitoring lateral/yaw drift. A fresh strict metric
+corner or complete hole during cruise commands braking before stationary
+revalidation and coupled-servo handoff. Reverse odometry keeps its separate,
+tighter 3 mm tolerance.
 
 Replay the supplied recordings without a camera or robot SDK:
 
@@ -401,9 +407,21 @@ spreading or release.
 The clearance dwell deliberately uses three separate time checks. Every depth
 sample must have been accepted within `0.20 s` of capture, the newest accepted
 sample must still be within `0.20 s`, and the five-frame evidence run must span
-no more than `0.50 s`. This supports the measured approximately 12--13 Hz pallet
-pipeline without weakening the independent `0.15 s` current-frame actuation
-gate. Do not replace these checks with one enlarged global freshness timeout.
+no more than `0.50 s`. One late processing result still commands exact-zero
+mobility for that cycle, but it no longer deletes the previously accepted
+fresh evidence; the next fresh result may reuse it only if all original age,
+ordering, source, and `0.50 s` span checks still pass. This removes the old
+four-frame reacquisition pause without weakening the independent `0.15 s`
+current-frame actuation gate. Do not replace these checks with one enlarged
+global freshness timeout.
+
+The D435 continues to stream and record `640x480 @ 30 FPS`. For live metric
+fitting, `perception.depth_pixel_stride=2` evaluates every second calibrated
+depth ray before projecting into the same 2 mm BEV; no image-space scale is
+introduced. On the recorded arrived session, the half-resolution metric result
+stayed within `3.0 mm` and `1.6 deg` of the full-resolution result while roughly
+halving replay estimator latency. Both supplied pallet sessions retain their
+acceptance gates with this deployed setting.
 
 The standalone commissioning path requires the prior box-pick owner to be
 stopped and makes the pallet process the only live owner. Uncommissioned
@@ -412,9 +430,9 @@ code; add an atomic stream/epoch transfer only when that integration is ready.
 
 A CLI boolean cannot replace exact target/stiffness/torque provenance, measured
 arm tracking, EEF separation, held-top/stack-plane geometry, fresh odometry, or
-wheel stop. Exactly one controller owns mobility per cycle; after the
-complete-hole zero-speed handoff, the partial-L controller is permanently
-revoked for that session.
+wheel stop. Exactly one controller owns mobility per cycle; after either a
+strict metric proxy or complete-hole zero-speed handoff, the forward-only
+controller is permanently revoked for that session.
 
 Live frames are accepted only when RGB and Depth timestamps share the
 RealSense `GLOBAL_TIME` or `SYSTEM_TIME` clock domain. Both the sensor timestamp
@@ -453,9 +471,9 @@ torque limits remain default.
 | Stage | Motion allowed | Main gates and tolerances |
 | --- | --- | --- |
 | Ready restore | Joint Position one-shot | All torso, arm, and head joints ready and within `1 deg`, or one `5 s` all-joint Position command followed by SDK `Ok` and the same posture check. |
-| Coarse acquire | `+x` only | Five stationary L/edge-pair frames, `0.030 m/s` cruise, `0.150 m` session budget, `0.006 m` braking allowance, `0.015 m` lateral drift limit, `3 deg` yaw drift limit. |
-| Raw hole brake | zero | A fresh raw complete-hole observation during continuous cruise commands braking before stationary dwell; a dwell-complete hole also requests zero handoff. |
-| Fine align | `x/y/yaw` | Complete-hole measurement to demonstrated reference `[0.865000, 0.139523] m`, `-90 deg`; arrival requires five frames and `0.35 s` inside `0.015 m` / `5 deg`, with inner threshold `0.010 m` / `3 deg`. |
+| Coarse fallback | `+x` only | Used only while centre translation is underconstrained: five stationary relaxed edge-pair frames, `0.030 m/s` cruise, `0.150 m` session budget, `0.006 m` braking allowance, `0.015 m` lateral drift limit, `3 deg` yaw drift limit. |
+| Metric handoff | zero | Five stopped strict L-corner proxy frames stable within `0.008 m`, or a dwell-complete hole; exact-zero acknowledgement and measured wheel stop precede the one-way owner transfer. A raw strict proxy/hole appearing during fallback cruise first commands braking. |
+| Fine align | `x/y/yaw` | Fixed-outer L-corner proxy initially, complete-hole measurement when valid, both against the same demonstrated reference `[0.865000, 0.139523] m`, `-90 deg`; the existing jump gate guards source transitions. Arrival requires five frames and `0.35 s` inside `0.015 m` / `5 deg`, with inner threshold `0.010 m` / `3 deg`. |
 | Placement entry | zero only | `ARRIVED_HOLD`, exact-zero command acknowledgement, fresh stopped-wheel dwell `0.35 s`, loaded Cartesian-hold mode, stream Running feedback, and fresh measured FK. |
 | Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=5.0 s`, predicted post-lower residual within `[-0.020, +0.010] m`, uncertainty `<=0.015 m`. |
 | Lower | arm Cartesian only | The acknowledged loaded-hold target is copied, preserving orientation, squeeze, and nullspace targets, then shifted `50 mm` in base-z. Timeout `4.0 s`; measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
@@ -486,7 +504,7 @@ following must be true in one process:
 - a reviewed config gives acquisition a positive budget no greater than
   0.15 m.
 
-Latest hardware-free replay evidence from:
+The prior full-density Jetson baseline from:
 
 ```bash
 python pallet.py evaluate \
@@ -494,7 +512,8 @@ python pallet.py evaluate \
   --session recordings/codex_640x480/pallet_1_arrived
 ```
 
-was also run directly on the Jetson AGX Orin in `MAXN` mode. Dense ray/point and
+was run directly on the Jetson AGX Orin in `MAXN` mode before the commissioned
+stride-2 setting above. Dense ray/point and
 full-frame mask projections stay in `float32`; selected plane/line fitting and
 final metric output remain `float64`. `pallet_data` kept `302/525` valid frames
 and passed acceptance with `p50=76.8 ms`, `p95=81.0 ms`; `pallet_1_arrived`
