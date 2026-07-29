@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "software_replay_only_actuation_uncommissioned",
+  "status": "slot1_ready_one_shot_available_mobile_actuation_uncommissioned",
   "robot": {
     "model": "M",
     "version": "1.2",

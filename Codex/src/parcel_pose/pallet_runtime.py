@@ -1,12 +1,12 @@
 """Live D435 facade and in-process slot-1 hover coordinator.
 
 Plain ``pallet live`` is perception-only: it never imports the RB-Y1 SDK and
-never connects to a robot.  Physical actuation is deliberately unavailable
-until the box-pick owner and pallet owner share a reviewed atomic ownership
-bridge.  Both the active ``GripHandoff`` scaffold and the already-released
-``ReadyHoldHandoff`` model are rejected before any robot command.  The former
-lacks exact torso/head/control-mode and stream-identity provenance; the latter
-has an unbounded body-hold gap.
+never connects to a robot.  The explicit ``ensure_slot1_ready`` option may send
+one all-joint Position command before perception, but it does not enable mobile
+motion.  Mobile actuation remains unavailable until the box-pick owner and
+pallet owner share a reviewed atomic ownership bridge.  Both the active
+``GripHandoff`` scaffold and the already-released ``ReadyHoldHandoff`` model are
+rejected before a pallet-control stream is created.
 
 The pure controller's terminal target is a persistent zero-mobility body hold;
 no current live path publishes it.  This module has no descent, contact,
@@ -1359,6 +1359,7 @@ def run_pallet_live(
     *,
     execute: bool = False,
     allow_nominal_registration: bool = False,
+    ensure_slot1_ready: bool = False,
     robot_address: str = "192.168.30.1:50051",
     robot_power: str = ".*",
     warmup_frames: int = 30,
@@ -1373,14 +1374,12 @@ def run_pallet_live(
     ready_hold_handoff: Any | None = None,
     source_release_witness: Any | None = None,
 ) -> int:
-    """Run live perception; reject every uncommissioned actuator boundary.
+    """Run live perception and optionally restore the fixed slot-1 ready pose.
 
-    ``robot_address`` and ``robot_power`` are retained at the CLI boundary for
-    deployment compatibility.  They are deliberately not used to construct a
-    second standalone robot owner here.
+    The ready-pose option is a bounded one-shot Position command.  It is kept
+    separate from ``execute`` and cannot create a mobility/body command stream.
     """
 
-    del robot_address, robot_power
     if not isinstance(root_config, Mapping):
         raise TypeError("root_config must be a mapping")
     if max_frames is not None and max_frames <= 0:
@@ -1490,6 +1489,15 @@ def run_pallet_live(
             source_hold_witness,
         )
     try:
+        if ensure_slot1_ready:
+            from .pallet_ready import ensure_slot1_ready_from_config
+
+            ensure_slot1_ready_from_config(
+                root_config,
+                address=robot_address,
+                power=robot_power,
+            )
+            calibration_status = "nominal_unverified_ready_posture_checked_at_start"
         if execute:
             assert controller is not None and containment is not None
             assert grip_handoff is not None and source_hold_witness is not None

@@ -190,9 +190,11 @@ p_slot1 = p_opening + 0.12800 * u_right + 0.20175 * v_far
 
 `u_right` is branch-locked to the stack axis projecting toward image right;
 the slot carton long axis is parallel to it. The ready posture is configured in
-`configs/rby1m_v1_2_pallet_slot1_nominal.json`: torso/head use Position, both
-arms use Joint Impedance with stiffness `[150] * 7`, and torque limits are left
-at the SDK defaults.
+`configs/rby1m_v1_2_pallet_slot1_nominal.json`. The future persistent pallet
+hold uses torso/head Position and arm Joint Impedance with stiffness
+`[150] * 7`; torque limits remain at the SDK defaults. The bounded
+`--ensure-slot1-ready` posture-restoration command described below is separate
+and uses Joint Position for torso, both arms, and head.
 
 The raw EEF midpoint is not the carton centre in this posture. The supplied
 config therefore applies a fixed base-frame XY offset
@@ -267,9 +269,47 @@ window:
 
 ```bash
 python pallet.py live --headless \
-  --output-mp4 out/pallet_live.mp4 \
-  --log-jsonl out/pallet_live.jsonl
+  --output-mp4 ../out/pallet_live.mp4 \
+  --log-jsonl ../out/pallet_live.jsonl
 ```
+
+Add the explicit `--ensure-slot1-ready` flag when the robot must first be
+restored to the configured slot-1 ready posture. From the Jetson desktop, run:
+
+```bash
+python pallet.py live --ensure-slot1-ready
+```
+
+For the same operation over SSH/headless, run:
+
+```bash
+python pallet.py live --ensure-slot1-ready --headless \
+  --output-mp4 ../out/pallet_live.mp4 \
+  --log-jsonl ../out/pallet_live.jsonl
+```
+
+This flag connects to the configured RB-Y1 **M v1.2** before the camera is
+opened. It reads torso, right-arm, left-arm, and head joints and requires every
+joint to report ready and match the configured slot-1 pose within `1 deg`. If all
+joints already satisfy both checks, it does not reset the control manager and
+sends **zero ready-pose/motion commands** before continuing to live perception.
+Otherwise, it prepares the robot and sends exactly one
+all-JointPosition command with a `5 s` minimum trajectory time, requires SDK
+`FinishCode.Ok`, and then reads the joints again to verify the same tolerance.
+Failure to connect, prepare, finish successfully, or post-verify stops before
+the camera loop.
+
+The `5 s` value is the command's minimum trajectory duration. It is not a
+command-stream `control_hold_time`: this readiness path sends one ordinary
+command and does not open or maintain the pallet body/mobility stream.
+Consequently, `--ensure-slot1-ready` authorizes only this fixed posture check or
+restoration; it does not move the mobile base or enable automatic palletizing.
+
+The previous orchestrator or command stream must be fully stopped and
+disconnected before this standalone command starts. The transition deliberately
+changes both loaded arms from the box-pick Cartesian-impedance hold to the
+configured Joint Position targets; it has no commissioned F/T grip-continuity
+interlock yet, so run this first transition under direct operator supervision.
 
 The two legacy actuator flags request the blocked integration path; neither
 flag authorizes motion or proves ownership/load support:
@@ -280,8 +320,9 @@ python pallet.py live \
   --allow-nominal-registration
 ```
 
-The standalone command and the injected-controller API both intentionally stop
-before connecting to or commanding RB-Y1. Neither currently has a commissioned
+Unlike the bounded readiness option, the standalone automatic-palletizing
+command and the injected-controller API both intentionally stop before
+connecting to or commanding RB-Y1. Neither currently has a commissioned
 box-pick-to-pallet ownership bridge. `GripHandoff` remains a typed design
 scaffold, but the existing box-pick endpoint uses a different Cartesian
 impedance/torque policy and does not provide exact torso/head/control-mode or
@@ -327,9 +368,10 @@ ready view before enabling base motion.
 ### Current commissioning boundary
 
 Replay, visualization, the pure acquisition controller, fake stream pump, and
-perception-only live mode are software-verifiable. Live robot actuation is not:
-both the public CLI and injected API fail before robot connection or command
-creation.
+perception-only live mode are software-verifiable. The one-shot
+`--ensure-slot1-ready` posture restoration is available, but mobile pallet
+actuation is not: both the automatic-palletizing CLI path and injected control
+API fail before robot connection or command creation.
 
 Do not replace those checks with another CLI confirmation flag. Before physical
 base motion is commissioned, all of the following must be true in one process:
@@ -350,8 +392,10 @@ base motion is commissioned, all of the following must be true in one process:
 - a reviewed config gives acquisition a positive budget no greater than
   0.15 m.
 
-Until then, every supported pallet CLI/runtime actuator path remains
-deliberately fail-closed before it can connect to RB-Y1.
+Until then, every mobile/automatic-palletizing CLI and runtime path remains
+deliberately fail-closed before it can connect to RB-Y1. The separate
+`--ensure-slot1-ready` path can only verify or restore the fixed posture; it
+cannot create a pallet control stream or command the base.
 
 ## Record raw D435 evidence
 

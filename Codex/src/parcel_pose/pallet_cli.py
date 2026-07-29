@@ -122,8 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
     live = subparsers.add_parser(
         "live",
         help=(
-            "run D435 perception; robot actuation is blocked until an atomic "
-            "box-pick-to-pallet ownership bridge is commissioned"
+            "run D435 perception with an optional slot-1 ready-pose command; "
+            "mobile pallet actuation remains blocked"
         ),
     )
     live.add_argument("--config", type=Path, default=_default_config_path())
@@ -133,6 +133,15 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--window-name", default="RB-Y1 Pallet Slot-1")
     live.add_argument("--output-mp4", type=Path)
     live.add_argument("--log-jsonl", type=Path)
+    live.add_argument(
+        "--ensure-slot1-ready",
+        action="store_true",
+        help=(
+            "connect to RB-Y1 and, only when needed, send one 5-second "
+            "all-joint Position command to the configured slot-1 ready pose "
+            "before opening the camera"
+        ),
+    )
     live.add_argument(
         "--auto-palletize-slot1",
         action="store_true",
@@ -248,6 +257,7 @@ def _run_live(args: argparse.Namespace) -> int:
             config,
             execute=bool(args.auto_palletize_slot1),
             allow_nominal_registration=bool(args.allow_nominal_registration),
+            ensure_slot1_ready=bool(args.ensure_slot1_ready),
             robot_address=str(args.robot_address),
             robot_power=str(args.robot_power),
             warmup_frames=int(args.warmup_frames),
