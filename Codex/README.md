@@ -401,7 +401,7 @@ spreading or release.
 The clearance dwell deliberately uses three separate time checks. Every depth
 sample must have been accepted within `0.20 s` of capture, the newest accepted
 sample must still be within `0.20 s`, and the five-frame evidence run must span
-no more than `0.50 s`. This supports the measured approximately 10 Hz pallet
+no more than `0.50 s`. This supports the measured approximately 12--13 Hz pallet
 pipeline without weakening the independent `0.15 s` current-frame actuation
 gate. Do not replace these checks with one enlarged global freshness timeout.
 
@@ -461,7 +461,7 @@ torque limits remain default.
 | Fine align | `x/y/yaw` | Complete-hole measurement to demonstrated reference `[0.865000, 0.139523] m`, `-90 deg`; arrival requires five frames and `0.35 s` inside `0.015 m` / `5 deg`, with inner threshold `0.010 m` / `3 deg`. |
 | Placement entry | zero only | `ARRIVED_HOLD`, exact-zero command acknowledgement, fresh stopped-wheel dwell `0.35 s`, loaded Cartesian-hold mode, stream Running feedback, and fresh measured FK. |
 | Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=5.0 s`, predicted post-lower residual within `[-0.020, +0.010] m`, uncertainty `<=0.015 m`. |
-| Lower | arm Cartesian only | `50 mm` base-z lower, timeout `4.0 s`, measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
+| Lower | arm Cartesian only | The acknowledged loaded-hold target is copied, preserving orientation, squeeze, and nullspace targets, then shifted `50 mm` in base-z. Timeout `4.0 s`; measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
 | Release | arm Cartesian only | Vision seating evidence held for `0.35 s`, spread `0.080 m` per arm, timeout `4.5 s`, each EEF within `0.012 m` / `4 deg` of target, measured inter-EEF separation increase at least `0.136 m`, then `0.35 s` release-target dwell. |
 
 ### Current commissioning boundary
@@ -497,12 +497,14 @@ python pallet.py evaluate \
   --session recordings/codex_640x480/pallet_1_arrived
 ```
 
-processed `525 + 39` recorded frames in about `26 s` on the development host.
-That wall time is for full recorded-session replay, not one frame. Estimator
-latency in that run was `p50=42.1 ms`, `p95=49.2 ms` for `pallet_data`
-(`302/525` valid frames), and `p50=45.4 ms`, `p95=46.8 ms` for
-`pallet_1_arrived` (`39/39` valid frames). Both replay acceptance reports
-passed and both report `absolute_placement_accuracy =
+was also run directly on the Jetson AGX Orin in `MAXN` mode. Dense ray/point and
+full-frame mask projections stay in `float32`; selected plane/line fitting and
+final metric output remain `float64`. `pallet_data` kept `302/525` valid frames
+and passed acceptance with `p50=76.8 ms`, `p95=81.0 ms`; `pallet_1_arrived`
+kept `39/39` valid frames and passed with `p50=75.8 ms`, `p95=77.0 ms`. Relative
+to the previous all-`float64` Jetson run, p95 latency fell by about `10%` and
+`16%`, respectively. Full replay wall time was about `40.6 s + 3.5 s`, not a
+single-frame delay. Both sessions still report `absolute_placement_accuracy =
 not_measured_no_external_ground_truth`.
 
 Integrated box-pick-to-pallet takeover still requires one reviewed persistent

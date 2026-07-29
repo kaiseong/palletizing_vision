@@ -2126,31 +2126,42 @@ class RBY1PalletController:
         """Switch the persistent stream to bilateral Cartesian lowering targets.
 
         The target is exactly 50 mm downward in the RB-Y1 base z axis from the
-        latest measured EEF poses, transformed into ``link_torso_5`` for the SDK.
-        The measured inter-EEF axis is preserved and the targets keep a small
-        inward squeeze.  Entry is allowed only after an acknowledged zero latch,
-        a fresh wheel-stop dwell, and healthy Running stream feedback.
+        acknowledged loaded-hold target, transformed into ``link_torso_5`` for
+        the SDK using fresh torso FK.  Entry is allowed only after an
+        acknowledged zero latch, a fresh wheel-stop dwell, and healthy Running
+        stream feedback.
         """
 
-        squeeze = (
-            self.config.placement_squeeze_offset_m
+        requested_squeeze = (
+            None
             if squeeze_offset_m is None
             else _positive(squeeze_offset_m, "squeeze_offset_m")
         )
-        if squeeze > self.config.placement_squeeze_offset_m + 1e-12:
-            raise ValueError(
-                "squeeze_offset_m cannot exceed the configured placement squeeze"
-            )
-        state = self._require_cartesian_placement_entry_state()
-        target = self._make_cartesian_arm_target(
+        with self._condition:
+            self._require_cartesian_entry_locked()
+            loaded_target = self._cartesian_arm_target
+            if (
+                loaded_target is None
+                or loaded_target.mode is not ArmStreamMode.CARTESIAN_LOADED_HOLD
+            ):
+                self._placement_fail_closed_locked("loaded_hold_target_unavailable")
+                raise CombinedStreamError(
+                    "cartesian lowering requires the acknowledged loaded-hold target"
+                )
+        state = self.get_measured_state()
+        self._validate_cartesian_state(state)
+        target = self._make_lowering_target_from_loaded_hold(
             state,
-            mode=ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING,
-            base_z_offset_m=-self.config.placement_lowering_distance_m,
-            squeeze_offset_m=squeeze,
-            release_spread_m=0.0,
+            loaded_target=loaded_target,
+            requested_squeeze_offset_m=requested_squeeze,
         )
         with self._condition:
             self._require_cartesian_entry_locked()
+            if self._cartesian_arm_target is not loaded_target:
+                self._placement_fail_closed_locked("loaded_hold_target_changed")
+                raise CombinedStreamError(
+                    "loaded-hold target changed while constructing lowering target"
+                )
             self._arm_stream_mode = target.mode
             self._cartesian_arm_target = target
             self._placement_started = True
@@ -2162,6 +2173,63 @@ class RBY1PalletController:
             self._body_target_token = self._make_body_target_token()
             self._condition.notify_all()
         return target
+
+    def _make_lowering_target_from_loaded_hold(
+        self,
+        state: MeasuredRobotState,
+        *,
+        loaded_target: CartesianArmTarget,
+        requested_squeeze_offset_m: float | None,
+    ) -> CartesianArmTarget:
+        """Lower from the commanded loaded-hold target, not measured compliance."""
+
+        self._validate_cartesian_state(state)
+        if loaded_target.mode is not ArmStreamMode.CARTESIAN_LOADED_HOLD:
+            raise ValueError("loaded_target must be a loaded-hold target")
+        adopted_squeeze = float(loaded_target.squeeze_offset_m)
+        if (
+            requested_squeeze_offset_m is not None
+            and abs(float(requested_squeeze_offset_m) - adopted_squeeze) > 1e-9
+        ):
+            raise ValueError(
+                "squeeze_offset_m must match the acknowledged loaded-hold target"
+            )
+        T_base_torso = self._T_base_torso_for_cartesian(state)
+        if T_base_torso is None:
+            raise MeasuredStateError("T_base_torso unexpectedly missing")
+        base_z = np.asarray(
+            (0.0, 0.0, -self.config.placement_lowering_distance_m),
+            dtype=np.float64,
+        )
+        right_base = np.array(
+            loaded_target.right_T_base_eef,
+            dtype=np.float64,
+            copy=True,
+        )
+        left_base = np.array(
+            loaded_target.left_T_base_eef,
+            dtype=np.float64,
+            copy=True,
+        )
+        right_base[:3, 3] += base_z
+        left_base[:3, 3] += base_z
+        T_torso_base = np.linalg.inv(T_base_torso)
+        axis = tuple(float(value) for value in loaded_target.inter_eef_axis_base)
+        return CartesianArmTarget(
+            mode=ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING,
+            right_T_torso_eef=T_torso_base @ right_base,
+            left_T_torso_eef=T_torso_base @ left_base,
+            right_T_base_eef=right_base,
+            left_T_base_eef=left_base,
+            right_nullspace_joint_rad=loaded_target.right_nullspace_joint_rad,
+            left_nullspace_joint_rad=loaded_target.left_nullspace_joint_rad,
+            inter_eef_axis_base=axis,
+            created_monotonic_s=self._clock(),
+            source_state_sequence=state.sequence,
+            lowering_distance_m=self.config.placement_lowering_distance_m,
+            squeeze_offset_m=adopted_squeeze,
+            release_spread_m=loaded_target.release_spread_m,
+        )
 
     def start_cartesian_release_hold(
         self,

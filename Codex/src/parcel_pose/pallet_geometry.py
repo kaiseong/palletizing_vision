@@ -30,6 +30,7 @@ from .transforms import validate_transform
 
 
 FloatArray = NDArray[np.float64]
+Float32Array = NDArray[np.float32]
 ImageArray = NDArray[np.uint8]
 
 
@@ -496,12 +497,17 @@ def _held_carton_footprint_mask(
 
     if hint is None or hint.center_base is None:
         return None
-    center = np.asarray(hint.center_base, dtype=np.float64)
+    dense_dtype = np.dtype(
+        points_base.dtype
+        if np.issubdtype(points_base.dtype, np.floating)
+        else np.float64
+    )
+    center = np.asarray(hint.center_base, dtype=dense_dtype)
     if hint.yaw_base_rad is None:
         return None
     yaw = float(hint.yaw_base_rad)
-    axis_long = np.array((math.cos(yaw), math.sin(yaw)), dtype=np.float64)
-    axis_short = np.array((-axis_long[1], axis_long[0]), dtype=np.float64)
+    axis_long = np.array((math.cos(yaw), math.sin(yaw)), dtype=dense_dtype)
+    axis_short = np.array((-axis_long[1], axis_long[0]), dtype=dense_dtype)
     relative_xy = points_base[workspace, :2] - center[:2]
     along = relative_xy @ axis_long
     across = relative_xy @ axis_short
@@ -908,7 +914,7 @@ class PalletStackEstimator:
         self.config = PalletEstimatorConfig() if config is None else config
         self.last_evidence: PalletFrameEvidence | None = None
         self._ray_cache_key: tuple[Any, ...] | None = None
-        self._base_ray_coefficients: FloatArray | None = None
+        self._base_ray_coefficients: Float32Array | None = None
         self._previous_valid_frame_id: int | None = None
         self._previous_valid_timestamp_s: float | None = None
         self._previous_valid_center: FloatArray | None = None
@@ -917,7 +923,7 @@ class PalletStackEstimator:
         self,
         intrinsics: CameraIntrinsics,
         T_base_depth: FloatArray,
-    ) -> FloatArray:
+    ) -> Float32Array:
         key = (
             intrinsics.width,
             intrinsics.height,
@@ -929,13 +935,14 @@ class PalletStackEstimator:
         )
         if key == self._ray_cache_key and self._base_ray_coefficients is not None:
             return self._base_ray_coefficients
-        rows, cols = np.indices((intrinsics.height, intrinsics.width), dtype=np.float64)
-        ray_x = (cols - float(intrinsics.cx)) / float(intrinsics.fx)
-        ray_y = (rows - float(intrinsics.cy)) / float(intrinsics.fy)
+        rows, cols = np.indices((intrinsics.height, intrinsics.width), dtype=np.float32)
+        ray_x = (cols - np.float32(intrinsics.cx)) / np.float32(intrinsics.fx)
+        ray_y = (rows - np.float32(intrinsics.cy)) / np.float32(intrinsics.fy)
+        transform32 = np.asarray(T_base_depth[:3, :3], dtype=np.float32)
         coefficients = (
-            ray_x[..., None] * T_base_depth[:3, 0]
-            + ray_y[..., None] * T_base_depth[:3, 1]
-            + T_base_depth[:3, 2]
+            ray_x[..., None] * transform32[:, 0]
+            + ray_y[..., None] * transform32[:, 1]
+            + transform32[:, 2]
         )
         coefficients.setflags(write=False)
         self._ray_cache_key = key
@@ -1024,7 +1031,7 @@ class PalletStackEstimator:
                 timestamp_s=timestamp,
                 calibration_status=calibration_status,
             )
-        depth = depth.astype(np.float64, copy=False)
+        depth = depth.astype(np.float32, copy=False)
         if color_on_depth_bgr is not None:
             color = np.asarray(color_on_depth_bgr)
             if color.dtype != np.uint8 or color.shape != (*expected_shape, 3):
@@ -1035,7 +1042,8 @@ class PalletStackEstimator:
                 )
         config = self.config
         coefficients = self._ray_coefficients(depth_intrinsics, transform)
-        points_base = depth[..., None] * coefficients + transform[:3, 3]
+        translation_base = np.asarray(transform[:3, 3], dtype=np.float32)
+        points_base = depth[..., None] * coefficients + translation_base
         # Intrinsics and ``transform`` are finite-validated.  Any overflowed
         # base coordinate still fails the paired workspace bounds below, so a
         # second three-channel finiteness reduction cannot admit another point.
@@ -1124,7 +1132,14 @@ class PalletStackEstimator:
                 quality={"stack_plane_normal_z": float(normal[2])},
             )
 
-        signed_height = points_base @ normal - float(stack_plane.plane.d)
+        dense_dtype = np.dtype(
+            points_base.dtype
+            if np.issubdtype(points_base.dtype, np.floating)
+            else np.float64
+        )
+        dense_normal = np.asarray(normal, dtype=dense_dtype)
+        dense_plane_d = dense_dtype.type(stack_plane.plane.d)
+        signed_height = points_base @ dense_normal - dense_plane_d
         stack_mask = (
             workspace
             & ~held_selection_exclusion
@@ -1381,9 +1396,11 @@ class PalletStackEstimator:
                 max_points=config.plane_fit_max_points,
             )
             held_normal = np.asarray(held_plane.plane.normal, dtype=np.float64)
+            dense_held_normal = np.asarray(held_normal, dtype=dense_dtype)
+            dense_held_plane_d = dense_dtype.type(held_plane.plane.d)
             held_mask = association & (
-                np.abs(points_base @ held_normal - float(held_plane.plane.d))
-                <= config.plane_slab_m
+                np.abs(points_base @ dense_held_normal - dense_held_plane_d)
+                <= np.asarray(config.plane_slab_m, dtype=dense_dtype)
             )
             held_evidence = points_base[held_mask]
             held_z = float(np.median(held_evidence[:, 2]))

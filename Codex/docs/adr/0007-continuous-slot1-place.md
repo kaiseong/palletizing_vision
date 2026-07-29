@@ -50,7 +50,10 @@ part of the current placement decision; every `placement.maximum_force_n`,
 - Placement starts only from `ARRIVED_HOLD` with exact-zero Running feedback,
   fresh stopped-wheel dwell, loaded Cartesian-hold mode, fresh measured FK, and
   fresh vision geometry.
-- The lowering command moves both EEF targets down `0.050 m` in RB-Y1 base z.
+- The lowering command copies the acknowledged loaded-hold target and moves
+  both EEF targets down `0.050 m` in RB-Y1 base z. It preserves orientation,
+  squeeze metadata, and nullspace targets rather than re-basing on a compliant
+  measured wrist pose and accidentally ratcheting the squeeze.
   It must reach measured z within `0.008 m`, midpoint XY drift within
   `0.015 m`, and rotation within `3 deg` before any release path is considered.
 - Release is vision/FK gated. The sequencer requires at least three fresh gap
@@ -108,14 +111,17 @@ python pallet.py evaluate \
   --session recordings/codex_640x480/pallet_1_arrived
 ```
 
-It processed `525 + 39` recorded frames in about `26 s` on the development
-host. That is full replay wall time, not per-frame latency. The same output
-reported:
+The same recordings were also evaluated directly on the Jetson AGX Orin in
+`MAXN` mode after keeping dense ray/point and full-frame mask projections in
+`float32` while preserving selected fitting and final metric math in
+`float64`. The output reported:
 
 - `pallet_data`: acceptance passed, `302/525` valid frames, latency
-  `p50=42.1 ms`, `p95=49.2 ms`.
+  `p50=76.8 ms`, `p95=81.0 ms`.
 - `pallet_1_arrived`: acceptance passed, `39/39` valid frames, latency
-  `p50=45.4 ms`, `p95=46.8 ms`.
+  `p50=75.8 ms`, `p95=77.0 ms`.
+- Against the previous all-`float64` Jetson run, p95 improved by about `10%`
+  and `16%`, with unchanged valid counts and acceptance.
 - Both sessions: `absolute_placement_accuracy =
   not_measured_no_external_ground_truth`.
 
