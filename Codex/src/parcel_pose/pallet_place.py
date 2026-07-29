@@ -89,6 +89,7 @@ class PlacementConfig:
     pre_motion_clearance_floor_m: float = 0.050
     maximum_descent_m: float = 0.250
     descent_fraction: float = 2.0 / 3.0
+    alignment_hold_before_place_s: float = 1.0
     pre_place_verify_dwell_s: float = 0.15
     lowering_timeout_s: float = 12.0
     seated_dwell_s: float = 0.35
@@ -121,6 +122,7 @@ class PlacementConfig:
             "release_target_translation_tolerance_m",
             "release_target_rotation_tolerance_rad",
             "release_spread_m",
+            "alignment_hold_before_place_s",
             "vision_seating_max_uncertainty_m",
             "vision_evidence_fresh_after_s",
             "vision_plan_valid_for_s",
@@ -172,6 +174,7 @@ class PlacementConfig:
             "pre_motion_clearance_floor_m",
             "maximum_descent_m",
             "descent_fraction",
+            "alignment_hold_before_place_s",
             "squeeze_offset_m",
             "release_spread_m",
             "maximum_release_spread_m",
@@ -222,6 +225,12 @@ class PlacementConfig:
                 raw.get(
                     "pre_place_verify_dwell_s",
                     defaults.pre_place_verify_dwell_s,
+                )
+            ),
+            alignment_hold_before_place_s=float(
+                raw.get(
+                    "alignment_hold_before_place_s",
+                    defaults.alignment_hold_before_place_s,
                 )
             ),
             lowering_timeout_s=float(

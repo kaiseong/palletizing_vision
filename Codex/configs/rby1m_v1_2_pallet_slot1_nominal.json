@@ -189,6 +189,7 @@
     "pre_motion_clearance_floor_m": 0.050,
     "maximum_descent_m": 0.250,
     "descent_fraction": 0.6666666666666666,
+    "alignment_hold_before_place_s": 1.0,
     "squeeze_offset_m": 0.150,
     "release_spread_m": 0.120,
     "maximum_release_spread_m": 0.120,

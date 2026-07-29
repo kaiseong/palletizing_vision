@@ -1006,6 +1006,13 @@ def _servo_measurement_source(
     return "unavailable"
 
 
+def _scene_has_metric_alignment_feature(
+    scene: PalletSceneObservation,
+    geometry: PalletGeometry,
+) -> bool:
+    return _servo_measurement_source(scene, geometry) != "unavailable"
+
+
 def _controller_scene_sample(
     scene: PalletSceneObservation,
     held_proxy: HeldPoseProxy,
@@ -1538,10 +1545,11 @@ def _placement_zero_hold_output(output: PalletServoOutput) -> PalletServoOutput:
     diagnostics = dict(output.diagnostics)
     diagnostics["controller_owner"] = "slot1_placement"
     diagnostics["mobile_authority_locked_zero"] = True
+    diagnostics["alignment_state_preserved_during_placement"] = output.state.value
     return PalletServoOutput(
         command=VelocityCommand(),
-        state=PalletServoState.ARRIVED_HOLD,
-        arrived=True,
+        state=output.state,
+        arrived=output.arrived,
         hold_body=True,
         measurement_accepted=output.measurement_accepted,
         reason="placement_active_exact_zero_mobility",
@@ -2944,6 +2952,42 @@ def run_pallet_live(
                         source_max_age_s=decision_source_max_age_s,
                     )
 
+                placement_arrival_wait_reason: str | None = None
+                placement_arrived_ready = bool(
+                    decision_owner is PalletControlOwner.FINE_SLOT1_SERVO
+                    and decision.state is PalletServoState.ARRIVED_HOLD
+                    and decision.arrived
+                )
+                placement_alignment_feature_ready = (
+                    _scene_has_metric_alignment_feature(
+                        scene,
+                        estimator_config.geometry,
+                    )
+                )
+                if placement_motion_active:
+                    placement_alignment_ready_since_s = None
+                    placement_alignment_dwell_ready = True
+                elif placement_arrived_ready and placement_alignment_feature_ready:
+                    if placement_alignment_ready_since_s is None:
+                        placement_alignment_ready_since_s = decision_now_s
+                    placement_alignment_elapsed_s = (
+                        decision_now_s - placement_alignment_ready_since_s
+                    )
+                    placement_alignment_dwell_ready = (
+                        placement_alignment_elapsed_s
+                        >= placement_config.alignment_hold_before_place_s
+                    )
+                    if not placement_alignment_dwell_ready:
+                        placement_arrival_wait_reason = (
+                            "alignment_hold_before_place"
+                        )
+                else:
+                    placement_alignment_ready_since_s = None
+                    placement_alignment_dwell_ready = False
+                    if placement_arrived_ready:
+                        placement_arrival_wait_reason = (
+                            "alignment_feature_unavailable"
+                        )
                 placement_output: PlacementOutput | None = None
                 placement_runtime_diagnostics: dict[str, Any] | None = None
                 if (
@@ -2951,8 +2995,11 @@ def run_pallet_live(
                     and auto_place_slot1
                     and placement_sequencer is not None
                     and (
-                        decision.state is PalletServoState.ARRIVED_HOLD
-                        or placement_motion_active
+                        placement_motion_active
+                        or (
+                            placement_arrived_ready
+                            and placement_alignment_dwell_ready
+                        )
                     )
                     and dispatch_result
                     in {"state_requires_persistent_zero", "exact_zero_decision"}
@@ -3024,6 +3071,42 @@ def run_pallet_live(
                         decision,
                         placement_output,
                         placement_runtime_diagnostics,
+                    )
+                elif (
+                    auto_place_slot1
+                    and placement_arrival_wait_reason is not None
+                    and placement_sequencer is not None
+                ):
+                    diagnostics = dict(decision.diagnostics)
+                    diagnostics["placement_wait"] = {
+                        "reason": placement_arrival_wait_reason,
+                        "alignment_hold_before_place_s": (
+                            placement_config.alignment_hold_before_place_s
+                        ),
+                        "alignment_hold_elapsed_s": (
+                            0.0
+                            if placement_alignment_ready_since_s is None
+                            else max(
+                                0.0,
+                                decision_now_s
+                                - placement_alignment_ready_since_s,
+                            )
+                        ),
+                        "metric_alignment_feature_ready": (
+                            placement_alignment_feature_ready
+                        ),
+                    }
+                    decision = PalletServoOutput(
+                        command=decision.command,
+                        state=decision.state,
+                        arrived=decision.arrived,
+                        hold_body=decision.hold_body,
+                        measurement_accepted=decision.measurement_accepted,
+                        reason=(
+                            f"{decision.reason}; "
+                            f"placement_wait:{placement_arrival_wait_reason}"
+                        ),
+                        diagnostics=diagnostics,
                     )
                 elif last_placement_output is not None:
                     decision = _annotate_placement_output(
