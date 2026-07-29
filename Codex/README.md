@@ -400,9 +400,6 @@ without that explicit policy still fail closed.
 and stack-plane geometry predicts that a 50 mm base-z lowering will seat the
 box. The placement path does not read F/T feedback; fresh bounded vision
 geometry is the only release authority.
-Use `--allow-geometry-only-lowering` only for supervised lower-and-hold tests:
-geometry-only lowering may reach `LOWERED_HOLD`, but it never authorizes hand
-spreading or release.
 
 The clearance dwell deliberately uses three separate time checks. Every depth
 sample must have been accepted within `0.20 s` of capture, the newest accepted

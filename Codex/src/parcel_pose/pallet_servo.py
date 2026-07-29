@@ -74,16 +74,6 @@ class PalletServoState(str, Enum):
     FAULT_HOLD = "FAULT_HOLD"
     SHUTDOWN_PENDING_HOLD = "SHUTDOWN_PENDING_HOLD"
 
-    @property
-    def is_persistent_hold(self) -> bool:
-        return self in {
-            PalletServoState.PERCEPTION_HOLD,
-            PalletServoState.ARRIVAL_WHEEL_STOP,
-            PalletServoState.ARRIVED_HOLD,
-            PalletServoState.FAULT_HOLD,
-            PalletServoState.SHUTDOWN_PENDING_HOLD,
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class SE2FrameTransform:
@@ -294,10 +284,9 @@ class PalletServoConfig:
 
         if not isinstance(value, Mapping):
             raise TypeError("root config must be a mapping")
-        servo_value = value.get("servo")
-        if not isinstance(servo_value, Mapping):
+        servo = value.get("servo")
+        if not isinstance(servo, Mapping):
             raise ValueError("root config servo must be a mapping")
-        servo = servo_value
         allowed_keys = {
             "position_gain_per_s",
             "yaw_gain_per_s",
@@ -504,13 +493,9 @@ class _Sample:
     timestamp_s: float
     current_observed_xy: FloatArray
     body_reference_xy: FloatArray
-    compensation_point_xy: FloatArray
     yaw_error_rad: float
     axis_branch: str
-    measurement_mode: str
     reference_source: str
-    target_xy: FloatArray | None = None
-    held_xy: FloatArray | None = None
 
     @property
     def error_xy(self) -> FloatArray:
@@ -794,10 +779,8 @@ class PalletSlot1Servo:
                 timestamp,
                 current_xy,
                 reference_xy,
-                current_xy,
                 yaw_error,
                 axis_branch,
-                "feature_to_body_reference",
                 observation.reference_source,
             ),
             None,
@@ -824,9 +807,6 @@ class PalletSlot1Servo:
             self._last_raw = sample
             self._jump_candidates.clear()
             return True, "accepted"
-        if sample.measurement_mode != self._last_raw.measurement_mode:
-            self._jump_candidates.clear()
-            return False, "measurement_mode_changed_requires_restart"
         if sample.reference_source != self._last_raw.reference_source:
             self._jump_candidates.clear()
             return False, "reference_source_changed_requires_restart"
@@ -877,44 +857,16 @@ class PalletSlot1Servo:
             tuple(sample.body_reference_xy for sample in values),
             axis=0,
         )
-        compensation_points = np.stack(
-            tuple(sample.compensation_point_xy for sample in values),
-            axis=0,
-        )
         yaw = self._line_medoid(
             np.asarray(tuple(sample.yaw_error_rad for sample in values))
         )
-        target_xy = None
-        held_xy = None
-        if all(sample.target_xy is not None for sample in values):
-            target_values = tuple(
-                sample.target_xy
-                for sample in values
-                if sample.target_xy is not None
-            )
-            target_xy = np.median(
-                np.stack(target_values, axis=0),
-                axis=0,
-            )
-        if all(sample.held_xy is not None for sample in values):
-            held_values = tuple(
-                sample.held_xy for sample in values if sample.held_xy is not None
-            )
-            held_xy = np.median(
-                np.stack(held_values, axis=0),
-                axis=0,
-            )
         return _Sample(
             timestamp_s=max(sample.timestamp_s for sample in values),
             current_observed_xy=np.median(current_observed, axis=0),
             body_reference_xy=np.median(body_reference, axis=0),
-            compensation_point_xy=np.median(compensation_points, axis=0),
             yaw_error_rad=_signed_line_angle(yaw),
             axis_branch=values[-1].axis_branch,
-            measurement_mode=values[-1].measurement_mode,
             reference_source=values[-1].reference_source,
-            target_xy=target_xy,
-            held_xy=held_xy,
         )
 
     @staticmethod
@@ -950,7 +902,9 @@ class PalletSlot1Servo:
 
     def _tracking_command(self, filtered: _Sample, now_s: float) -> VelocityCommand:
         error_x, error_y = (float(value) for value in filtered.error_xy)
-        point_x, point_y = (float(value) for value in filtered.compensation_point_xy)
+        point_x, point_y = (
+            float(value) for value in filtered.current_observed_xy
+        )
         wz_base = self.config.yaw_gain_per_s * filtered.yaw_error_rad
         # J_b(p_current)^-1 e: vx = k e_x + y_current*wz,
         #                            vy = k e_y - x_current*wz.
@@ -1190,14 +1144,12 @@ class PalletSlot1Servo:
             "filtered_yaw_error_rad": None,
             "raw_planar_error_m": None,
             "filtered_planar_error_m": None,
-            "measurement_mode": None,
+            "measurement_mode": "feature_to_body_reference",
             "reference_source": None,
             "raw_current_observed_feature_center_base_xy_m": None,
             "raw_demonstrated_body_reference_center_base_xy_m": None,
-            "raw_compensation_point_base_xy_m": None,
             "filtered_current_observed_feature_center_base_xy_m": None,
             "filtered_demonstrated_body_reference_center_base_xy_m": None,
-            "filtered_compensation_point_base_xy_m": None,
             "arrival_frames": self._arrival_frames,
             "arrival_duration_s": (
                 0.0
@@ -1225,7 +1177,6 @@ class PalletSlot1Servo:
                 raw_error_xy_m=tuple(float(value) for value in raw.error_xy),
                 raw_yaw_error_rad=float(raw.yaw_error_rad),
                 raw_planar_error_m=float(np.linalg.norm(raw.error_xy)),
-                measurement_mode=raw.measurement_mode,
                 reference_source=raw.reference_source,
                 raw_current_observed_feature_center_base_xy_m=tuple(
                     float(value) for value in raw.current_observed_xy
@@ -1233,18 +1184,7 @@ class PalletSlot1Servo:
                 raw_demonstrated_body_reference_center_base_xy_m=tuple(
                     float(value) for value in raw.body_reference_xy
                 ),
-                raw_compensation_point_base_xy_m=tuple(
-                    float(value) for value in raw.compensation_point_xy
-                ),
             )
-            if raw.target_xy is not None:
-                diagnostics["target_center_base_xy_m"] = tuple(
-                    float(value) for value in raw.target_xy
-                )
-            if raw.held_xy is not None:
-                diagnostics["held_center_base_xy_m"] = tuple(
-                    float(value) for value in raw.held_xy
-                )
         if filtered is not None:
             diagnostics.update(
                 filtered_error_xy_m=tuple(float(value) for value in filtered.error_xy),
@@ -1256,12 +1196,7 @@ class PalletSlot1Servo:
                 filtered_demonstrated_body_reference_center_base_xy_m=tuple(
                     float(value) for value in filtered.body_reference_xy
                 ),
-                filtered_compensation_point_base_xy_m=tuple(
-                    float(value) for value in filtered.compensation_point_xy
-                ),
             )
-            if diagnostics["measurement_mode"] is None:
-                diagnostics["measurement_mode"] = filtered.measurement_mode
             if diagnostics["reference_source"] is None:
                 diagnostics["reference_source"] = filtered.reference_source
         return PalletServoOutput(

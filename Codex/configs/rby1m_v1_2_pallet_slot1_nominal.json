@@ -177,9 +177,7 @@
     "wheel_stop_duration_s": 0.35
   },
   "placement": {
-    "strict_unknown_keys": true,
     "enabled": true,
-    "geometry_only_lowering_enabled": true,
     "vision_geometry_release_enabled": true,
     "minimum_time_s": 0.05,
     "linear_velocity_limit_mps": 0.03,
@@ -224,17 +222,8 @@
     "vision_evidence_min_samples": 3
   },
   "safety": {
-    "actuation_commissioned": false,
-    "commissioning_mode": "explicit_loaded_ready_fixed_geometry_mvp",
-    "ownership_bridge": "same_process_loaded_ready_measurement_bootstrap",
     "minimum_clearance_m": 0.050,
-    "state_fresh_after_s": 0.15,
-    "grip_continuity_dwell_s": 0.50,
-    "persistent_hold_states": ["ACQUIRE_STACK", "PERCEPTION_HOLD", "FAULT_HOLD", "ARRIVED_HOLD", "LOWERED_HOLD", "RELEASED", "SHUTDOWN_PENDING_HOLD"],
-    "live_request_flags": ["--ensure-slot1-ready", "--auto-palletize-slot1", "--auto-place-slot1", "--allow-nominal-registration", "--allow-geometry-only-grip-check", "--allow-vision-geometry-release"],
-    "flags_authorize_motion": true,
-    "terminal_action": "zero_mobility_cartesian_hold_after_vision_gated_release",
-    "forbidden_actions": ["release_without_target_ack", "release_without_seating_evidence", "slide", "power_off"]
+    "state_fresh_after_s": 0.15
   },
   "grip_interlock": {
     "minimum_dwell_s": 0.50,

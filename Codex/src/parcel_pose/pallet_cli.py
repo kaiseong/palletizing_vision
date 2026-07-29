@@ -179,14 +179,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     live.add_argument(
-        "--allow-geometry-only-lowering",
-        action="store_true",
-        help=(
-            "commissioning-only: allow the 50 mm lowering to complete into a hold "
-            "without seating evidence; never authorizes release by itself"
-        ),
-    )
-    live.add_argument(
         "--allow-vision-geometry-release",
         action="store_true",
         help=(
@@ -294,10 +286,6 @@ def _run_live(args: argparse.Namespace) -> int:
         )
     if args.auto_place_slot1 and not args.auto_palletize_slot1:
         raise ValueError("--auto-place-slot1 requires --auto-palletize-slot1")
-    if args.allow_geometry_only_lowering and not args.auto_place_slot1:
-        raise ValueError(
-            "--allow-geometry-only-lowering requires --auto-place-slot1"
-        )
     if args.allow_vision_geometry_release and not args.auto_place_slot1:
         raise ValueError(
             "--allow-vision-geometry-release requires --auto-place-slot1"
@@ -322,7 +310,6 @@ def _run_live(args: argparse.Namespace) -> int:
                 args.allow_geometry_only_grip_check
             ),
             auto_place_slot1=bool(args.auto_place_slot1),
-            allow_geometry_only_lowering=bool(args.allow_geometry_only_lowering),
             allow_vision_geometry_release=bool(
                 args.allow_vision_geometry_release
             ),

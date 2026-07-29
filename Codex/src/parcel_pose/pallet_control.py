@@ -31,6 +31,7 @@ from .pallet_control_feedback import (
     parse_component_feedback,
     raise_for_terminal_feedback,
 )
+from .pallet_place import PlacementConfig
 from .pallet_servo import PalletServoConfig
 
 
@@ -262,6 +263,15 @@ class PalletControlConfig:
         stream = section("control_stream")
         grip_interlock = section("grip_interlock")
         placement = section("placement")
+        PlacementConfig.from_root_config(root)
+
+        safety_keys = {"minimum_clearance_m", "state_fresh_after_s"}
+        unknown_safety_keys = sorted(set(safety) - safety_keys)
+        if unknown_safety_keys:
+            raise ValueError(
+                "unknown safety configuration key(s): "
+                + ", ".join(unknown_safety_keys)
+            )
 
         grip_interlock_keys = {
             "minimum_dwell_s",
@@ -278,52 +288,6 @@ class PalletControlConfig:
                 "unknown grip_interlock configuration key(s): "
                 + ", ".join(unknown_grip_keys)
             )
-
-        placement_keys = {
-            "strict_unknown_keys",
-            "enabled",
-            "geometry_only_lowering_enabled",
-            "vision_geometry_release_enabled",
-            "minimum_time_s",
-            "linear_velocity_limit_mps",
-            "angular_velocity_limit_radps",
-            "linear_acceleration_limit_mps2",
-            "angular_acceleration_limit_radps2",
-            "lowering_distance_m",
-            "squeeze_offset_m",
-            "release_spread_m",
-            "maximum_release_spread_m",
-            "joint_stiffness_nm_per_rad",
-            "joint_damping_ratio",
-            "nullspace_weight",
-            "nullspace_kp",
-            "nullspace_kd",
-            "nullspace_cost_weight",
-            "pre_place_verify_dwell_s",
-            "lowering_timeout_s",
-            "seated_dwell_s",
-            "release_timeout_s",
-            "release_target_dwell_s",
-            "feedback_stale_s",
-            "lower_z_tolerance_m",
-            "lower_midpoint_xy_drift_m",
-            "lower_rotation_tolerance_deg",
-            "release_target_translation_tolerance_m",
-            "release_target_rotation_tolerance_deg",
-            "vision_seating_residual_min_m",
-            "vision_seating_residual_max_m",
-            "vision_seating_max_uncertainty_m",
-            "vision_evidence_fresh_after_s",
-            "vision_plan_valid_for_s",
-            "vision_gap_stability_tolerance_m",
-            "vision_evidence_min_samples",
-        }
-        if bool(placement.get("strict_unknown_keys", False)):
-            unknown = sorted(set(placement) - placement_keys)
-            if unknown:
-                raise ValueError(
-                    "unknown placement configuration key(s): " + ", ".join(unknown)
-                )
 
         model_name = str(robot.get("model", "")).strip().upper()
         version = str(robot.get("version", "")).strip().lower().removeprefix("v")
@@ -422,13 +386,7 @@ class PalletControlConfig:
             wheel_stop_angular_radps=servo_config.wheel_angular_stop_radps,
             wheel_stop_dwell_s=servo_config.wheel_stop_duration_s,
             grip_dwell_s=float(
-                grip_interlock.get(
-                    "minimum_dwell_s",
-                    safety.get(
-                        "grip_continuity_dwell_s",
-                        defaults.grip_dwell_s,
-                    ),
-                )
+                grip_interlock.get("minimum_dwell_s", defaults.grip_dwell_s)
             ),
             grip_min_samples=int(
                 grip_interlock.get("minimum_samples", defaults.grip_min_samples)
@@ -3093,14 +3051,10 @@ class RBY1PalletController:
         axis = right_base[:3, 3] - left_base[:3, 3]
         axis_norm = float(np.linalg.norm(axis))
         if not math.isfinite(axis_norm) or axis_norm < 0.10:
-            if self._legacy_direct_state_fixture_mode():
-                axis = np.asarray((0.0, -1.0, 0.0), dtype=np.float64)
-            else:
-                with self._condition:
-                    self._placement_fail_closed_locked("inter_eef_axis_invalid")
-                raise MeasuredStateError("measured inter-EEF axis is invalid")
-        else:
-            axis /= axis_norm
+            with self._condition:
+                self._placement_fail_closed_locked("inter_eef_axis_invalid")
+            raise MeasuredStateError("measured inter-EEF axis is invalid")
+        axis /= axis_norm
         base_z = np.asarray((0.0, 0.0, float(base_z_offset_m)), dtype=np.float64)
         right_base[:3, 3] += base_z - axis * squeeze_offset_m + axis * release_spread_m
         left_base[:3, 3] += base_z + axis * squeeze_offset_m - axis * release_spread_m
@@ -3137,11 +3091,6 @@ class RBY1PalletController:
             return (
                 _finite_vector(right, 7, "measured_right_arm_rad"),
                 _finite_vector(left, 7, "measured_left_arm_rad"),
-            )
-        if self._legacy_direct_state_fixture_mode():
-            return (
-                tuple(self._active_right_arm_target_rad),
-                tuple(self._active_left_arm_target_rad),
             )
         raise MeasuredStateError(
             "Cartesian nullspace hold requires measured right/left arm indices"
@@ -3202,24 +3151,11 @@ class RBY1PalletController:
             release_spread_m=float(release_spread_m),
         )
 
-    def _legacy_direct_state_fixture_mode(self) -> bool:
-        return bool(
-            not self._state_update_started
-            and self._fk_provider is None
-            and self._dyn_model is None
-        )
-
     def _T_base_torso_for_cartesian(
         self,
         state: MeasuredRobotState,
     ) -> np.ndarray | None:
-        if state.T_base_torso is not None:
-            return state.T_base_torso
-        if self._legacy_direct_state_fixture_mode():
-            identity = np.eye(4, dtype=np.float64)
-            identity.setflags(write=False)
-            return identity
-        return None
+        return state.T_base_torso
 
     def _build_combined_command(
         self,
@@ -3278,13 +3214,6 @@ class RBY1PalletController:
                 None,
             )
             if not callable(cartesian_builder):
-                if self._legacy_direct_state_fixture_mode():
-                    target_rad = (
-                        right_joint_target
-                        if link_name == RIGHT_EEF_LINK
-                        else left_joint_target
-                    )
-                    return arm(target_rad)
                 raise CombinedStreamError(
                     "RB-Y1 SDK does not provide Cartesian impedance commands"
                 )
@@ -3308,21 +3237,19 @@ class RBY1PalletController:
             )
             set_nullspace = getattr(builder, "set_nullspace_joint_target", None)
             if not callable(set_nullspace):
-                if not self._legacy_direct_state_fixture_mode():
-                    raise CombinedStreamError(
-                        "RB-Y1 Cartesian impedance builder lacks nullspace hold"
-                    )
-            else:
-                builder = set_nullspace(
-                    np.asarray(nullspace_joint_rad, dtype=np.float64),
-                    np.asarray(
-                        self.config.placement_nullspace_weight,
-                        dtype=np.float64,
-                    ),
-                    self.config.placement_nullspace_kp,
-                    self.config.placement_nullspace_kd,
-                    self.config.placement_nullspace_cost_weight,
+                raise CombinedStreamError(
+                    "RB-Y1 Cartesian impedance builder lacks nullspace hold"
                 )
+            builder = set_nullspace(
+                np.asarray(nullspace_joint_rad, dtype=np.float64),
+                np.asarray(
+                    self.config.placement_nullspace_weight,
+                    dtype=np.float64,
+                ),
+                self.config.placement_nullspace_kp,
+                self.config.placement_nullspace_kd,
+                self.config.placement_nullspace_cost_weight,
+            )
             set_reset_reference = getattr(builder, "set_reset_reference", None)
             if callable(set_reset_reference):
                 builder = set_reset_reference(False)

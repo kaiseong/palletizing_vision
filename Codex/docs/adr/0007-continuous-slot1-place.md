@@ -64,9 +64,6 @@ part of the current placement decision; every `placement.maximum_force_n`,
 - Release completion requires Running feedback, each EEF within `0.012 m` and
   `4 deg` of the release target, measured inter-EEF separation increase at
   least `0.136 m`, and a `0.35 s` target dwell.
-- Geometry-only lowering is intentionally weaker. `--allow-geometry-only-lowering`
-  can enter `LOWERED_HOLD` for supervised tests when seating evidence is
-  unavailable, but it never authorizes hand spreading or release.
 - F/T values are optional telemetry in this configuration. Missing or invalid
   F/T becomes explicit zero-fallback diagnostics, and no F/T threshold can trip
   because the thresholds are `null`.

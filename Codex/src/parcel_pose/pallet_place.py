@@ -2,10 +2,9 @@
 
 The module has no robot-SDK side effects.  It begins only after fine mobile
 alignment has latched ``ARRIVED_HOLD`` and every output requires exact-zero
-mobility.  Geometry-only commissioning may lower the carton by 50 mm, but it
-can never authorize release by itself: spreading the hands requires a Running
-stream acknowledgement, measured vertical descent, and fresh bounded vision
-geometry. Placement does not read force/torque feedback.
+mobility.  Spreading the hands requires a Running stream acknowledgement,
+measured vertical descent, and fresh bounded vision geometry. Placement does
+not read force/torque feedback.
 """
 
 from __future__ import annotations
@@ -72,7 +71,6 @@ def _rotation_error_rad(left: np.ndarray, right: np.ndarray) -> float:
 class PlacementState(str, Enum):
     PRE_PLACE_VERIFY = "PRE_PLACE_VERIFY"
     LOWERING = "LOWERING"
-    LOWERED_HOLD = "LOWERED_HOLD"
     SEATED = "SEATED"
     RELEASING = "RELEASING"
     RELEASED = "RELEASED"
@@ -163,9 +161,7 @@ class PlacementConfig:
             raise ValueError("placement configuration block must be an object")
         raw = raw_value
         allowed = {
-            "strict_unknown_keys",
             "enabled",
-            "geometry_only_lowering_enabled",
             "vision_geometry_release_enabled",
             "minimum_time_s",
             "linear_velocity_limit_mps",
@@ -201,12 +197,11 @@ class PlacementConfig:
             "vision_gap_stability_tolerance_m",
             "vision_evidence_min_samples",
         }
-        if bool(raw.get("strict_unknown_keys", False)):
-            unknown = sorted(set(raw) - allowed)
-            if unknown:
-                raise ValueError(
-                    "unknown placement configuration key(s): " + ", ".join(unknown)
-                )
+        unknown = sorted(set(raw) - allowed)
+        if unknown:
+            raise ValueError(
+                "unknown placement configuration key(s): " + ", ".join(unknown)
+            )
 
         defaults = cls()
         return cls(
@@ -333,7 +328,6 @@ class PlacementInput:
     controller_target_ack: bool
     right_target_base: Any | None = None
     left_target_base: Any | None = None
-    allow_geometry_only_lowering: bool = False
     allow_vision_geometry_release: bool = False
     predicted_box_bottom_gap_m: float | None = None
     predicted_box_bottom_gap_uncertainty_m: float | None = None
@@ -465,12 +459,6 @@ class Slot1PlacementSequencer:
             return self._update_pre_place(sample)
         if self.state is PlacementState.LOWERING:
             return self._update_lowering(sample)
-        if self.state is PlacementState.LOWERED_HOLD:
-            return self._output(
-                sample,
-                PlacementRequest.HOLD_CURRENT,
-                "geometry_only_lowered_release_blocked",
-            )
         if self.state is PlacementState.SEATED:
             return self._update_seated(sample)
         if self.state is PlacementState.RELEASING:
@@ -595,13 +583,6 @@ class Slot1PlacementSequencer:
                 "waiting_for_measured_50mm_descent",
             )
         if not self._seating_evidence(sample):
-            if sample.allow_geometry_only_lowering:
-                self._transition(PlacementState.LOWERED_HOLD, sample.now_s)
-                return self._output(
-                    sample,
-                    PlacementRequest.HOLD_CURRENT,
-                    "geometry_only_lowered_release_blocked",
-                )
             return self._fault("seating_evidence_unavailable", sample)
         self._contact_started_s = sample.now_s
         self._transition(PlacementState.SEATED, sample.now_s)
@@ -705,7 +686,7 @@ class Slot1PlacementSequencer:
                 sample.predicted_box_bottom_gap_uncertainty_m,
             )
         )
-        if not release_path_available and not sample.allow_geometry_only_lowering:
+        if not release_path_available:
             return "seating_evidence_unavailable"
         return None
 
@@ -899,7 +880,6 @@ class Slot1PlacementSequencer:
                 self._baseline_gap_uncertainty_m
             ),
             "release_authority": "vision_geometry_only",
-            "geometry_only_lowering": sample.allow_geometry_only_lowering,
             "vision_geometry_release": sample.allow_vision_geometry_release,
             "vision_gap_timestamp_s": self._baseline_gap_timestamp_s,
             "vision_gap_sequence": self._baseline_gap_sequence,

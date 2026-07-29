@@ -1016,7 +1016,6 @@ def _placement_input(
     decision: PalletServoOutput,
     zero_acknowledged: bool,
     stationary: bool,
-    allow_geometry_only_lowering: bool,
     allow_vision_geometry_release: bool,
 ) -> tuple[PlacementInput, dict[str, Any]]:
     measured_state = controller.get_measured_state()
@@ -1038,7 +1037,6 @@ def _placement_input(
         controller_target_ack=bool(getattr(telemetry, "target_acknowledged", False)),
         right_target_base=getattr(telemetry, "right_T_base_eef_target", None),
         left_target_base=getattr(telemetry, "left_T_base_eef_target", None),
-        allow_geometry_only_lowering=bool(allow_geometry_only_lowering),
         allow_vision_geometry_release=bool(allow_vision_geometry_release),
         predicted_box_bottom_gap_m=gap_m,
         predicted_box_bottom_gap_uncertainty_m=gap_uncertainty_m,
@@ -1832,7 +1830,6 @@ def run_pallet_live(
     allow_nominal_registration: bool = False,
     allow_geometry_only_grip_check: bool = False,
     auto_place_slot1: bool = False,
-    allow_geometry_only_lowering: bool = False,
     allow_vision_geometry_release: bool = False,
     ensure_slot1_ready: bool = False,
     robot_address: str = "192.168.30.1:50051",
@@ -1865,10 +1862,6 @@ def run_pallet_live(
         raise ValueError("loaded slot-1 execution requires ensure_slot1_ready=True")
     if auto_place_slot1 and not execute:
         raise ValueError("slot-1 placement requires execute=True")
-    if allow_geometry_only_lowering and not auto_place_slot1:
-        raise ValueError(
-            "allow_geometry_only_lowering is valid only with auto_place_slot1=True"
-        )
     if allow_vision_geometry_release and not auto_place_slot1:
         raise ValueError(
             "allow_vision_geometry_release is valid only with auto_place_slot1=True"
@@ -1907,20 +1900,12 @@ def run_pallet_live(
         )
     placement_section = _section(root_config, "placement")
     placement_config_enabled = bool(placement_section.get("enabled", False))
-    geometry_lowering_policy_enabled = bool(
-        placement_section.get("geometry_only_lowering_enabled", False)
-    )
     vision_release_policy_enabled = bool(
         placement_section.get("vision_geometry_release_enabled", False)
     )
     if auto_place_slot1 and not placement_config_enabled:
         raise RuntimeError(
             "slot-1 placement requires placement.enabled=true in the reviewed config"
-        )
-    if allow_geometry_only_lowering and not geometry_lowering_policy_enabled:
-        raise RuntimeError(
-            "geometry-only lowering requires "
-            "placement.geometry_only_lowering_enabled=true"
         )
     if allow_vision_geometry_release and not vision_release_policy_enabled:
         raise RuntimeError(
@@ -2419,7 +2404,6 @@ def run_pallet_live(
                         decision=decision,
                         zero_acknowledged=_zero_command_acknowledged(controller),
                         stationary=stationary,
-                        allow_geometry_only_lowering=allow_geometry_only_lowering,
                         allow_vision_geometry_release=allow_vision_geometry_release,
                     )
                     placement_output = placement_sequencer.update(sample)
