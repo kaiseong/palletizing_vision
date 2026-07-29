@@ -66,6 +66,20 @@ def _float_pair(values: Sequence[float], name: str) -> tuple[float, float]:
     return result  # type: ignore[return-value]
 
 
+def _finite_pair(values: Sequence[float], name: str) -> tuple[float, float]:
+    result = tuple(float(value) for value in values)
+    if len(result) != 2 or not all(math.isfinite(value) for value in result):
+        raise ValueError(f"{name} must contain two finite values")
+    return result  # type: ignore[return-value]
+
+
+def _nonnegative_pair(values: Sequence[float], name: str) -> tuple[float, float]:
+    result = _finite_pair(values, name)
+    if any(value < 0.0 for value in result):
+        raise ValueError(f"{name} values must be non-negative")
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class PalletGeometry:
     """Fixed pinwheel-stack geometry measured by the operator."""
@@ -90,6 +104,83 @@ class PalletGeometry:
             "outer_size_m": list(self.outer_size_m),
             "opening_size_m": list(self.opening_size_m),
             "slot1_offset_m": list(self.slot1_offset_m),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Slot1HoleReference:
+    """Operator-demonstrated hole feature at the slot-1 ready base pose.
+
+    The centre and yaw are not an absolute pallet calibration.  They are the
+    complete-hole feature expressed in the RB-Y1 base frame when the operator
+    judged the carried carton to be vertically above slot 1.  Live PBVS moves
+    the current observed hole feature toward this body-fixed reference.
+    """
+
+    center_base_xy_m: tuple[float, float]
+    yaw_base_rad: float
+    axis_branch: str
+    reference_frame: str
+    source_session: str
+    source_selection: str
+    source_frame_count: int
+    center_std_xy_m: tuple[float, float]
+    yaw_std_rad: float
+    calibration_status: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "center_base_xy_m",
+            _finite_pair(self.center_base_xy_m, "center_base_xy_m"),
+        )
+        yaw = float(self.yaw_base_rad)
+        if not math.isfinite(yaw):
+            raise ValueError("yaw_base_rad must be finite")
+        object.__setattr__(self, "yaw_base_rad", (yaw + math.pi / 2.0) % math.pi - math.pi / 2.0)
+        for name in (
+            "axis_branch",
+            "reference_frame",
+            "source_session",
+            "source_selection",
+            "calibration_status",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must not be empty")
+            object.__setattr__(self, name, value)
+        count = int(self.source_frame_count)
+        if isinstance(self.source_frame_count, bool) or count < 5:
+            raise ValueError("source_frame_count must be at least five")
+        object.__setattr__(self, "source_frame_count", count)
+        object.__setattr__(
+            self,
+            "center_std_xy_m",
+            _nonnegative_pair(self.center_std_xy_m, "center_std_xy_m"),
+        )
+        yaw_std = float(self.yaw_std_rad)
+        if not math.isfinite(yaw_std) or yaw_std < 0.0:
+            raise ValueError("yaw_std_rad must be finite and non-negative")
+        object.__setattr__(self, "yaw_std_rad", yaw_std)
+
+    @property
+    def reference_source(self) -> str:
+        return f"{self.source_session}:{self.source_selection}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "center_base_xy_m": list(self.center_base_xy_m),
+            "yaw_base_rad": self.yaw_base_rad,
+            "yaw_base_deg": math.degrees(self.yaw_base_rad),
+            "axis_branch": self.axis_branch,
+            "reference_frame": self.reference_frame,
+            "source_session": self.source_session,
+            "source_selection": self.source_selection,
+            "source_frame_count": self.source_frame_count,
+            "center_std_xy_m": list(self.center_std_xy_m),
+            "yaw_std_rad": self.yaw_std_rad,
+            "yaw_std_deg": math.degrees(self.yaw_std_rad),
+            "calibration_status": self.calibration_status,
         }
 
 
@@ -171,6 +262,12 @@ class PalletEstimatorConfig:
     l_corner_max_connection_gap_m: float = 0.015
     l_corner_max_orthogonality_error_rad: float = math.radians(5.0)
     l_corner_max_axis_residual_rad: float = math.radians(15.0)
+    l_corner_acquisition_min_front_support_m: float = 0.150
+    l_corner_acquisition_min_side_support_m: float = 0.150
+    l_corner_acquisition_max_line_p95_residual_m: float = 0.006
+    l_corner_acquisition_max_axis_residual_rad: float = math.radians(12.0)
+    l_corner_acquisition_max_orthogonality_error_rad: float = math.radians(4.0)
+    l_corner_acquisition_max_connection_gap_m: float = 0.600
     l_corner_image_crop_margin_px: int = 8
     l_corner_bev_crop_margin_m: float = 0.010
 
@@ -216,6 +313,12 @@ class PalletEstimatorConfig:
             "l_corner_max_connection_gap_m",
             "l_corner_max_orthogonality_error_rad",
             "l_corner_max_axis_residual_rad",
+            "l_corner_acquisition_min_front_support_m",
+            "l_corner_acquisition_min_side_support_m",
+            "l_corner_acquisition_max_line_p95_residual_m",
+            "l_corner_acquisition_max_axis_residual_rad",
+            "l_corner_acquisition_max_orthogonality_error_rad",
+            "l_corner_acquisition_max_connection_gap_m",
             "l_corner_bev_crop_margin_m",
         ):
             object.__setattr__(self, name, _finite_positive(getattr(self, name), name))
@@ -363,6 +466,9 @@ class LCornerObservation:
     quality: Mapping[str, float]
     valid: bool
     rejection_reasons: tuple[str, ...]
+    forward_acquisition_valid: bool = False
+    forward_acquisition_yaw_base_rad: float | None = None
+    forward_acquisition_rejection_reasons: tuple[str, ...] = ()
     calibration_status: str = "nominal_ready_assumed"
 
     def __post_init__(self) -> None:
@@ -378,11 +484,16 @@ class LCornerObservation:
             "plane_p95_residual_m",
             "connection_gap_m",
             "orthogonality_error_rad",
+            "forward_acquisition_yaw_base_rad",
         ):
             value = getattr(self, name)
             if value is not None and (
                 not math.isfinite(float(value))
-                or (name != "yaw_base_rad" and float(value) < 0.0)
+                or (
+                    name
+                    not in ("yaw_base_rad", "forward_acquisition_yaw_base_rad")
+                    and float(value) < 0.0
+                )
             ):
                 raise ValueError(f"{name} must be finite and non-negative")
         if self.front_line is not None and not isinstance(
@@ -417,6 +528,29 @@ class LCornerObservation:
             dict.fromkeys(str(reason) for reason in self.rejection_reasons if reason)
         )
         object.__setattr__(self, "rejection_reasons", reasons)
+        acquisition_reasons = tuple(
+            dict.fromkeys(
+                str(reason)
+                for reason in self.forward_acquisition_rejection_reasons
+                if reason
+            )
+        )
+        if self.valid and acquisition_reasons:
+            raise ValueError(
+                "strict-valid L-corner observations cannot carry forward-acquisition "
+                "rejection reasons"
+            )
+        object.__setattr__(
+            self,
+            "forward_acquisition_rejection_reasons",
+            acquisition_reasons,
+        )
+        acquisition_valid = bool(self.forward_acquisition_valid or self.valid)
+        if acquisition_valid and acquisition_reasons:
+            raise ValueError(
+                "forward-acquisition-valid observations cannot carry rejection reasons"
+            )
+        object.__setattr__(self, "forward_acquisition_valid", acquisition_valid)
         required = (
             self.corner_base,
             self.u_right_base,
@@ -436,6 +570,29 @@ class LCornerObservation:
             )
         if not self.valid and not reasons:
             raise ValueError("invalid L-corner observations require a rejection reason")
+        acquisition_required = (
+            self.plane_height_base_m,
+            self.plane_p95_residual_m,
+            self.front_line,
+            self.side_line,
+            self.connection_gap_m,
+            self.orthogonality_error_rad,
+            self.topology_branch,
+        )
+        if acquisition_valid and any(value is None for value in acquisition_required):
+            raise ValueError(
+                "forward-acquisition L-corner observations require complete line evidence"
+            )
+        if acquisition_valid and self.forward_acquisition_yaw_base_rad is None:
+            object.__setattr__(
+                self,
+                "forward_acquisition_yaw_base_rad",
+                self.yaw_base_rad,
+            )
+        if acquisition_valid and self.forward_acquisition_yaw_base_rad is None:
+            raise ValueError(
+                "forward-acquisition L-corner observations require a yaw measurement"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -469,6 +626,16 @@ class LCornerObservation:
             "unconstrained_dofs": list(self.unconstrained_dofs),
             "quality": dict(self.quality),
             "valid": self.valid,
+            "forward_acquisition_valid": self.forward_acquisition_valid,
+            "forward_acquisition_yaw_base_rad": self.forward_acquisition_yaw_base_rad,
+            "forward_acquisition_yaw_base_deg": (
+                None
+                if self.forward_acquisition_yaw_base_rad is None
+                else math.degrees(self.forward_acquisition_yaw_base_rad)
+            ),
+            "forward_acquisition_rejection_reasons": list(
+                self.forward_acquisition_rejection_reasons
+            ),
             "rejection_reasons": list(self.rejection_reasons),
             "calibration_status": self.calibration_status,
         }
@@ -743,6 +910,64 @@ NOMINAL_READY_T_BASE_FROM_HEAD = np.array(
 NOMINAL_READY_T_BASE_FROM_HEAD.setflags(write=False)
 
 
+def load_slot1_hole_reference(
+    root_config: Mapping[str, Any],
+) -> Slot1HoleReference:
+    """Load and validate the demonstrated complete-hole PBVS reference."""
+
+    if not isinstance(root_config, Mapping):
+        raise TypeError("root_config must be a mapping")
+    pallet_raw = root_config.get("pallet", {})
+    if not isinstance(pallet_raw, Mapping):
+        raise ValueError("pallet configuration block must be an object")
+    reference_raw = pallet_raw.get("slot1_hole_reference")
+    if not isinstance(reference_raw, Mapping):
+        raise ValueError(
+            "pallet.slot1_hole_reference must be a demonstrated reference object"
+        )
+    expected_branch = str(pallet_raw.get("axis_branch", "")).strip()
+    reference_branch = str(reference_raw.get("axis_branch", "")).strip()
+    if not expected_branch:
+        raise ValueError("pallet.axis_branch must not be empty")
+    if reference_branch != expected_branch:
+        raise ValueError(
+            "pallet.slot1_hole_reference.axis_branch must match pallet.axis_branch"
+        )
+    if "yaw_base_rad" in reference_raw:
+        yaw_rad = float(reference_raw["yaw_base_rad"])
+    elif "yaw_base_deg" in reference_raw:
+        yaw_rad = math.radians(float(reference_raw["yaw_base_deg"]))
+    else:
+        raise ValueError(
+            "pallet.slot1_hole_reference requires yaw_base_rad or yaw_base_deg"
+        )
+    if "yaw_std_rad" in reference_raw:
+        yaw_std_rad = float(reference_raw["yaw_std_rad"])
+    elif "yaw_std_deg" in reference_raw:
+        yaw_std_rad = math.radians(float(reference_raw["yaw_std_deg"]))
+    else:
+        raise ValueError(
+            "pallet.slot1_hole_reference requires yaw_std_rad or yaw_std_deg"
+        )
+    reference = Slot1HoleReference(
+        center_base_xy_m=reference_raw.get("center_base_xy_m", ()),
+        yaw_base_rad=yaw_rad,
+        axis_branch=reference_branch,
+        reference_frame=reference_raw.get("reference_frame", ""),
+        source_session=reference_raw.get("source_session", ""),
+        source_selection=reference_raw.get("source_selection", ""),
+        source_frame_count=reference_raw.get("source_frame_count", 0),
+        center_std_xy_m=reference_raw.get("center_std_xy_m", ()),
+        yaw_std_rad=yaw_std_rad,
+        calibration_status=reference_raw.get("calibration_status", ""),
+    )
+    if reference.reference_frame != "base_at_configured_slot1_ready_pose":
+        raise ValueError(
+            "slot1 hole reference must use base_at_configured_slot1_ready_pose"
+        )
+    return reference
+
+
 def load_pallet_estimator_config(
     root_config: Mapping[str, Any] | str | Path | PalletEstimatorConfig,
 ) -> PalletEstimatorConfig:
@@ -881,6 +1106,20 @@ def load_pallet_estimator_config(
         l_corner_raw = acquisition_raw.get("l_corner", {})
     if not isinstance(l_corner_raw, Mapping):
         raise ValueError("l_corner configuration block must be an object")
+    l_corner_acquisition_value = l_corner_raw.get(
+        "forward_acquisition",
+        l_corner_raw.get("acquisition", {}),
+    )
+    if l_corner_acquisition_value and not isinstance(
+        l_corner_acquisition_value,
+        Mapping,
+    ):
+        raise ValueError("l_corner acquisition configuration block must be an object")
+    l_corner_acquisition_raw = (
+        l_corner_acquisition_value
+        if isinstance(l_corner_acquisition_value, Mapping)
+        else {}
+    )
     for key in (
         "l_corner_edge_band_m",
         "l_corner_min_front_support_m",
@@ -889,6 +1128,12 @@ def load_pallet_estimator_config(
         "l_corner_max_connection_gap_m",
         "l_corner_max_orthogonality_error_rad",
         "l_corner_max_axis_residual_rad",
+        "l_corner_acquisition_min_front_support_m",
+        "l_corner_acquisition_min_side_support_m",
+        "l_corner_acquisition_max_line_p95_residual_m",
+        "l_corner_acquisition_max_connection_gap_m",
+        "l_corner_acquisition_max_orthogonality_error_rad",
+        "l_corner_acquisition_max_axis_residual_rad",
         "l_corner_image_crop_margin_px",
         "l_corner_bev_crop_margin_m",
     ):
@@ -899,6 +1144,47 @@ def load_pallet_estimator_config(
             kwargs[key] = l_corner_raw[key]
         elif short_key in l_corner_raw:
             kwargs[key] = l_corner_raw[short_key]
+        elif key in l_corner_acquisition_raw:
+            kwargs[key] = l_corner_acquisition_raw[key]
+        elif short_key in l_corner_acquisition_raw:
+            kwargs[key] = l_corner_acquisition_raw[short_key]
+        elif short_key.startswith("acquisition_"):
+            acquisition_short_key = short_key.removeprefix("acquisition_")
+            if acquisition_short_key in l_corner_acquisition_raw:
+                kwargs[key] = l_corner_acquisition_raw[acquisition_short_key]
+    angle_aliases = {
+        "l_corner_max_orthogonality_error_rad": (
+            "l_corner_max_orthogonality_error_deg",
+            "max_orthogonality_error_deg",
+        ),
+        "l_corner_max_axis_residual_rad": (
+            "l_corner_max_axis_residual_deg",
+            "max_axis_residual_deg",
+        ),
+        "l_corner_acquisition_max_orthogonality_error_rad": (
+            "l_corner_acquisition_max_orthogonality_error_deg",
+            "acquisition_max_orthogonality_error_deg",
+            "forward_acquisition_max_orthogonality_error_deg",
+        ),
+        "l_corner_acquisition_max_axis_residual_rad": (
+            "l_corner_acquisition_max_axis_residual_deg",
+            "acquisition_max_axis_residual_deg",
+            "forward_acquisition_max_axis_residual_deg",
+        ),
+    }
+    for key, aliases in angle_aliases.items():
+        if key in kwargs:
+            continue
+        for alias in aliases:
+            if alias in perception_raw:
+                kwargs[key] = math.radians(float(perception_raw[alias]))
+                break
+            if alias in l_corner_raw:
+                kwargs[key] = math.radians(float(l_corner_raw[alias]))
+                break
+            if alias in l_corner_acquisition_raw:
+                kwargs[key] = math.radians(float(l_corner_acquisition_raw[alias]))
+                break
     return PalletEstimatorConfig(**kwargs)
 
 
@@ -913,7 +1199,9 @@ __all__ = [
     "PalletGeometry",
     "PalletPerceptionGates",
     "PalletSceneObservation",
+    "Slot1HoleReference",
     "SlotAlignmentObservation",
     "StackObservation",
     "load_pallet_estimator_config",
+    "load_slot1_hole_reference",
 ]

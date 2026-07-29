@@ -1845,6 +1845,13 @@ class RBY1PalletController:
         instead use the freshly measured fixed-ready EEF box-bottom model; all
         joint tracking, EEF stability, frame freshness, stack-plane, clearance,
         and command-ownership gates remain active.
+
+        This is intentionally a rolling fresh motion interlock, not a
+        stationary perception gate.  Step authorization, post-stop
+        reacquisition, complete-hole handoff, and arrival verification impose
+        their own measured-stationary windows.  Requiring these clearance
+        samples to be stationary would revoke an already authorized coarse
+        step or continuous fine alignment on its first moving frame.
         """
 
         if not isinstance(allow_fixed_ready_geometry_only, bool):
@@ -1967,10 +1974,11 @@ class RBY1PalletController:
 
         direct_plane_run: list[tuple[float, float, float, float]] = []
         previous_frame_id: int | None = None
+        previous_observation_sequence: int | None = None
         previous_timestamp_s: float | None = None
         previous_stack_source: str | None = None
         continuity_rejection: str | None = None
-        for scene in scene_window:
+        for accepted_window_index, scene in enumerate(scene_window, start=1):
             if allow_fixed_ready_geometry_only:
                 pose_source = str(_read_field(scene, "held_box_pose_source", ""))
                 distinct = pose_source == (
@@ -1982,7 +1990,9 @@ class RBY1PalletController:
                 stack_source = str(_read_field(scene, "stack_top_source", ""))
                 stack_source_valid = stack_source in {
                     "complete_stack_plane",
+                    "metric_stack_plane_candidate",
                     "metric_coarse_l_corner_plane",
+                    "metric_forward_edge_pair_plane",
                 }
             else:
                 distinct = bool(
@@ -1995,13 +2005,20 @@ class RBY1PalletController:
                 stack_source_valid = True
             stack = _read_field(scene, "stack_top_z_base_m")
             frame_id_raw = _read_field(scene, "frame_id")
+            observation_sequence_raw = _read_field(
+                scene,
+                "accepted_observation_sequence",
+                accepted_window_index,
+            )
             timestamp_raw = _read_field(scene, "capture_timestamp_s")
             try:
                 frame_id = int(frame_id_raw)
+                observation_sequence = int(observation_sequence_raw)
                 timestamp_s = float(timestamp_raw)
             except (TypeError, ValueError):
                 direct_plane_run.clear()
                 previous_frame_id = None
+                previous_observation_sequence = None
                 previous_timestamp_s = None
                 continuity_rejection = "held_top_frame_identity_unavailable"
                 continue
@@ -2009,6 +2026,9 @@ class RBY1PalletController:
                 not isinstance(frame_id_raw, bool)
                 and frame_id >= 0
                 and frame_id_raw == frame_id
+                and not isinstance(observation_sequence_raw, bool)
+                and observation_sequence > 0
+                and observation_sequence_raw == observation_sequence
                 and math.isfinite(timestamp_s)
             )
             age_s = now_s - timestamp_s
@@ -2022,6 +2042,7 @@ class RBY1PalletController:
             ):
                 direct_plane_run.clear()
                 previous_frame_id = None
+                previous_observation_sequence = None
                 previous_timestamp_s = None
                 continuity_rejection = (
                     "held_top_evidence_stale"
@@ -2049,6 +2070,7 @@ class RBY1PalletController:
             if not values_valid:
                 direct_plane_run.clear()
                 previous_frame_id = None
+                previous_observation_sequence = None
                 previous_timestamp_s = None
                 previous_stack_source = None
                 continuity_rejection = (
@@ -2058,17 +2080,23 @@ class RBY1PalletController:
                 )
                 continue
 
-            if previous_frame_id is not None and (
-                frame_id != previous_frame_id + 1
-                or previous_timestamp_s is None
-                or timestamp_s <= previous_timestamp_s
-                or stack_source != previous_stack_source
-            ):
-                direct_plane_run.clear()
-                continuity_rejection = "clearance_evidence_not_contiguous"
+            if previous_frame_id is not None:
+                if frame_id <= previous_frame_id:
+                    direct_plane_run.clear()
+                    continuity_rejection = "clearance_source_frame_not_monotonic"
+                elif (
+                    previous_observation_sequence is None
+                    or observation_sequence != previous_observation_sequence + 1
+                    or previous_timestamp_s is None
+                    or timestamp_s <= previous_timestamp_s
+                    or stack_source != previous_stack_source
+                ):
+                    direct_plane_run.clear()
+                    continuity_rejection = "clearance_evidence_not_contiguous"
 
             direct_plane_run.append((held_value, held_sigma, stack_value, stack_sigma))
             previous_frame_id = frame_id
+            previous_observation_sequence = observation_sequence
             previous_timestamp_s = timestamp_s
             previous_stack_source = stack_source
 

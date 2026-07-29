@@ -571,6 +571,9 @@ def _fit_partial_l_corner(
         branch: str | None = None,
         quality: dict[str, float] | None = None,
         component_boundary_base: FloatArray | None = None,
+        forward_acquisition_valid: bool = False,
+        forward_acquisition_yaw_base_rad: float | None = None,
+        forward_acquisition_rejection_reasons: tuple[str, ...] = (),
     ) -> _LCornerFitResult:
         return _LCornerFitResult(
             observation=LCornerObservation(
@@ -591,6 +594,11 @@ def _fit_partial_l_corner(
                 quality=base_quality if quality is None else quality,
                 valid=False,
                 rejection_reasons=reasons,
+                forward_acquisition_valid=forward_acquisition_valid,
+                forward_acquisition_yaw_base_rad=forward_acquisition_yaw_base_rad,
+                forward_acquisition_rejection_reasons=(
+                    forward_acquisition_rejection_reasons
+                ),
                 calibration_status=calibration_status,
             ),
             component_boundary_base=component_boundary_base,
@@ -731,6 +739,10 @@ def _fit_partial_l_corner(
             front_line=front_line,
             side_line=side_line,
             orthogonality_error_rad=orthogonality,
+            branch="near_image_right_outer",
+            forward_acquisition_rejection_reasons=(
+                "l_corner_lines_parallel",
+            ),
             component_boundary_base=boundary_base,
         )
     front_endpoint_distances = np.linalg.norm(
@@ -796,6 +808,47 @@ def _fit_partial_l_corner(
         "l_corner_connection_gap_m": connection_gap,
         "l_corner_orthogonality_error_rad": orthogonality,
     }
+    forward_acquisition_reasons: list[str] = []
+    if front_fit.support_length_m < config.l_corner_acquisition_min_front_support_m:
+        forward_acquisition_reasons.append("l_corner_acquisition_front_support_too_short")
+    if side_fit.support_length_m < config.l_corner_acquisition_min_side_support_m:
+        forward_acquisition_reasons.append("l_corner_acquisition_side_support_too_short")
+    if front_fit.p95_residual_m > config.l_corner_acquisition_max_line_p95_residual_m:
+        forward_acquisition_reasons.append(
+            "l_corner_acquisition_front_residual_too_large"
+        )
+    if side_fit.p95_residual_m > config.l_corner_acquisition_max_line_p95_residual_m:
+        forward_acquisition_reasons.append(
+            "l_corner_acquisition_side_residual_too_large"
+        )
+    if front_fit.axis_residual_rad > config.l_corner_acquisition_max_axis_residual_rad:
+        forward_acquisition_reasons.append("l_corner_acquisition_front_axis_mismatch")
+    if side_fit.axis_residual_rad > config.l_corner_acquisition_max_axis_residual_rad:
+        forward_acquisition_reasons.append("l_corner_acquisition_side_axis_mismatch")
+    if orthogonality > config.l_corner_acquisition_max_orthogonality_error_rad:
+        forward_acquisition_reasons.append("l_corner_acquisition_orthogonality_error")
+    if connection_gap > config.l_corner_acquisition_max_connection_gap_m:
+        forward_acquisition_reasons.append("l_corner_acquisition_gap_too_large")
+    if stack_plane.p95_residual_m > config.gates.max_plane_p95_residual_m:
+        forward_acquisition_reasons.append(
+            "l_corner_acquisition_stack_plane_residual_too_large"
+        )
+    # The relaxed path authorizes only another bounded forward observe step,
+    # but it must not turn crop/reflection/topology failures into evidence.
+    # Only the deliberately relaxed support and connection requirements may
+    # differ from the strict metric-corner contract.
+    relaxed_strict_reasons = {
+        "l_corner_front_support_too_short",
+        "l_corner_side_support_too_short",
+        "l_corner_lines_disconnected",
+    }
+    forward_acquisition_reasons.extend(
+        reason for reason in reasons if reason not in relaxed_strict_reasons
+    )
+    forward_acquisition_yaw = float(
+        math.atan2(observed_u_right[1], observed_u_right[0])
+    )
+    forward_acquisition_valid = not forward_acquisition_reasons
     if reasons:
         return rejected(
             tuple(dict.fromkeys(reasons)),
@@ -806,19 +859,23 @@ def _fit_partial_l_corner(
             orthogonality_error_rad=orthogonality,
             branch=branch,
             quality=quality,
+            forward_acquisition_valid=forward_acquisition_valid,
+            forward_acquisition_yaw_base_rad=forward_acquisition_yaw,
+            forward_acquisition_rejection_reasons=tuple(
+                dict.fromkeys(forward_acquisition_reasons)
+            ),
             component_boundary_base=boundary_base,
         )
 
     corner_z = float(_plane_z(stack_plane.plane, corner_xy))
     corner_base = np.array((corner_xy[0], corner_xy[1], corner_z), dtype=np.float64)
-    yaw = float(math.atan2(observed_u_right[1], observed_u_right[0]))
     return _LCornerFitResult(
         observation=LCornerObservation(
             timestamp_s=timestamp_s,
             corner_base=corner_base,
             u_right_base=observed_u_right,
             v_far_base=observed_v_far,
-            yaw_base_rad=yaw,
+            yaw_base_rad=forward_acquisition_yaw,
             plane_height_base_m=corner_z,
             plane_p95_residual_m=stack_plane.p95_residual_m,
             front_line=front_line,
@@ -831,6 +888,7 @@ def _fit_partial_l_corner(
             quality=quality,
             valid=True,
             rejection_reasons=(),
+            forward_acquisition_valid=True,
             calibration_status=calibration_status,
         ),
         component_boundary_base=boundary_base,

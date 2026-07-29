@@ -196,13 +196,13 @@ limits remain at the SDK defaults. The bounded
 `--ensure-slot1-ready` posture-restoration command described below is separate
 and uses Joint Position for torso, both arms, and head.
 
-The raw EEF midpoint is not the carton centre in this posture. The supplied
-config therefore applies a fixed base-frame XY offset
-`[+0.085463, +0.008236] m`, derived from the mean recovered slot target in the
-operator-eye `pallet_1_arrived` recording. This makes that reference recording
-near-zero in XY without pretending it is external ground truth; the offset is
-explicitly `nominal_unverified` and is valid only for this fixed ready/grasp
-family.
+The raw EEF midpoint is retained for carried-box exclusion and conservative
+clearance checks, but it is not the fine-alignment target. The fine controller
+now reproduces the complete-hole observation recorded at the operator-selected
+`pallet_slot1` destination: base-frame hole centre
+`[0.865000, 0.139523] m` and line yaw `-90 deg`. These are stable recording
+medians, not independent ground truth, and are valid only for this fixed
+ready/grasp/camera family.
 
 The current standalone commissioning path starts after the user has already
 gripped the carton and brought RB-Y1 to the configured slot-1 ready posture.
@@ -232,23 +232,29 @@ the complete opening is not visible:
 
 ```text
 loaded ready/body hold with exact zero mobility
-  -> five stationary connected L-corner observations
+  -> five stationary acquisition-grade edge-pair observations
   -> at most one 10 mm forward-only step
   -> zero + measured wheel stop + new stationary observations
   -> five complete-hole observations spanning at least 0.35 s
-  -> one-way handoff to the existing slot-1 x/y/yaw fine servo
+  -> one-way handoff to the demonstrated hole-centre x/y/yaw fine servo
   -> ARRIVED_HOLD
 ```
 
-The partial L consists of the completed stack's near/front boundary and one
-connected side boundary in metric 3D/BEV. It exposes its plane, lines, corner,
-branch, residuals, and underconstrained degrees of freedom, but it has no stack
-center, hole center, or slot target. It can authorize only another bounded
-forward observation step; it cannot command lateral motion, yaw, reverse,
-descent, or fine placement. For the fixed-ready clearance proxy, the stack top
-may come from a complete stack plane or from an explicit
-`metric_coarse_l_corner_plane`; a forward step is still a separate decision and
-independently requires the stationary five-frame L-corner gate.
+The coarse observation consists of the completed stack's near/front boundary
+and one image-right boundary in metric 3D/BEV. When the held carton separates
+their visible segments, the estimator explicitly leaves the strict L corner
+invalid and its translation underconstrained. A separately qualified edge pair
+can authorize only another bounded forward observation step; it cannot command
+lateral motion, yaw, reverse, descent, or fine placement. For the fixed-ready
+clearance proxy, the stack top may come from either complete-hole geometry or
+the metric partial-stack plane. A forward step remains a separate decision and
+independently requires the stationary five-frame edge gate.
+
+RealSense hardware frame counters need only increase; they do not need to be
+numerically adjacent. Grip/clearance dwell continuity is based on consecutive
+accepted fresh control observations while retaining the hardware counter for
+duplicate/reversal diagnostics. This prevents ordinary dropped sensor frames
+from permanently forcing `motion_interlock_selected_zero`.
 
 The shipped standalone commissioning config uses the release-capped `0.15 m`
 forward acquisition budget. The absolute design ceiling remains an unreachable

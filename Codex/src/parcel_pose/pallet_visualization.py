@@ -10,7 +10,11 @@ from numpy.typing import ArrayLike, NDArray
 
 from .models import CameraIntrinsics
 from .pallet_acquisition import HoleGateStatus, LCornerGateStatus
-from .pallet_models import PalletFrameEvidence, PalletSceneObservation
+from .pallet_models import (
+    PalletFrameEvidence,
+    PalletSceneObservation,
+    Slot1HoleReference,
+)
 from .transforms import invert_transform, transform_points, validate_transform
 from .visualization import project_points_to_pixels
 
@@ -155,6 +159,7 @@ def draw_pallet_overlay(
     l_corner_gate: LCornerGateStatus | Mapping[str, Any] | None = None,
     hole_gate: HoleGateStatus | Mapping[str, Any] | None = None,
     acquisition_audit: Mapping[str, Any] | None = None,
+    slot1_hole_reference: Slot1HoleReference | None = None,
 ) -> ImageArray:
     """Draw selected stack plane, inner rims, axes, and slot-1 target.
 
@@ -329,7 +334,7 @@ def draw_pallet_overlay(
                 )
                 cv2.putText(
                     output,
-                    "slot1 hover",
+                    "geometric slot1",
                     (target_uv[0] + 8, target_uv[1] - 8),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.46,
@@ -338,11 +343,82 @@ def draw_pallet_overlay(
                     cv2.LINE_AA,
                 )
 
+    if (
+        slot1_hole_reference is not None
+        and stack.center_base is not None
+        and stack.plane_height_base_m is not None
+    ):
+        feature_points = np.asarray(
+            (
+                stack.center_base,
+                (
+                    slot1_hole_reference.center_base_xy_m[0],
+                    slot1_hole_reference.center_base_xy_m[1],
+                    stack.plane_height_base_m,
+                ),
+            ),
+            dtype=np.float64,
+        )
+        feature_pixels = _base_pixels(feature_points, intrinsics, T_base_depth)
+        rounded, inside = _inside_pixels(feature_pixels, width, height)
+        if inside[0]:
+            current_uv = tuple(int(value) for value in rounded[0])
+            cv2.drawMarker(
+                output,
+                current_uv,
+                (0, 255, 255),
+                cv2.MARKER_TILTED_CROSS,
+                18,
+                2,
+                cv2.LINE_AA,
+            )
+        if inside[1]:
+            reference_uv = tuple(int(value) for value in rounded[1])
+            cv2.drawMarker(
+                output,
+                reference_uv,
+                (255, 40, 210),
+                cv2.MARKER_CROSS,
+                20,
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                output,
+                "demonstrated hole target",
+                (reference_uv[0] + 8, reference_uv[1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (255, 40, 210),
+                1,
+                cv2.LINE_AA,
+            )
+        if inside[0] and inside[1]:
+            cv2.line(
+                output,
+                tuple(int(value) for value in rounded[0]),
+                tuple(int(value) for value in rounded[1]),
+                (255, 40, 210),
+                1,
+                cv2.LINE_AA,
+            )
+
     frame_text = "" if frame_id is None else f" frame={frame_id}"
     state_text = "" if state is None else f" state={state}"
     coarse_valid = bool(observation.coarse is not None and observation.coarse.valid)
     coarse = observation.coarse
-    status = "VALID" if stack.valid else "PARTIAL-L" if coarse_valid else "ABSTAIN"
+    edge_pair_valid = bool(
+        coarse is not None and coarse.forward_acquisition_valid
+    )
+    status = (
+        "VALID"
+        if stack.valid
+        else "PARTIAL-L"
+        if coarse_valid
+        else "EDGE-PAIR"
+        if edge_pair_valid
+        else "ABSTAIN"
+    )
     branch = stack.axis_branch or (None if coarse is None else coarse.topology_branch)
     lines = [
         f"PALLET SLOT1 {status}{frame_text}{state_text}",
@@ -362,6 +438,14 @@ def draw_pallet_overlay(
                 f"slot1 base [m] x={target[0]:+.3f} y={target[1]:+.3f} z={target[2]:+.3f}",
             )
         )
+        if slot1_hole_reference is not None:
+            reference = slot1_hole_reference
+            lines.append(
+                "demonstrated hole ref [m] "
+                f"x={reference.center_base_xy_m[0]:+.3f} "
+                f"y={reference.center_base_xy_m[1]:+.3f} "
+                f"yaw={math.degrees(reference.yaw_base_rad):+.2f} deg"
+            )
     quality = stack.quality
     if quality and all(
         key in quality
@@ -379,7 +463,7 @@ def draw_pallet_overlay(
         lines.append(
             f"opening={1_000*opening_u:.1f}x{1_000*opening_v:.1f} mm rims={int(quality.get('inner_rim_count', 0))}/4 plane_p95={residual:.1f} mm orth={orthogonality:.1f} deg"
         )
-    elif coarse_valid and coarse is not None:
+    elif (coarse_valid or edge_pair_valid) and coarse is not None:
         front_support = (
             math.nan
             if coarse.front_line is None
@@ -403,13 +487,14 @@ def draw_pallet_overlay(
             if coarse.orthogonality_error_rad is None
             else math.degrees(coarse.orthogonality_error_rad)
         )
+        evidence_label = "partial L" if coarse_valid else "forward edge-pair"
         lines.append(
-            "partial L "
+            f"{evidence_label} "
             f"front={front_support:.3f} m side={side_support:.3f} m "
             f"plane_p95={residual:.1f} mm"
         )
         lines.append(
-            f"partial L connection_gap={gap:.1f} mm "
+            f"{evidence_label} connection_gap={gap:.1f} mm "
             f"orthogonality={orthogonality:.1f} deg"
         )
     if latency_ms is not None:

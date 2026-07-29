@@ -29,6 +29,7 @@ from .pallet_models import (
     PalletEstimatorConfig,
     PalletSceneObservation,
     load_pallet_estimator_config,
+    load_slot1_hole_reference,
 )
 from .pallet_visualization import draw_pallet_overlay
 from .recording import SessionReader
@@ -494,6 +495,13 @@ def evaluate_pallet_session(
     session_name = Path(session_path).name
     root = _root_payload(root_config)
     estimator_config = load_pallet_estimator_config(root_config)
+    pallet_block = root.get("pallet", {}) if root else {}
+    slot1_hole_reference = (
+        load_slot1_hole_reference(root)
+        if isinstance(pallet_block, Mapping)
+        and "slot1_hole_reference" in pallet_block
+        else None
+    )
     acquisition_config = AcquisitionConfig.from_root_config(root)
     T_base_depth, registration = _replay_base_from_depth(reader.metadata, root)
     profile = _profile_diagnostics(reader.metadata, root)
@@ -609,6 +617,10 @@ def evaluate_pallet_session(
                 "l_corner_raw_valid": bool(
                     observation.coarse is not None and observation.coarse.valid
                 ),
+                "forward_acquisition_raw_valid": bool(
+                    observation.coarse is not None
+                    and observation.coarse.forward_acquisition_valid
+                ),
                 "complete_hole_raw_valid": bool(observation.valid),
                 "l_corner_gate": _gate_payload(l_corner_status),
                 "complete_hole_gate": _gate_payload(hole_status),
@@ -654,6 +666,7 @@ def evaluate_pallet_session(
                     l_corner_gate=l_corner_status,
                     hole_gate=hole_status,
                     acquisition_audit=acquisition_audit,
+                    slot1_hole_reference=slot1_hole_reference,
                 )
                 writer.write(overlay)
     finally:
@@ -905,6 +918,10 @@ def evaluate_pallet_session(
             "raw_valid_reviewed_count": sum(
                 bool(row["l_corner_raw_valid"]) for row in reviewed_acquisition_rows
             ),
+            "forward_acquisition_raw_valid_reviewed_count": sum(
+                bool(row["forward_acquisition_raw_valid"])
+                for row in reviewed_acquisition_rows
+            ),
             "stable_evaluated_count": len(stable_l_corner_rows),
             "required_stable_count": ACQUISITION_AUDIT_REQUIRED_STABLE_FRAMES,
             "expected_evaluated_count": ACQUISITION_AUDIT_EXPECTED_EVALUATED_FRAMES,
@@ -1018,6 +1035,11 @@ def evaluate_pallet_session(
             "maximum": float(np.max(latency)) if latency.size else None,
         },
         "registration": registration,
+        "slot1_hole_reference": (
+            None
+            if slot1_hole_reference is None
+            else slot1_hole_reference.to_dict()
+        ),
         "profile": profile,
         "acceptance": acceptance,
         "acquisition_audit": acquisition_summary,

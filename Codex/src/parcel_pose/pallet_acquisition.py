@@ -501,14 +501,23 @@ class StationaryLCornerGate:
         if not stationary:
             self.clear()
             return self._status(False, "frame_not_stationary")
-        if observation is None or not bool(getattr(observation, "valid", False)):
+        strict_valid = bool(getattr(observation, "valid", False))
+        acquisition_valid = bool(
+            getattr(observation, "forward_acquisition_valid", False)
+        )
+        if observation is None or not (strict_valid or acquisition_valid):
             self.clear()
-            reasons = tuple(getattr(observation, "rejection_reasons", ()))
+            reasons = tuple(
+                getattr(observation, "forward_acquisition_rejection_reasons", ())
+            ) or tuple(getattr(observation, "rejection_reasons", ()))
             reason = str(reasons[0]) if reasons else "l_corner_invalid"
             return self._status(False, reason)
         try:
             timestamp_s = _finite(getattr(observation, "timestamp_s"), "timestamp_s")
-            yaw_rad = _finite(getattr(observation, "yaw_base_rad"), "yaw_base_rad")
+            yaw_value = getattr(observation, "yaw_base_rad", None)
+            if yaw_value is None:
+                yaw_value = getattr(observation, "forward_acquisition_yaw_base_rad")
+            yaw_rad = _finite(yaw_value, "yaw_base_rad")
             plane_height_m = _finite(
                 getattr(observation, "plane_height_base_m"),
                 "plane_height_base_m",

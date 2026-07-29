@@ -59,6 +59,18 @@
     "slot1_offset_right_far_m": [0.128, 0.20175],
     "slot1_long_axis": "u_right",
     "axis_branch": "image_right",
+    "slot1_hole_reference": {
+      "center_base_xy_m": [0.865000, 0.139523],
+      "yaw_base_deg": -90.0,
+      "axis_branch": "image_right",
+      "reference_frame": "base_at_configured_slot1_ready_pose",
+      "source_session": "pallet_slot1",
+      "source_selection": "complete_hole_dwell_complete_frames",
+      "source_frame_count": 16,
+      "center_std_xy_m": [0.000604, 0.000728],
+      "yaw_std_deg": 0.614935,
+      "calibration_status": "nominal_unverified_operator_demonstrated"
+    },
     "acquisition": {
       "budget_m": 0.15,
       "step_m": 0.010,
@@ -132,7 +144,15 @@
       "max_orthogonality_error_rad": 0.08726646259971647,
       "max_axis_residual_rad": 0.2617993877991494,
       "image_crop_margin_px": 8,
-      "bev_crop_margin_m": 0.010
+      "bev_crop_margin_m": 0.010,
+      "forward_acquisition": {
+        "min_front_support_m": 0.150,
+        "min_side_support_m": 0.150,
+        "max_line_p95_residual_m": 0.006,
+        "max_connection_gap_m": 0.600,
+        "max_orthogonality_error_rad": 0.06981317007977318,
+        "max_axis_residual_rad": 0.20943951023931956
+      }
     }
   },
   "servo": {

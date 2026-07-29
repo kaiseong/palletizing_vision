@@ -1,12 +1,12 @@
 """Pure slot-1 pallet alignment servo with no robot-SDK side effects.
 
-The controller works entirely in metric RB-Y1 base coordinates.  The stack
-target is fixed in the world while the held carton is fixed to the body, so a
-base-frame command cannot be formed by copying a position error directly.  For
-``xi_B = [vx, vy, wz]`` and a target point ``p_t`` expressed in the moving base
-frame,
+The controller works entirely in metric RB-Y1 base coordinates.  It supports
+the legacy held-carton-to-world-target contract and the explicit current-world-
+feature-to-demonstrated-body-reference contract used by slot 1.  In both cases
+a world point ``p`` is expressed in the moving base frame.  For
+``xi_B = [vx, vy, wz]``,
 
-``dot(p_t) = -v - wz * J * p_t``.
+``dot(p) = -v - wz * J * p``.
 
 The controller analytically inverts that moving-frame Jacobian, then converts
 the resulting base twist to the SDK mobility frame with an explicit SE(2)
@@ -523,6 +523,117 @@ class PalletServoMeasurement:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class WorldFeatureToBodyReferenceMeasurement:
+    """Fine-servo contract for a fixed world feature and body-frame reference.
+
+    ``current_observed_feature_center_base`` is the current world feature
+    expressed in the moving base/body frame.
+    ``demonstrated_body_reference_center_base`` is the demonstrated feature
+    reference in that same body frame.  The servo error is always current
+    observed feature minus demonstrated body reference.
+    """
+
+    timestamp_s: float
+    current_observed_feature_center_base: tuple[float, float] | None
+    current_observed_feature_yaw_base_rad: float | None
+    demonstrated_body_reference_center_base: tuple[float, float] | None
+    demonstrated_body_reference_yaw_base_rad: float | None
+    axis_branch: str | None
+    reference_source: str
+    valid: bool = True
+    rejection_reasons: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "timestamp_s", _finite(self.timestamp_s, "timestamp_s")
+        )
+        object.__setattr__(
+            self,
+            "rejection_reasons",
+            tuple(str(reason) for reason in self.rejection_reasons),
+        )
+        source = str(self.reference_source).strip()
+        object.__setattr__(self, "reference_source", source)
+        if not self.valid:
+            return
+        if not source:
+            raise ValueError("valid measurement requires reference_source")
+        branch = None if self.axis_branch is None else str(self.axis_branch).strip()
+        object.__setattr__(self, "axis_branch", branch or None)
+        if not branch:
+            raise ValueError("valid measurement requires axis_branch")
+        if (
+            self.current_observed_feature_center_base is None
+            or self.demonstrated_body_reference_center_base is None
+        ):
+            raise ValueError(
+                "valid measurement requires observed feature and body reference centres"
+            )
+        if (
+            self.current_observed_feature_yaw_base_rad is None
+            or self.demonstrated_body_reference_yaw_base_rad is None
+        ):
+            raise ValueError(
+                "valid measurement requires observed feature and body reference yaw"
+            )
+        object.__setattr__(
+            self,
+            "current_observed_feature_center_base",
+            _xy(
+                self.current_observed_feature_center_base,
+                "current_observed_feature_center_base",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "demonstrated_body_reference_center_base",
+            _xy(
+                self.demonstrated_body_reference_center_base,
+                "demonstrated_body_reference_center_base",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "current_observed_feature_yaw_base_rad",
+            normalize_line_angle_rad(
+                _finite(
+                    self.current_observed_feature_yaw_base_rad,
+                    "current_observed_feature_yaw_base_rad",
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "demonstrated_body_reference_yaw_base_rad",
+            normalize_line_angle_rad(
+                _finite(
+                    self.demonstrated_body_reference_yaw_base_rad,
+                    "demonstrated_body_reference_yaw_base_rad",
+                )
+            ),
+        )
+
+    @classmethod
+    def invalid(
+        cls,
+        timestamp_s: float,
+        *rejection_reasons: str,
+        reference_source: str = "invalid",
+    ) -> "WorldFeatureToBodyReferenceMeasurement":
+        return cls(
+            timestamp_s=timestamp_s,
+            current_observed_feature_center_base=None,
+            current_observed_feature_yaw_base_rad=None,
+            demonstrated_body_reference_center_base=None,
+            demonstrated_body_reference_yaw_base_rad=None,
+            axis_branch=None,
+            reference_source=reference_source,
+            valid=False,
+            rejection_reasons=tuple(rejection_reasons),
+        )
+
+
 @runtime_checkable
 class SlotAlignmentGeometryLike(Protocol):
     """Geometry fields shared with ``pallet_models.SlotAlignmentObservation``."""
@@ -539,6 +650,19 @@ class SlotAlignmentLike(SlotAlignmentGeometryLike, Protocol):
 
     timestamp_s: float
     axis_branch: str
+
+
+@runtime_checkable
+class WorldFeatureToBodyReferenceLike(Protocol):
+    """Explicit fine-servo feature/reference alignment contract."""
+
+    timestamp_s: float
+    current_observed_feature_center_base: object
+    current_observed_feature_yaw_base_rad: float
+    demonstrated_body_reference_center_base: object
+    demonstrated_body_reference_yaw_base_rad: float
+    axis_branch: str
+    reference_source: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -594,14 +718,19 @@ class PalletServoOutput:
 @dataclass(frozen=True, slots=True)
 class _Sample:
     timestamp_s: float
-    target_xy: FloatArray
-    held_xy: FloatArray
+    current_observed_xy: FloatArray
+    body_reference_xy: FloatArray
+    compensation_point_xy: FloatArray
     yaw_error_rad: float
     axis_branch: str
+    measurement_mode: str
+    reference_source: str
+    target_xy: FloatArray | None = None
+    held_xy: FloatArray | None = None
 
     @property
     def error_xy(self) -> FloatArray:
-        return self.target_xy - self.held_xy
+        return self.current_observed_xy - self.body_reference_xy
 
 
 class PalletSlot1Servo:
@@ -675,6 +804,8 @@ class PalletSlot1Servo:
             SlotAlignmentLike
             | SlotAlignmentGeometryLike
             | PalletServoMeasurement
+            | WorldFeatureToBodyReferenceLike
+            | WorldFeatureToBodyReferenceMeasurement
             | None
         ),
         now_s: float,
@@ -848,6 +979,8 @@ class PalletSlot1Servo:
             SlotAlignmentLike
             | SlotAlignmentGeometryLike
             | PalletServoMeasurement
+            | WorldFeatureToBodyReferenceLike
+            | WorldFeatureToBodyReferenceMeasurement
             | None
         ),
         now_s: float,
@@ -871,6 +1004,78 @@ class PalletSlot1Servo:
                 return None, "observation_timestamp_in_future"
             if age > self.config.stale_after_s:
                 return None, "observation_stale"
+            axis_branch = str(getattr(observation, "axis_branch")).strip()
+            if not axis_branch:
+                return None, "axis_branch_missing"
+            if (
+                self._last_raw is not None
+                and timestamp < self._last_raw.timestamp_s - 1e-9
+            ):
+                return None, "observation_timestamp_regressed"
+            if hasattr(observation, "current_observed_feature_center_base") or hasattr(
+                observation, "observed_feature_center_base"
+            ):
+                current_center = getattr(
+                    observation,
+                    "current_observed_feature_center_base",
+                    getattr(observation, "observed_feature_center_base", None),
+                )
+                reference_center = getattr(
+                    observation,
+                    "demonstrated_body_reference_center_base",
+                    getattr(observation, "body_reference_center_base", None),
+                )
+                current_yaw_value = getattr(
+                    observation,
+                    "current_observed_feature_yaw_base_rad",
+                    getattr(observation, "observed_feature_yaw_base_rad", None),
+                )
+                reference_yaw_value = getattr(
+                    observation,
+                    "demonstrated_body_reference_yaw_base_rad",
+                    getattr(observation, "body_reference_yaw_base_rad", None),
+                )
+                current_xy = np.asarray(
+                    _xy(
+                        current_center,
+                        "current_observed_feature_center_base",
+                    ),
+                    dtype=np.float64,
+                )
+                reference_xy = np.asarray(
+                    _xy(
+                        reference_center,
+                        "demonstrated_body_reference_center_base",
+                    ),
+                    dtype=np.float64,
+                )
+                current_yaw = _finite(
+                    current_yaw_value,
+                    "current_observed_feature_yaw_base_rad",
+                )
+                reference_yaw = _finite(
+                    reference_yaw_value,
+                    "demonstrated_body_reference_yaw_base_rad",
+                )
+                reference_source = str(
+                    getattr(observation, "reference_source")
+                ).strip()
+                if not reference_source:
+                    return None, "reference_source_missing"
+                yaw_error = line_angle_difference_rad(current_yaw, reference_yaw)
+                return (
+                    _Sample(
+                        timestamp,
+                        current_xy,
+                        reference_xy,
+                        current_xy,
+                        yaw_error,
+                        axis_branch,
+                        "feature_to_body_reference",
+                        reference_source,
+                    ),
+                    None,
+                )
             target_xy = np.asarray(
                 _xy(getattr(observation, "target_center_base"), "target_center_base"),
                 dtype=np.float64,
@@ -887,21 +1092,32 @@ class PalletSlot1Servo:
                 getattr(observation, "held_yaw_base_rad"),
                 "held_yaw_base_rad",
             )
-            axis_branch = str(getattr(observation, "axis_branch")).strip()
-            if not axis_branch:
-                return None, "axis_branch_missing"
         except (AttributeError, TypeError, ValueError) as exc:
             return None, f"observation_corrupt:{exc}"
-        if self._last_raw is not None and timestamp < self._last_raw.timestamp_s - 1e-9:
-            return None, "observation_timestamp_regressed"
         yaw_error = line_angle_difference_rad(target_yaw, held_yaw)
-        return _Sample(timestamp, target_xy, held_xy, yaw_error, axis_branch), None
+        return (
+            _Sample(
+                timestamp,
+                target_xy,
+                held_xy,
+                target_xy,
+                yaw_error,
+                axis_branch,
+                "held_box_alignment",
+                "held_box_measurement",
+                target_xy=target_xy,
+                held_xy=held_xy,
+            ),
+            None,
+        )
 
     def _axis_branch_fault(
         self,
         observation: SlotAlignmentLike
         | SlotAlignmentGeometryLike
         | PalletServoMeasurement
+        | WorldFeatureToBodyReferenceLike
+        | WorldFeatureToBodyReferenceMeasurement
         | None,
     ) -> str | None:
         if observation is None or not bool(getattr(observation, "valid", True)):
@@ -919,6 +1135,12 @@ class PalletSlot1Servo:
             self._last_raw = sample
             self._jump_candidates.clear()
             return True, "accepted"
+        if sample.measurement_mode != self._last_raw.measurement_mode:
+            self._jump_candidates.clear()
+            return False, "measurement_mode_changed_requires_restart"
+        if sample.reference_source != self._last_raw.reference_source:
+            self._jump_candidates.clear()
+            return False, "reference_source_changed_requires_restart"
         if self._within_jump(sample, self._last_raw):
             self._samples.append(sample)
             self._last_raw = sample
@@ -958,17 +1180,52 @@ class PalletSlot1Servo:
         if not selected:
             return None
         values = tuple(selected)
-        targets = np.stack(tuple(sample.target_xy for sample in values), axis=0)
-        held = np.stack(tuple(sample.held_xy for sample in values), axis=0)
+        current_observed = np.stack(
+            tuple(sample.current_observed_xy for sample in values),
+            axis=0,
+        )
+        body_reference = np.stack(
+            tuple(sample.body_reference_xy for sample in values),
+            axis=0,
+        )
+        compensation_points = np.stack(
+            tuple(sample.compensation_point_xy for sample in values),
+            axis=0,
+        )
         yaw = self._line_medoid(
             np.asarray(tuple(sample.yaw_error_rad for sample in values))
         )
+        target_xy = None
+        held_xy = None
+        if all(sample.target_xy is not None for sample in values):
+            target_values = tuple(
+                sample.target_xy
+                for sample in values
+                if sample.target_xy is not None
+            )
+            target_xy = np.median(
+                np.stack(target_values, axis=0),
+                axis=0,
+            )
+        if all(sample.held_xy is not None for sample in values):
+            held_values = tuple(
+                sample.held_xy for sample in values if sample.held_xy is not None
+            )
+            held_xy = np.median(
+                np.stack(held_values, axis=0),
+                axis=0,
+            )
         return _Sample(
             timestamp_s=max(sample.timestamp_s for sample in values),
-            target_xy=np.median(targets, axis=0),
-            held_xy=np.median(held, axis=0),
+            current_observed_xy=np.median(current_observed, axis=0),
+            body_reference_xy=np.median(body_reference, axis=0),
+            compensation_point_xy=np.median(compensation_points, axis=0),
             yaw_error_rad=_signed_line_angle(yaw),
             axis_branch=values[-1].axis_branch,
+            measurement_mode=values[-1].measurement_mode,
+            reference_source=values[-1].reference_source,
+            target_xy=target_xy,
+            held_xy=held_xy,
         )
 
     @staticmethod
@@ -1004,13 +1261,13 @@ class PalletSlot1Servo:
 
     def _tracking_command(self, filtered: _Sample, now_s: float) -> VelocityCommand:
         error_x, error_y = (float(value) for value in filtered.error_xy)
-        target_x, target_y = (float(value) for value in filtered.target_xy)
+        point_x, point_y = (float(value) for value in filtered.compensation_point_xy)
         wz_base = self.config.yaw_gain_per_s * filtered.yaw_error_rad
-        # J_b(p_t)^-1 e: vx = k e_x + y_t*wz,
-        #                      vy = k e_y - x_t*wz.
+        # J_b(p_current)^-1 e: vx = k e_x + y_current*wz,
+        #                            vy = k e_y - x_current*wz.
         base = VelocityCommand(
-            self.config.position_gain_per_s * error_x + target_y * wz_base,
-            self.config.position_gain_per_s * error_y - target_x * wz_base,
+            self.config.position_gain_per_s * error_x + point_y * wz_base,
+            self.config.position_gain_per_s * error_y - point_x * wz_base,
             wz_base,
         )
         mobility = self.config.mobility_from_base.transform_twist(base)
@@ -1227,6 +1484,14 @@ class PalletSlot1Servo:
             "filtered_yaw_error_rad": None,
             "raw_planar_error_m": None,
             "filtered_planar_error_m": None,
+            "measurement_mode": None,
+            "reference_source": None,
+            "raw_current_observed_feature_center_base_xy_m": None,
+            "raw_demonstrated_body_reference_center_base_xy_m": None,
+            "raw_compensation_point_base_xy_m": None,
+            "filtered_current_observed_feature_center_base_xy_m": None,
+            "filtered_demonstrated_body_reference_center_base_xy_m": None,
+            "filtered_compensation_point_base_xy_m": None,
             "arrival_frames": self._arrival_frames,
             "arrival_duration_s": (
                 0.0
@@ -1254,15 +1519,45 @@ class PalletSlot1Servo:
                 raw_error_xy_m=tuple(float(value) for value in raw.error_xy),
                 raw_yaw_error_rad=float(raw.yaw_error_rad),
                 raw_planar_error_m=float(np.linalg.norm(raw.error_xy)),
-                target_center_base_xy_m=tuple(float(value) for value in raw.target_xy),
-                held_center_base_xy_m=tuple(float(value) for value in raw.held_xy),
+                measurement_mode=raw.measurement_mode,
+                reference_source=raw.reference_source,
+                raw_current_observed_feature_center_base_xy_m=tuple(
+                    float(value) for value in raw.current_observed_xy
+                ),
+                raw_demonstrated_body_reference_center_base_xy_m=tuple(
+                    float(value) for value in raw.body_reference_xy
+                ),
+                raw_compensation_point_base_xy_m=tuple(
+                    float(value) for value in raw.compensation_point_xy
+                ),
             )
+            if raw.target_xy is not None:
+                diagnostics["target_center_base_xy_m"] = tuple(
+                    float(value) for value in raw.target_xy
+                )
+            if raw.held_xy is not None:
+                diagnostics["held_center_base_xy_m"] = tuple(
+                    float(value) for value in raw.held_xy
+                )
         if filtered is not None:
             diagnostics.update(
                 filtered_error_xy_m=tuple(float(value) for value in filtered.error_xy),
                 filtered_yaw_error_rad=float(filtered.yaw_error_rad),
                 filtered_planar_error_m=float(np.linalg.norm(filtered.error_xy)),
+                filtered_current_observed_feature_center_base_xy_m=tuple(
+                    float(value) for value in filtered.current_observed_xy
+                ),
+                filtered_demonstrated_body_reference_center_base_xy_m=tuple(
+                    float(value) for value in filtered.body_reference_xy
+                ),
+                filtered_compensation_point_base_xy_m=tuple(
+                    float(value) for value in filtered.compensation_point_xy
+                ),
             )
+            if diagnostics["measurement_mode"] is None:
+                diagnostics["measurement_mode"] = filtered.measurement_mode
+            if diagnostics["reference_source"] is None:
+                diagnostics["reference_source"] = filtered.reference_source
         return PalletServoOutput(
             command=selected,
             state=self.state,
@@ -1278,9 +1573,11 @@ class PalletSlot1Servo:
 PalletSlot1ServoConfig = PalletServoConfig
 SlotAlignmentMeasurement = PalletServoMeasurement
 SlotAlignmentObservation = PalletServoMeasurement
+FeatureReferenceMeasurement = WorldFeatureToBodyReferenceMeasurement
 
 
 __all__ = [
+    "FeatureReferenceMeasurement",
     "PalletServoConfig",
     "PalletServoMeasurement",
     "PalletServoOutput",
@@ -1293,4 +1590,6 @@ __all__ = [
     "SlotAlignmentGeometryLike",
     "SlotAlignmentLike",
     "WheelMotionMeasurement",
+    "WorldFeatureToBodyReferenceLike",
+    "WorldFeatureToBodyReferenceMeasurement",
 ]

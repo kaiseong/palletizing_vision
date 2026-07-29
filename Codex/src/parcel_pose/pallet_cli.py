@@ -265,6 +265,14 @@ def _run_live(args: argparse.Namespace) -> int:
             "loaded slot-1 alignment requires --ensure-slot1-ready so the configured "
             "held-box posture is verified before the combined command stream starts"
         )
+    if args.ensure_slot1_ready and not args.auto_palletize_slot1:
+        print(
+            "[pallet] mobile base disabled: --ensure-slot1-ready only verifies or "
+            "restores the fixed posture; add --auto-palletize-slot1 and the required "
+            "calibration/grip acknowledgements to enable alignment",
+            file=sys.stderr,
+            flush=True,
+        )
     config = _load_config(args.config)
     from .pallet_runtime import run_pallet_live
 
