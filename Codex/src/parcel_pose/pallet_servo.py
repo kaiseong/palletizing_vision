@@ -310,6 +310,65 @@ class PalletServoConfig:
         servo = servo_value if isinstance(servo_value, Mapping) else {}
         wheel_value = pallet.get("wheel_stop", servo.get("wheel_stop", {}))
         wheel = wheel_value if isinstance(wheel_value, Mapping) else {}
+        if bool(servo.get("strict_unknown_keys", False)):
+            allowed_servo_keys = {
+                "strict_unknown_keys",
+                "position_gain_per_s",
+                "xy_gain_per_s",
+                "yaw_gain_per_s",
+                "max_linear_speed_mps",
+                "max_angular_speed_radps",
+                "max_linear_acceleration_mps2",
+                "max_angular_acceleration_radps2",
+                "filter_window",
+                "jump_threshold_m",
+                "yaw_jump_threshold_rad",
+                "jump_reseed_frames",
+                "stale_after_s",
+                "observation_stale_after_s",
+                "timeout_s",
+                "safety_timeout_s",
+                "max_correction_m",
+                "start_yaw_limit_rad",
+                "arrival_inner_m",
+                "arrival_outer_m",
+                "arrival_yaw_inner_rad",
+                "arrival_yaw_outer_rad",
+                "arrival_min_frames",
+                "arrival_min_duration_s",
+                "expected_axis_branch",
+                "maximum_measurement_jump_m",
+                "maximum_initial_correction_m",
+                "arrival_inner_xy_m",
+                "arrival_outer_xy_m",
+                "maximum_linear_speed_mps",
+                "maximum_angular_speed_radps",
+                "kp_xy_per_s",
+                "kp_yaw_per_s",
+                "maximum_initial_yaw_deg",
+                "arrival_inner_yaw_deg",
+                "arrival_outer_yaw_deg",
+                "wheel_stop",
+                "linear_speed_mps",
+                "angular_speed_radps",
+                "wheel_linear_stop_mps",
+                "wheel_angular_stop_radps",
+                "duration_s",
+                "wheel_stop_duration_s",
+                "feedback_stale_after_s",
+                "wheel_feedback_stale_after_s",
+                "wheel_stop_linear_mps",
+                "wheel_stop_angular_radps",
+                "wheel_stop_dwell_s",
+                "control_rate_hz",
+                "absolute_linear_speed_limit_mps",
+                "absolute_angular_speed_limit_radps",
+            }
+            unknown = sorted(set(servo) - allowed_servo_keys)
+            if unknown:
+                raise ValueError(
+                    "unknown servo configuration key(s): " + ", ".join(unknown)
+                )
 
         aliases: dict[str, tuple[str, ...]] = {
             "position_gain_per_s": ("position_gain_per_s", "xy_gain_per_s"),
@@ -822,6 +881,9 @@ class PalletSlot1Servo:
         in :mod:`pallet_models` inherit its enclosing stack-frame timestamp.
         """
 
+        rollback_output = self._fault_on_time_rollback(now_s)
+        if rollback_output is not None:
+            return rollback_output
         now = self._check_time(now_s)
         if self.state is PalletServoState.IDLE:
             self._force_zero(now)
@@ -953,6 +1015,9 @@ class PalletSlot1Servo:
         decision and never changes the commanded twist.
         """
 
+        rollback_output = self._fault_on_time_rollback(now_s)
+        if rollback_output is not None:
+            return rollback_output
         now = self._check_time(now_s)
         if self.state is not PalletServoState.ARRIVAL_WHEEL_STOP:
             return self._output(
@@ -1458,10 +1523,27 @@ class PalletSlot1Servo:
         self._last_command = ZERO_VELOCITY
         self._last_update_s = now_s
 
+    def _fault_on_time_rollback(self, now_s: float) -> PalletServoOutput | None:
+        now = _finite(now_s, "now_s")
+        if self._last_update_s is None or now >= self._last_update_s - 1e-12:
+            return None
+        self.state = PalletServoState.FAULT_HOLD
+        self._hold_reason = "clock_rollback_detected"
+        self._last_command = ZERO_VELOCITY
+        self._clear_arrival()
+        self._clear_wheel_stop()
+        return self._output(False, self._hold_reason, now)
+
     def _check_time(self, now_s: float) -> float:
         now = _finite(now_s, "now_s")
         if self._last_update_s is not None and now < self._last_update_s - 1e-12:
-            raise ValueError("now_s must be monotonically non-decreasing")
+            previous = float(self._last_update_s)
+            self.state = PalletServoState.FAULT_HOLD
+            self._hold_reason = "clock_rollback_detected"
+            self._last_command = ZERO_VELOCITY
+            self._clear_arrival()
+            self._clear_wheel_stop()
+            return previous
         return now
 
     def _output(

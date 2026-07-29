@@ -30,6 +30,11 @@ ABSOLUTE_ACQUISITION_BUDGET_CAP_M = 0.200
 MAX_ACQUISITION_STEP_M = 0.010
 MAX_ACQUISITION_SPEED_MPS = 0.030
 MIN_STATIONARY_L_CORNER_FRAMES = 5
+ACQUISITION_MODE_STOP_STEP = "stop_step"
+ACQUISITION_MODE_CONTINUOUS_FORWARD = "continuous_forward"
+ACQUISITION_MODES = frozenset(
+    (ACQUISITION_MODE_STOP_STEP, ACQUISITION_MODE_CONTINUOUS_FORWARD)
+)
 
 
 def _finite(value: object, name: str) -> float:
@@ -85,6 +90,19 @@ def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _acquisition_mode(value: object, name: str = "mode") -> str:
+    mode = str(value).strip().lower().replace("-", "_")
+    if mode in {"stop", "step", "stop_and_observe", "stop_observe"}:
+        mode = ACQUISITION_MODE_STOP_STEP
+    elif mode in {"continuous", "continuous_cruise", "continuous_acquire"}:
+        mode = ACQUISITION_MODE_CONTINUOUS_FORWARD
+    if mode not in ACQUISITION_MODES:
+        raise ValueError(
+            f"{name} must be one of {sorted(ACQUISITION_MODES)}, got {value!r}"
+        )
+    return mode
+
+
 def _first(
     mappings: tuple[Mapping[str, object], ...],
     names: tuple[str, ...],
@@ -106,6 +124,7 @@ class AcquisitionConfig:
     budget above 0.15 m even though the documented design ceiling is 0.20 m.
     """
 
+    mode: str = ACQUISITION_MODE_STOP_STEP
     budget_m: float = 0.0
     step_m: float = MAX_ACQUISITION_STEP_M
     speed_mps: float = MAX_ACQUISITION_SPEED_MPS
@@ -129,6 +148,7 @@ class AcquisitionConfig:
     brake_timeout_s: float = 1.50
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "mode", _acquisition_mode(self.mode))
         object.__setattr__(self, "budget_m", _nonnegative(self.budget_m, "budget_m"))
         if self.budget_m > RELEASE_ACQUISITION_BUDGET_CAP_M + 1e-12:
             raise ValueError(
@@ -260,6 +280,11 @@ class AcquisitionConfig:
                 ("budget_m", "forward_budget_m", "live_forward_budget_m"),
                 defaults.budget_m,
             ),
+            "mode": _first(
+                (section,),
+                ("mode", "acquisition_mode", "forward_mode"),
+                defaults.mode,
+            ),
             "step_m": _first(
                 (section,),
                 ("step_m", "forward_step_m"),
@@ -387,6 +412,8 @@ class AcquisitionDecision:
     l_corner_window_started_at_s: float | None = None
     l_corner_timestamp_s: float | None = None
     l_corner_topology_branch: str | None = None
+    hole_visible: bool = False
+    hole_visible_timestamp_s: float | None = None
     hole_dwell_complete: bool = False
     hole_window_started_at_s: float | None = None
     hole_timestamp_s: float | None = None
@@ -410,6 +437,7 @@ class AcquisitionDecision:
         for name in (
             "l_corner_window_started_at_s",
             "l_corner_timestamp_s",
+            "hole_visible_timestamp_s",
             "hole_window_started_at_s",
             "hole_timestamp_s",
             "wheel_timestamp_s",
@@ -442,6 +470,8 @@ class AcquisitionDecision:
         object.__setattr__(self, "l_corner_topology_branch", branch or None)
         if self.l_corner_visible and not branch:
             raise ValueError("visible L-corner requires l_corner_topology_branch")
+        if self.hole_visible and self.hole_visible_timestamp_s is None:
+            raise ValueError("visible complete hole requires hole_visible_timestamp_s")
         if self.hole_dwell_complete and (
             self.hole_window_started_at_s is None or self.hole_timestamp_s is None
         ):
@@ -992,6 +1022,7 @@ class ForwardAcquireServo:
             return self._output(decision, reason, fine_handoff_requested=ready)
 
         hole_ready = self._fresh_hole(decision)
+        raw_hole_ready = self._fresh_raw_hole(decision)
         if hole_ready:
             if self._state is AcquisitionState.STEP:
                 self._begin_brake(
@@ -1005,6 +1036,17 @@ class ForwardAcquireServo:
                 AcquisitionState.WAIT_STOP,
             }:
                 return self._request_handoff_or_wait(decision)
+        if (
+            self.config.mode == ACQUISITION_MODE_CONTINUOUS_FORWARD
+            and raw_hole_ready
+            and self._state is AcquisitionState.STEP
+        ):
+            self._begin_brake(
+                now_s,
+                _AfterStop.SETTLE,
+                "raw_hole_seen_braking_for_stationary_dwell",
+            )
+            return self._output(decision, self._reason)
 
         if self._state is AcquisitionState.BRAKE:
             self._state = AcquisitionState.WAIT_STOP
@@ -1069,21 +1111,18 @@ class ForwardAcquireServo:
             self._latch_fault(drift_reason)
             return self._output(decision, self._fault_reason or drift_reason)
 
-        remaining = self.remaining_budget_m
-        required_budget_m = self.config.step_m + self.config.braking_allowance_m
-        # A shortened tail step is below the useful resolution of this 10 Hz
-        # stop-and-observe loop, while its physical stopping distance is not.
-        if remaining + 1e-12 < required_budget_m:
+        target = self._next_target_m()
+        if target is None:
             self._latch_fault("insufficient_stopping_allowance_in_budget")
             return self._output(decision, self._fault_reason or "budget_exhausted")
-        target = self.config.step_m
 
-        # Charge the full target at start.  A perception hold or interrupted
-        # step cannot refund it and therefore cannot exceed the session budget.
-        self._cumulative_distance_m = min(
-            self.config.budget_m,
-            self._cumulative_distance_m + target,
-        )
+        if self.config.mode == ACQUISITION_MODE_STOP_STEP:
+            # Charge the full target at start.  A perception hold or interrupted
+            # step cannot refund it and therefore cannot exceed the session budget.
+            self._cumulative_distance_m = min(
+                self.config.budget_m,
+                self._cumulative_distance_m + target,
+            )
         self._step_start_odometry = odometry
         self._step_started_at_s = decision.now_s
         self._step_target_m = target
@@ -1095,7 +1134,11 @@ class ForwardAcquireServo:
         if self._acquisition_started_at_s is None:
             self._acquisition_started_at_s = decision.now_s
         self._state = AcquisitionState.STEP
-        self._reason = "fresh_stationary_l_corner_authorized_step"
+        self._reason = (
+            "fresh_stationary_l_corner_authorized_continuous_forward"
+            if self.config.mode == ACQUISITION_MODE_CONTINUOUS_FORWARD
+            else "fresh_stationary_l_corner_authorized_step"
+        )
         return self._output(decision, self._reason, vx_mps=self.config.speed_mps)
 
     def _update_step(self, decision: AcquisitionDecision) -> AcquisitionOutput:
@@ -1165,20 +1208,36 @@ class ForwardAcquireServo:
             )
             return self._output(decision, self._reason)
         if self._step_actual_m >= self._step_target_m - self.config.target_tolerance_m:
-            self._begin_brake(now_s, _AfterStop.SETTLE, "step_target_reached")
+            after_stop = (
+                _AfterStop.FAULT_HOLD
+                if self.config.mode == ACQUISITION_MODE_CONTINUOUS_FORWARD
+                else _AfterStop.SETTLE
+            )
+            reason = (
+                "continuous_forward_budget_exhausted_before_hole"
+                if self.config.mode == ACQUISITION_MODE_CONTINUOUS_FORWARD
+                else "step_target_reached"
+            )
+            self._begin_brake(now_s, after_stop, reason)
             return self._output(decision, self._reason)
 
         assert self._step_started_at_s is not None
-        if now_s - self._step_started_at_s > self.config.step_timeout_s:
+        if (
+            self.config.mode == ACQUISITION_MODE_STOP_STEP
+            and now_s - self._step_started_at_s > self.config.step_timeout_s
+        ):
             self._begin_brake(now_s, _AfterStop.FAULT_HOLD, "step_timeout")
             return self._output(decision, self._reason)
         assert self._last_progress_at_s is not None
         if now_s - self._last_progress_at_s > self.config.no_progress_timeout_s:
             self._begin_brake(now_s, _AfterStop.FAULT_HOLD, "step_no_progress")
             return self._output(decision, self._reason)
-        return self._output(
-            decision, "forward_step_active", vx_mps=self.config.speed_mps
+        active_reason = (
+            "continuous_forward_cruise_active"
+            if self.config.mode == ACQUISITION_MODE_CONTINUOUS_FORWARD
+            else "forward_step_active"
         )
+        return self._output(decision, active_reason, vx_mps=self.config.speed_mps)
 
     def _update_wait_stop(self, decision: AcquisitionDecision) -> AcquisitionOutput:
         if self._brake_started_at_s is None:
@@ -1329,6 +1388,19 @@ class ForwardAcquireServo:
         self._fault_reason = str(reason)
         self._reason = self._fault_reason
 
+    def _next_target_m(self) -> float | None:
+        if self.config.mode == ACQUISITION_MODE_CONTINUOUS_FORWARD:
+            target = self.remaining_budget_m - self.config.braking_allowance_m
+            return target if target > self.config.target_tolerance_m else None
+
+        remaining = self.remaining_budget_m
+        required_budget_m = self.config.step_m + self.config.braking_allowance_m
+        # A shortened tail step is below the useful resolution of this 10 Hz
+        # stop-and-observe loop, while its physical stopping distance is not.
+        if remaining + 1e-12 < required_budget_m:
+            return None
+        return self.config.step_m
+
     def _fresh_hole(self, decision: AcquisitionDecision) -> bool:
         return bool(
             decision.hole_dwell_complete
@@ -1344,6 +1416,16 @@ class ForwardAcquireServo:
                     and decision.hole_window_started_at_s
                     >= self._post_stop_not_before_s - 1e-12
                 )
+            )
+        )
+
+    def _fresh_raw_hole(self, decision: AcquisitionDecision) -> bool:
+        return bool(
+            decision.hole_visible
+            and self._timestamp_fresh(
+                decision.hole_visible_timestamp_s,
+                decision.now_s,
+                self.config.camera_freshness_s,
             )
         )
 
@@ -1574,6 +1656,8 @@ class ForwardAcquireServo:
 
 __all__ = [
     "ABSOLUTE_ACQUISITION_BUDGET_CAP_M",
+    "ACQUISITION_MODE_CONTINUOUS_FORWARD",
+    "ACQUISITION_MODE_STOP_STEP",
     "AcquisitionConfig",
     "AcquisitionDecision",
     "AcquisitionOutput",

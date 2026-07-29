@@ -130,7 +130,7 @@ Codex/
 ├── src/parcel_pose/    # estimator, live loop, mobile servo, packaged grasp
 ├── configs/            # D435 model and fixed RB-Y1 calibration artifacts
 ├── live_view.py        # short live/auto-grab entrypoint
-├── pallet.py           # pallet-stack replay and slot-1 hover facade
+├── pallet.py           # pallet replay and supervised slot-1 align/place facade
 └── pyproject.toml      # Python 3.12 package/install metadata
 ```
 
@@ -175,7 +175,7 @@ torso/head joints and SDK-FK result are stored in
 independent ground truth exists, post-hoc base coordinates from this transform
 remain `nominal_unverified`; they are never relabelled as absolute/validated.
 
-## Pallet slot-1 active opening acquisition and hover MVP
+## Pallet slot-1 continuous acquisition and vision-gated place
 
 `pallet.py` estimates the two-layer stack frame from the metric top plane and
 the measured `148 x 149 mm` centre opening. It does not use an image bounding
@@ -190,11 +190,12 @@ p_slot1 = p_opening + 0.12800 * u_right + 0.20175 * v_far
 
 `u_right` is branch-locked to the stack axis projecting toward image right;
 the slot carton long axis is parallel to it. The ready posture is configured in
-`configs/rby1m_v1_2_pallet_slot1_nominal.json`. The standalone pallet hold uses
-torso/head Position and arm Joint Impedance with stiffness `[150] * 7`; torque
-limits remain at the SDK defaults. The bounded
-`--ensure-slot1-ready` posture-restoration command described below is separate
-and uses Joint Position for torso, both arms, and head.
+`configs/rby1m_v1_2_pallet_slot1_nominal.json`. The standalone pallet stream
+keeps torso/head Position and switches the loaded arms into Cartesian
+impedance hold with `[150] * 7` joint stiffness, nullspace joint targets, and
+SDK-default torque limits. The bounded `--ensure-slot1-ready`
+posture-restoration command described below is separate and uses Joint Position
+for torso, both arms, and head.
 
 The raw EEF midpoint is retained for carried-box exclusion and conservative
 clearance checks, but it is not the fine-alignment target. The fine controller
@@ -208,24 +209,28 @@ The current standalone commissioning path starts after the user has already
 gripped the carton and brought RB-Y1 to the configured slot-1 ready posture.
 The helper may restore that posture first with `--ensure-slot1-ready`; it skips
 the command when the measured torso, both arms, and head are already ready and
-within `1 deg`. Loaded slot-1 alignment then requires all explicit flags:
+within `1 deg`. Loaded slot-1 alignment and placement then require all explicit
+flags:
 
 ```text
 --ensure-slot1-ready
 --auto-palletize-slot1
+--auto-place-slot1
 --allow-nominal-registration
 --allow-geometry-only-grip-check
+--allow-vision-geometry-release
 ```
 
 With those flags, one process becomes the only owner. It connects after the
 ready check, prepares power/servos/control manager for streaming even when the
 ready posture already matches, bootstraps the already-held configured posture,
 sends the first combined packet with exact zero mobility, then keeps streaming a
-single RB-Y1 component command containing torso/head Position, both arms Joint
-Impedance, and SE(2) mobility. This MVP is a supervised commissioning aid for
-base alignment only. Nonzero base packets still require all motion gates and a
-reviewed positive acquisition budget; the path never descends, contacts,
-releases, commands the gripper, slides the carton, or powers anything off.
+single RB-Y1 component command containing torso/head Position, bilateral arm
+commands, and SE(2) mobility. Nonzero base packets still require all motion
+gates and a reviewed positive acquisition budget. With `--auto-place-slot1`,
+the same stream remains open after `ARRIVED_HOLD` and runs the gated 50 mm
+Cartesian lowering plus vision-gated hand spread. The path does not command a
+slide, a separate gripper command, or power-off.
 
 The runtime still uses the deliberately weaker metric observation first when
 the complete opening is not visible:
@@ -233,22 +238,26 @@ the complete opening is not visible:
 ```text
 loaded ready/body hold with exact zero mobility
   -> five stationary acquisition-grade edge-pair observations
-  -> at most one 10 mm forward-only step
-  -> zero + measured wheel stop + new stationary observations
+  -> continuous 0.030 m/s forward-only cruise within the 0.150 m budget
+  -> raw complete-hole brake
+  -> zero + measured wheel stop + stationary complete-hole dwell
   -> five complete-hole observations spanning at least 0.35 s
   -> one-way handoff to the demonstrated hole-centre x/y/yaw fine servo
   -> ARRIVED_HOLD
+  -> exact-zero mobile lock
+  -> 50 mm base-z Cartesian lowering
+  -> vision-gated 80 mm-per-arm spread release
 ```
 
 The coarse observation consists of the completed stack's near/front boundary
 and one image-right boundary in metric 3D/BEV. When the held carton separates
 their visible segments, the estimator explicitly leaves the strict L corner
 invalid and its translation underconstrained. A separately qualified edge pair
-can authorize only another bounded forward observation step; it cannot command
-lateral motion, yaw, reverse, descent, or fine placement. For the fixed-ready
+can authorize only bounded forward acquisition; it cannot command lateral
+motion, yaw, reverse, descent, or fine placement. For the fixed-ready
 clearance proxy, the stack top may come from either complete-hole geometry or
-the metric partial-stack plane. A forward step remains a separate decision and
-independently requires the stationary five-frame edge gate.
+the metric partial-stack plane. Forward acquisition remains a separate decision
+and independently requires the stationary five-frame edge gate.
 
 RealSense hardware frame counters need only increase; they do not need to be
 numerically adjacent. Grip/clearance dwell continuity is based on consecutive
@@ -258,17 +267,13 @@ from permanently forcing `motion_interlock_selected_zero`.
 
 The shipped standalone commissioning config uses the release-capped `0.15 m`
 forward acquisition budget. The absolute design ceiling remains an unreachable
-`0.20 m`; every stop-and-observe step is limited to `0.010 m`, and forward
-speed is limited to `0.030 m/s`. Fresh `T_odom_base` measures a previously
-authorized step—including zero-command coasting through verified wheel stop—and
-monitors lateral/yaw drift. Each target reserves the configured 6 mm physical
-stopping allowance inside the session budget. That allowance covers the
-4.95 mm worst measured post-brake travel from the first loaded RB-Y1 retry,
-while a larger per-step excursion still latches a fault. Odometry never
-authorizes the next step without a new five-frame visual gate, and the
-controller does not emit a shortened tail step when the remaining budget
-cannot cover one full 10 mm step plus its stopping allowance. Reverse odometry
-keeps its separate, tighter 3 mm tolerance.
+`0.20 m`. In `continuous_forward` mode, one five-frame stationary edge gate
+authorizes one forward cruise at `0.030 m/s`; the target is the remaining
+budget minus the configured 6 mm physical stopping allowance. Fresh
+`T_odom_base` measures the authorized cruise and zero-command coasting through
+verified wheel stop while monitoring lateral/yaw drift. A fresh raw complete
+hole during cruise commands braking before stationary hole dwell. Reverse
+odometry keeps its separate, tighter 3 mm tolerance.
 
 Replay the supplied recordings without a camera or robot SDK:
 
@@ -357,16 +362,18 @@ with `--max-frames`: loaded execution rejects bounded normal exits because the
 non-daemon carried-load owner must end only through a successor handoff or
 explicit forced cancellation.
 
-To start the standalone loaded-box alignment path from SSH, use `--headless`
-with the complete explicit flag set:
+To run the current slot-1 alignment plus 50 mm lower and vision-gated release
+path from SSH, use `--headless` with the complete explicit flag set:
 
 ```bash
 python pallet.py live \
   --headless \
   --ensure-slot1-ready \
   --auto-palletize-slot1 \
+  --auto-place-slot1 \
   --allow-nominal-registration \
   --allow-geometry-only-grip-check \
+  --allow-vision-geometry-release \
   --output-mp4 ../out/pallet_live.mp4 \
   --log-jsonl ../out/pallet_live.jsonl
 ```
@@ -383,12 +390,13 @@ present and the reviewed config sets
 `grip_interlock.fixed_ready_geometry_only_commissioning_enabled=true`; configs
 without that explicit policy still fail closed.
 
-The fixed-ready clearance proxy is intentionally conservative and limited. The
-runtime computes box bottom as the fresh dual-EEF nominal held-box centre minus
-half the configured maximum box height, then subtracts uncertainty and compares
-it with the stack top plane. Direct close-range RGB-D evidence for the carried
-box top is not trusted in this commissioning path because the held box is near
-the camera and can be cropped, occluded by the robot, or depth-noisy.
+`--allow-vision-geometry-release` authorizes release only when fresh held-top
+and stack-plane geometry predicts that a 50 mm base-z lowering will seat the
+box. The shipped placement config sets all F/T thresholds to `null`, so F/T is
+logged as zero-fallback telemetry when unavailable and is not a placement gate.
+Use `--allow-geometry-only-lowering` only for supervised lower-and-hold tests:
+geometry-only lowering may reach `LOWERED_HOLD`, but it never authorizes hand
+spreading or release.
 
 The clearance dwell deliberately uses three separate time checks. Every depth
 sample must have been accepted within `0.20 s` of capture, the newest accepted
@@ -406,10 +414,10 @@ new standalone commissioning path avoids that gap by requiring the prior owner
 to be stopped and by making the pallet process the only live owner.
 
 A CLI boolean cannot replace exact target/stiffness/torque provenance, measured
-arm tracking, EEF separation, held-top stability, bilateral F/T plausibility,
-fresh odometry, wheel stop, or the 50 mm vertical-clearance lower bound. Exactly
-one controller owns mobility per cycle; after the complete-hole zero-speed
-handoff, the partial-L controller is permanently revoked for that session.
+arm tracking, EEF separation, held-top/stack-plane geometry, fresh odometry, or
+wheel stop. Exactly one controller owns mobility per cycle; after the
+complete-hole zero-speed handoff, the partial-L controller is permanently
+revoked for that session.
 
 Live frames are accepted only when RGB and Depth timestamps share the
 RealSense `GLOBAL_TIME` or `SYSTEM_TIME` clock domain. Both the sensor timestamp
@@ -419,28 +427,52 @@ capture.
 
 The pure controller's intended terminal state is `ARRIVED_HOLD`: torso/head and
 both arms remain supported by one combined body+mobility stream while mobility
-stays zero. The MVP has no descent, contact, release, gripper, slide, or
-power-off transition. The current camera registration still includes the
-empirical base-y `+0.050 m` correction and no external ground truth, so replay
-and live telemetry prove repeatability and observability, not absolute
-placement accuracy.
+stays zero. With `--auto-place-slot1`, the same stream then freezes mobile
+velocity at exact zero, lowers both Cartesian EEF targets by `50 mm` in RB-Y1
+base z, and spreads both hands by `80 mm` per arm from the planned lowered
+geometry. It does not command slide, power-off, or a separate gripper command.
+The current camera registration still includes the empirical base-y `+0.050 m`
+correction and no external ground truth, so replay and live telemetry prove
+repeatability and observability, not absolute placement accuracy.
 
-The direct held-top replay evidence remains discrepant and untrusted for this
-close-range loaded-box commissioning path. It reported about `0.032 m`, while
-the fixed-ready dual-EEF box-bottom audit is about `0.179 m` against the same
-`0.050 m` configured clearance floor. The software therefore uses only the
-explicit fixed-ready geometry path when the reviewed policy enables it; physical
-commissioning is still pending and must not treat direct held-top depth as
-resolved F/T or placement evidence.
+The direct held-top replay evidence remains discrepant at this close range: it
+reported about `0.032 m`, while the fixed-ready dual-EEF box-bottom audit is
+about `0.179 m` against the same `0.050 m` clearance floor. The runtime uses the
+fixed-ready FK proxy for the rolling carried-load clearance interlock. It uses
+direct held-top depth only for the narrower pre-lowering gap plan, and only
+after three fresh stable samples and the uncertainty/residual bounds in the
+table below pass. Failure of that narrow vision gate blocks release; it is not
+treated as contact proof or absolute placement validation.
+
+### Slot-1 stage and tolerance summary
+
+The loaded slot-1 path keeps one RB-Y1 component command stream alive at
+`20 Hz` with a `1.0 s` command hold and `0.05 s` per-packet minimum time.
+Every packet contains torso/head Position, bilateral arm commands, and mobile
+SE(2) velocity. The arms start from loaded Cartesian hold for placement and use
+Cartesian impedance with nullspace joint targets during lower/release; SDK
+torque limits remain default.
+
+| Stage | Motion allowed | Main gates and tolerances |
+| --- | --- | --- |
+| Ready restore | Joint Position one-shot | All torso, arm, and head joints ready and within `1 deg`, or one `5 s` all-joint Position command followed by SDK `Ok` and the same posture check. |
+| Coarse acquire | `+x` only | Five stationary L/edge-pair frames, `0.030 m/s` cruise, `0.150 m` session budget, `0.006 m` braking allowance, `0.015 m` lateral drift limit, `3 deg` yaw drift limit. |
+| Raw hole brake | zero | A fresh raw complete-hole observation during continuous cruise commands braking before stationary dwell; a dwell-complete hole also requests zero handoff. |
+| Fine align | `x/y/yaw` | Complete-hole measurement to demonstrated reference `[0.865000, 0.139523] m`, `-90 deg`; arrival requires five frames and `0.35 s` inside `0.015 m` / `5 deg`, with inner threshold `0.010 m` / `3 deg`. |
+| Placement entry | zero only | `ARRIVED_HOLD`, exact-zero command acknowledgement, fresh stopped-wheel dwell `0.35 s`, loaded Cartesian-hold mode, stream Running feedback, and fresh measured FK. |
+| Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=5.0 s`, predicted post-lower residual within `[-0.020, +0.010] m`, uncertainty `<=0.015 m`. |
+| Lower | arm Cartesian only | `50 mm` base-z lower, timeout `4.0 s`, measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
+| Release | arm Cartesian only | Vision seating evidence held for `0.35 s`, spread `0.080 m` per arm, timeout `4.5 s`, each EEF within `0.012 m` / `4 deg` of target, measured inter-EEF separation increase at least `0.136 m`, then `0.35 s` release-target dwell. |
 
 ### Current commissioning boundary
 
 Replay, visualization, the pure acquisition controller, fake stream pump, and
 perception-only live mode are software-verifiable. The one-shot
 `--ensure-slot1-ready` posture restoration is available. The standalone
-held-box alignment path is present for supervised slot-1-ready commissioning
-when the full explicit flag set is used. It remains user-side physical
-commissioning, not an F/T-proven placement capability.
+held-box alignment and vision-gated lower/release path is present for
+supervised slot-1-ready commissioning when the full explicit flag set is used.
+It remains user-side physical commissioning, not an externally validated
+placement capability.
 
 Before this path is treated as commissioned physical base motion, all of the
 following must be true in one process:
@@ -448,14 +480,30 @@ following must be true in one process:
 - the operator has verified the box is already held at the configured
   slot-1-ready posture before the pallet process starts;
 - the fixed-ready clearance audit and any site changes are reviewed against the
-  50 mm lower bound, without relying on discrepant close-range held-top depth;
-- site-specific finite F/T plausibility and contact-loss limits are configured
-  from supervised zero-mobility measurements;
+  50 mm lower bound, while the separate close-range held-top gap plan passes
+  its freshness, stability, uncertainty, and residual gates before release;
 - the destination combined stream proves all-component Running feedback at
-  exact zero, then revalidates grip, held-top, wheel-stop, odometry, and
-  perception dwell before any nonzero mobility command;
+  exact zero, then revalidates grip, held-top/stack-plane geometry, wheel-stop,
+  odometry, and perception dwell before any nonzero mobility or placement
+  command;
 - a reviewed config gives acquisition a positive budget no greater than
   0.15 m.
+
+Latest hardware-free replay evidence from:
+
+```bash
+python pallet.py evaluate \
+  --session recordings/codex_640x480/pallet_data \
+  --session recordings/codex_640x480/pallet_1_arrived
+```
+
+processed `525 + 39` recorded frames in about `26 s` on the development host.
+That wall time is for full recorded-session replay, not one frame. Estimator
+latency in that run was `p50=42.1 ms`, `p95=49.2 ms` for `pallet_data`
+(`302/525` valid frames), and `p50=45.4 ms`, `p95=46.8 ms` for
+`pallet_1_arrived` (`39/39` valid frames). Both replay acceptance reports
+passed and both report `absolute_placement_accuracy =
+not_measured_no_external_ground_truth`.
 
 Integrated box-pick-to-pallet takeover still requires one reviewed persistent
 combined stream with an internal owner epoch, or an equivalent atomic/two-phase
@@ -785,5 +833,7 @@ a visual-servo update rate.
 The real labeled targets are p95 center error `<=20 mm` and yaw error modulo 180 `<=4 degrees`, but these remain unverified until an independent base-referenced calibration/ground-truth source exists. Unlabeled recordings can establish repeatability, residuals, coverage, and correct abstention only.
 
 See [ADR 0001](docs/adr/0001-metric-top-plane-estimator.md) for the estimator
-decision and [ADR 0002](docs/adr/0002-opt-in-mobile-auto-grab.md) for the
-robot-control boundary and handoff contract.
+decision, [ADR 0002](docs/adr/0002-opt-in-mobile-auto-grab.md) for the
+box-pick robot-control boundary, and
+[ADR 0007](docs/adr/0007-continuous-slot1-place.md) for the current slot-1
+continuous acquisition and vision-gated placement contract.

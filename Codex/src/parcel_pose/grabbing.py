@@ -40,6 +40,8 @@
 # the use or misuse of this demo code. Please use with caution and at your own discretion.
 
 import argparse
+import math
+import threading
 
 import numpy as np
 import rby1_sdk as rby
@@ -73,6 +75,12 @@ CAMERA_CALIBRATION_COMMAND_TIMEOUT_MS = 15_000
 
 # Rate (Hz) at which the FT-sensor monitoring callback is invoked.
 FT_MONITOR_RATE = 10.0
+
+# F/T abort thresholds are disabled by default to preserve the existing demo
+# behavior.  Configure them explicitly after measuring the carried-load and
+# contact-force envelope on the target robot.
+FT_ABORT_FORCE_N = None
+FT_ABORT_TORQUE_NM = None
 
 # ---- Cartesian impedance "grab along y" parameters ----
 # Link indices into the dynamics state (order MUST match DYN_LINK_NAMES below).
@@ -122,6 +130,14 @@ LIFT_JOINT_DAMPING_RATIO = 1.0                  # critically damped -> smooth, n
 LIFT_JOINT_TORQUE_LIMIT = [100.0] * 7            # Nm (must exceed the holding torque)
 # control_hold_time [s]: keep the box raised/held after the lift finishes.
 LIFT_HOLD_TIME = 100.0
+
+# One-shot command timeouts.  These are intentionally bounded even for the
+# long lift hold so SDK/gRPC failures cannot leave the caller blocked forever.
+START_COMMAND_TIMEOUT_MS = 10_000
+GRAB_COMMAND_TIMEOUT_MS = 10_000
+LIFT_COMMAND_TIMEOUT_MS = int(
+    math.ceil((LIFT_MINIMUM_TIME + LIFT_HOLD_TIME + 5.0) * 1_000.0)
+)
 
 
 # ========================================================================================
@@ -249,7 +265,7 @@ def _cancel_active_command(handler) -> None:
         print(f"[grabbing] command cancellation wait failed: {exc}")
 
 
-def send_once(robot, builder, *, timeout_ms=None):
+def send_once(robot, builder, *, timeout_ms=None, ft_monitor=None):
     """Send a single (one-shot) command and block until it finishes.
 
     This is the "send once" pattern: hand one command to the robot, wait for the
@@ -260,12 +276,21 @@ def send_once(robot, builder, *, timeout_ms=None):
             raise ValueError("timeout_ms must be positive")
 
     handler = robot.send_command(builder)
+    if ft_monitor is not None:
+        ft_monitor.set_active_handler(handler)
     try:
+        if ft_monitor is not None and ft_monitor.abort_requested:
+            _cancel_active_command(handler)
+            return False
         if timeout_ms is not None:
             if handler.wait_for(timeout_ms) is False:
                 _cancel_active_command(handler)
                 return False
+            if ft_monitor is not None and ft_monitor.abort_requested:
+                return False
         feedback = handler.get()
+        if ft_monitor is not None and ft_monitor.abort_requested:
+            return False
     except KeyboardInterrupt:
         _cancel_active_command(handler)
         raise
@@ -275,6 +300,9 @@ def send_once(robot, builder, *, timeout_ms=None):
         # the original error so long-hold arm commands fail closed.
         _cancel_active_command(handler)
         raise
+    finally:
+        if ft_monitor is not None:
+            ft_monitor.clear_active_handler(handler)
     return feedback.finish_code == rby.RobotCommandFeedback.FinishCode.Ok
 
 
@@ -472,10 +500,59 @@ class FTMonitor:
     background thread at FT_MONITOR_RATE Hz. It prints the latest right/left
     FT readings and keeps track of the peak force magnitude seen on each arm."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        abort_force_n=None,
+        abort_torque_nm=None,
+    ):
+        if abort_force_n is not None and abort_force_n <= 0.0:
+            raise ValueError("abort_force_n must be positive when configured")
+        if abort_torque_nm is not None and abort_torque_nm <= 0.0:
+            raise ValueError("abort_torque_nm must be positive when configured")
+
         self.samples = 0
         self.peak_force_right = 0.0
         self.peak_force_left = 0.0
+        self.peak_torque_right = 0.0
+        self.peak_torque_left = 0.0
+        self.abort_force_n = abort_force_n
+        self.abort_torque_nm = abort_torque_nm
+        self.abort_reason = None
+        self._active_handler = None
+        self._abort_requested = False
+        self._lock = threading.Lock()
+
+    @property
+    def abort_requested(self):
+        with self._lock:
+            return self._abort_requested
+
+    def set_active_handler(self, handler):
+        with self._lock:
+            self._active_handler = handler
+
+    def clear_active_handler(self, handler):
+        with self._lock:
+            if self._active_handler is handler:
+                self._active_handler = None
+
+    def _request_abort_once(self, reason):
+        handler = None
+        with self._lock:
+            if self._abort_requested:
+                return
+            self._abort_requested = True
+            self.abort_reason = reason
+            handler = self._active_handler
+
+        print(f"[FT] ABORT: {reason}")
+        if handler is None:
+            return
+        try:
+            handler.cancel()
+        except Exception as exc:
+            print(f"[FT] abort cancellation failed: {exc}")
 
     def callback(self, robot_state):
         ft_right = robot_state.ft_sensor_right
@@ -484,15 +561,39 @@ class FTMonitor:
         # Force magnitude (Euclidean norm of the 3-axis force vector) in Newtons.
         force_right = float(np.linalg.norm(ft_right.force))
         force_left = float(np.linalg.norm(ft_left.force))
+        torque_right = float(np.linalg.norm(getattr(ft_right, "torque", np.zeros(3))))
+        torque_left = float(np.linalg.norm(getattr(ft_left, "torque", np.zeros(3))))
 
         self.samples += 1
         self.peak_force_right = max(self.peak_force_right, force_right)
         self.peak_force_left = max(self.peak_force_left, force_left)
+        self.peak_torque_right = max(self.peak_torque_right, torque_right)
+        self.peak_torque_left = max(self.peak_torque_left, torque_left)
 
         print(
             f"[FT] right | force {ft_right.force} |F|={force_right:6.2f}N "
             f"  ||  left | force {ft_left.force} |F|={force_left:6.2f}N "
         )
+        if (
+            self.abort_force_n is not None
+            and max(force_right, force_left) > self.abort_force_n
+        ):
+            self._request_abort_once(
+                "force threshold exceeded: "
+                f"right={force_right:.2f}N left={force_left:.2f}N "
+                f"limit={self.abort_force_n:.2f}N"
+            )
+            return
+
+        if (
+            self.abort_torque_nm is not None
+            and max(torque_right, torque_left) > self.abort_torque_nm
+        ):
+            self._request_abort_once(
+                "torque threshold exceeded: "
+                f"right={torque_right:.2f}Nm left={torque_left:.2f}Nm "
+                f"limit={self.abort_torque_nm:.2f}Nm"
+            )
 
 
 def prepare_robot(robot, *, power=".*") -> None:
@@ -516,7 +617,16 @@ def prepare_robot(robot, *, power=".*") -> None:
         raise RuntimeError("Failed to enable control manager")
 
 
-def run_grabbing_sequence(robot, *, monitor_ft=True) -> bool:
+def run_grabbing_sequence(
+    robot,
+    *,
+    monitor_ft=True,
+    ft_abort_force_n=FT_ABORT_FORCE_N,
+    ft_abort_torque_nm=FT_ABORT_TORQUE_NM,
+    start_timeout_ms=START_COMMAND_TIMEOUT_MS,
+    grab_timeout_ms=GRAB_COMMAND_TIMEOUT_MS,
+    lift_timeout_ms=LIFT_COMMAND_TIMEOUT_MS,
+) -> bool:
     """Run start pose -> impedance grab -> impedance lift exactly once.
 
     ``robot`` must already be connected and prepared. This function deliberately
@@ -537,7 +647,14 @@ def run_grabbing_sequence(robot, *, monitor_ft=True) -> bool:
     dyn_state = dyn_model.make_state(DYN_LINK_NAMES, robot_model.robot_joint_names)
 
     # Optionally monitor FT data without taking ownership of the robot connection.
-    ft_monitor = FTMonitor() if monitor_ft else None
+    ft_monitor = (
+        FTMonitor(
+            abort_force_n=ft_abort_force_n,
+            abort_torque_nm=ft_abort_torque_nm,
+        )
+        if monitor_ft
+        else None
+    )
     monitoring_started = False
     if ft_monitor is not None:
         robot.start_state_update(ft_monitor.callback, FT_MONITOR_RATE)
@@ -546,7 +663,15 @@ def run_grabbing_sequence(robot, *, monitor_ft=True) -> bool:
     try:
         # 1) Joint position control: move to the start pose.
         print("[grabbing] moving to 'start_pose' (joint position) ...")
-        if not send_once(robot, build_pose_command(START_POSE, MINIMUM_TIME)):
+        if not send_once(
+            robot,
+            build_pose_command(START_POSE, MINIMUM_TIME),
+            timeout_ms=start_timeout_ms,
+            ft_monitor=ft_monitor,
+        ):
+            if ft_monitor is not None and ft_monitor.abort_requested:
+                print(f"[grabbing] ABORTED by F/T monitor: {ft_monitor.abort_reason}")
+                return False
             print("[grabbing] FAILED while moving to 'start_pose'. Aborting.")
             return False
         print("[grabbing] reached 'start_pose'.")
@@ -555,7 +680,15 @@ def run_grabbing_sequence(robot, *, monitor_ft=True) -> bool:
         #    weak y stiffness -> gentle, compliant grip).
         print("[grabbing] grabbing the box along y with impedance control ...")
         q = robot.get_state().position
-        if not send_once(robot, build_impedance_grab_command(dyn_model, dyn_state, q)):
+        if not send_once(
+            robot,
+            build_impedance_grab_command(dyn_model, dyn_state, q),
+            timeout_ms=grab_timeout_ms,
+            ft_monitor=ft_monitor,
+        ):
+            if ft_monitor is not None and ft_monitor.abort_requested:
+                print(f"[grabbing] ABORTED by F/T monitor: {ft_monitor.abort_reason}")
+                return False
             print("[grabbing] FAILED during Cartesian impedance grab. Aborting.")
             return False
         print("[grabbing] Cartesian impedance grab done.")
@@ -567,7 +700,15 @@ def run_grabbing_sequence(robot, *, monitor_ft=True) -> bool:
             "along each EEF's local +z ..."
         )
         q = robot.get_state().position
-        if not send_once(robot, build_impedance_lift_command(dyn_model, dyn_state, q)):
+        if not send_once(
+            robot,
+            build_impedance_lift_command(dyn_model, dyn_state, q),
+            timeout_ms=lift_timeout_ms,
+            ft_monitor=ft_monitor,
+        ):
+            if ft_monitor is not None and ft_monitor.abort_requested:
+                print(f"[grabbing] ABORTED by F/T monitor: {ft_monitor.abort_reason}")
+                return False
             print("[grabbing] FAILED during lift. Aborting.")
             return False
         print("[grabbing] box lifted.")
@@ -583,13 +724,25 @@ def run_grabbing_sequence(robot, *, monitor_ft=True) -> bool:
             print(
                 f"[FT] monitoring stopped. samples={ft_monitor.samples}, "
                 f"peak |F| right={ft_monitor.peak_force_right:.2f}N, "
-                f"left={ft_monitor.peak_force_left:.2f}N"
+                f"left={ft_monitor.peak_force_left:.2f}N, "
+                f"peak |T| right={ft_monitor.peak_torque_right:.2f}Nm, "
+                f"left={ft_monitor.peak_torque_left:.2f}Nm"
             )
 
     return True
 
 
-def main(address, model="m", power=".*") -> bool:
+def main(
+    address,
+    model="m",
+    power=".*",
+    *,
+    ft_abort_force_n=FT_ABORT_FORCE_N,
+    ft_abort_torque_nm=FT_ABORT_TORQUE_NM,
+    start_timeout_ms=START_COMMAND_TIMEOUT_MS,
+    grab_timeout_ms=GRAB_COMMAND_TIMEOUT_MS,
+    lift_timeout_ms=LIFT_COMMAND_TIMEOUT_MS,
+) -> bool:
     """Connect a Model M robot, prepare it, run one grasp, and disconnect."""
     normalized_model = model.lower()
     if normalized_model != "m":
@@ -604,7 +757,14 @@ def main(address, model="m", power=".*") -> bool:
             return False
 
         prepare_robot(robot, power=power)
-        return run_grabbing_sequence(robot)
+        return run_grabbing_sequence(
+            robot,
+            ft_abort_force_n=ft_abort_force_n,
+            ft_abort_torque_nm=ft_abort_torque_nm,
+            start_timeout_ms=start_timeout_ms,
+            grab_timeout_ms=grab_timeout_ms,
+            lift_timeout_ms=lift_timeout_ms,
+        )
     except Exception as exc:
         print(f"[grabbing] ERROR: {exc}")
         return False
@@ -630,13 +790,58 @@ def _parse_args():
         default=".*",
         help="Power device name regex pattern (default: '.*')",
     )
+    parser.add_argument(
+        "--ft-abort-force-n",
+        type=float,
+        default=FT_ABORT_FORCE_N,
+        help=(
+            "Abort the active grasp command if either arm force magnitude "
+            "exceeds this Newton threshold. Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--ft-abort-torque-nm",
+        type=float,
+        default=FT_ABORT_TORQUE_NM,
+        help=(
+            "Abort the active grasp command if either arm torque magnitude "
+            "exceeds this Nm threshold. Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--start-timeout-ms",
+        type=int,
+        default=START_COMMAND_TIMEOUT_MS,
+        help=f"Start-pose command timeout in ms (default: {START_COMMAND_TIMEOUT_MS})",
+    )
+    parser.add_argument(
+        "--grab-timeout-ms",
+        type=int,
+        default=GRAB_COMMAND_TIMEOUT_MS,
+        help=f"Grab command timeout in ms (default: {GRAB_COMMAND_TIMEOUT_MS})",
+    )
+    parser.add_argument(
+        "--lift-timeout-ms",
+        type=int,
+        default=LIFT_COMMAND_TIMEOUT_MS,
+        help=f"Lift command timeout in ms (default: {LIFT_COMMAND_TIMEOUT_MS})",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
     try:
-        success = main(address=args.address, model=args.model, power=args.power)
+        success = main(
+            address=args.address,
+            model=args.model,
+            power=args.power,
+            ft_abort_force_n=args.ft_abort_force_n,
+            ft_abort_torque_nm=args.ft_abort_torque_nm,
+            start_timeout_ms=args.start_timeout_ms,
+            grab_timeout_ms=args.grab_timeout_ms,
+            lift_timeout_ms=args.lift_timeout_ms,
+        )
     except KeyboardInterrupt:
         print("\n[grabbing] interrupted by user")
         raise SystemExit(130) from None

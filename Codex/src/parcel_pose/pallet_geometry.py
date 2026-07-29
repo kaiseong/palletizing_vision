@@ -159,6 +159,10 @@ def _dominant_height(
     counts, edges = np.histogram(selected, bins=edges)
     if counts.size == 0 or int(np.max(counts)) < 30:
         raise ValueError("no dominant horizontal support")
+    # This estimator's workspace contract contains one pallet stack after the
+    # held-carton footprint has been excluded.  Select the dominant support,
+    # not merely the highest supported bin: recorded partial-stack scenes can
+    # contain sparse upper clutter whose plane is not the stack top.
     index = int(np.argmax(counts))
     return float(0.5 * (edges[index] + edges[index + 1])), int(counts[index])
 
@@ -493,7 +497,9 @@ def _held_carton_footprint_mask(
     if hint is None or hint.center_base is None:
         return None
     center = np.asarray(hint.center_base, dtype=np.float64)
-    yaw = 0.0 if hint.yaw_base_rad is None else float(hint.yaw_base_rad)
+    if hint.yaw_base_rad is None:
+        return None
+    yaw = float(hint.yaw_base_rad)
     axis_long = np.array((math.cos(yaw), math.sin(yaw)), dtype=np.float64)
     axis_short = np.array((-axis_long[1], axis_long[0]), dtype=np.float64)
     relative_xy = points_base[workspace, :2] - center[:2]
@@ -904,6 +910,7 @@ class PalletStackEstimator:
         self._ray_cache_key: tuple[Any, ...] | None = None
         self._base_ray_coefficients: FloatArray | None = None
         self._previous_valid_frame_id: int | None = None
+        self._previous_valid_timestamp_s: float | None = None
         self._previous_valid_center: FloatArray | None = None
 
     def _ray_coefficients(
@@ -946,8 +953,9 @@ class PalletStackEstimator:
         evidence: PalletFrameEvidence | None = None,
     ) -> PalletSceneObservation:
         self.last_evidence = evidence
-        self._previous_valid_frame_id = None
-        self._previous_valid_center = None
+        # Preserve the most recent *valid* center across dropped/invalid frames.
+        # The timestamp-age gate decides whether it is still recent enough for
+        # the next valid observation to be jump-checked.
         return PalletSceneObservation(
             stack=StackObservation(
                 timestamp_s=timestamp_s,
@@ -1330,12 +1338,20 @@ class PalletStackEstimator:
             rejection_reasons.append("rough_front_yaw_exceeded")
         if (
             self._previous_valid_frame_id is not None
+            and self._previous_valid_timestamp_s is not None
             and self._previous_valid_center is not None
-            and frame_number == self._previous_valid_frame_id + 1
-            and float(np.linalg.norm(center_base[:2] - self._previous_valid_center[:2]))
-            > config.gates.max_consecutive_center_jump_m
         ):
-            rejection_reasons.append("center_jump_exceeded")
+            center_jump_age_s = float(timestamp_s) - float(
+                self._previous_valid_timestamp_s
+            )
+            if center_jump_age_s < -1e-6:
+                rejection_reasons.append("center_jump_timestamp_regressed")
+            elif center_jump_age_s <= config.gates.max_consecutive_center_jump_age_s:
+                center_jump_m = float(
+                    np.linalg.norm(center_base[:2] - self._previous_valid_center[:2])
+                )
+                if center_jump_m > config.gates.max_consecutive_center_jump_m:
+                    rejection_reasons.append("center_jump_exceeded")
 
         held_observation: HeldBoxTopObservation | None = None
         # Every closer point is excluded from stack fitting.  A particular
@@ -1485,10 +1501,8 @@ class PalletStackEstimator:
         )
         if valid:
             self._previous_valid_frame_id = frame_number
+            self._previous_valid_timestamp_s = float(timestamp_s)
             self._previous_valid_center = center_base.copy()
-        else:
-            self._previous_valid_frame_id = None
-            self._previous_valid_center = None
         return observation
 
 

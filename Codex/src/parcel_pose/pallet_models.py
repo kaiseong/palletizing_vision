@@ -196,6 +196,7 @@ class PalletPerceptionGates:
     max_yaw_spread_rad: float = math.radians(2.0)
     max_start_yaw_residual_rad: float = math.radians(15.0)
     max_consecutive_center_jump_m: float = 0.030
+    max_consecutive_center_jump_age_s: float = 0.50
 
     def __post_init__(self) -> None:
         if int(self.min_inner_rim_count) not in (3, 4):
@@ -209,6 +210,7 @@ class PalletPerceptionGates:
             "max_yaw_spread_rad",
             "max_start_yaw_residual_rad",
             "max_consecutive_center_jump_m",
+            "max_consecutive_center_jump_age_s",
         ):
             object.__setattr__(self, name, _finite_positive(getattr(self, name), name))
 
@@ -224,6 +226,7 @@ class PalletPerceptionGates:
             "max_yaw_spread_deg": math.degrees(self.max_yaw_spread_rad),
             "max_start_yaw_residual_deg": math.degrees(self.max_start_yaw_residual_rad),
             "max_consecutive_center_jump_m": self.max_consecutive_center_jump_m,
+            "max_consecutive_center_jump_age_s": self.max_consecutive_center_jump_age_s,
         }
 
 
@@ -1014,6 +1017,53 @@ def load_pallet_estimator_config(
     perception_raw = root.get("perception", pallet_raw.get("perception", {}))
     if not isinstance(perception_raw, Mapping):
         raise ValueError("perception configuration block must be an object")
+    if bool(perception_raw.get("strict_unknown_keys", False)):
+        allowed_perception_keys = {
+            "strict_unknown_keys",
+            "minimum_inner_rims",
+            "opening_dimension_tolerance_m",
+            "maximum_orthogonality_error_deg",
+            "maximum_plane_p95_residual_m",
+            "live_center_spread_m",
+            "live_yaw_spread_deg",
+            "maximum_initial_yaw_deg",
+            "maximum_measurement_jump_m",
+            "maximum_measurement_jump_age_s",
+            "min_depth_m",
+            "max_depth_m",
+            "plane_fit_tolerance_m",
+            "plane_ransac_tolerance_m",
+            "plane_slab_m",
+            "minimum_plane_points",
+            "workspace_x_m",
+            "workspace_y_m",
+            "workspace_z_m",
+            "workspace_u0_v0_u1_v1",
+            "stack_plane_z_m",
+            "z_histogram_bin_m",
+            "plane_seed_band_m",
+            "plane_fit_max_points",
+            "plane_ransac_iterations",
+            "grid_resolution_m",
+            "morphology_close_m",
+            "morphology_dilate_m",
+            "opening_component_min_m",
+            "opening_component_max_m",
+            "rim_outer_band_m",
+            "min_rim_support_ratio",
+            "held_plane_max_uncertainty_m",
+            "closer_plane_rejection_margin_m",
+            "stable_window_frames",
+            "replay_center_std_m",
+            "replay_yaw_std_deg",
+            "rough_front_axis_base",
+            "l_corner",
+        }
+        unknown = sorted(set(perception_raw) - allowed_perception_keys)
+        if unknown:
+            raise ValueError(
+                "unknown perception configuration key(s): " + ", ".join(unknown)
+            )
     gates = PalletPerceptionGates(
         min_inner_rim_count=int(perception_raw.get("minimum_inner_rims", 3)),
         max_opening_size_error_m=float(
@@ -1046,6 +1096,9 @@ def load_pallet_estimator_config(
                 if isinstance(root.get("servo", {}), Mapping)
                 else 0.030,
             )
+        ),
+        max_consecutive_center_jump_age_s=float(
+            perception_raw.get("maximum_measurement_jump_age_s", 0.50)
         ),
     )
 

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "loaded_slot1_ready_mvp_alignment_available_with_explicit_overrides",
+  "status": "loaded_slot1_alignment_and_vision_gated_place_commissioning",
   "robot": {
     "model": "M",
     "version": "1.2",
@@ -72,6 +72,7 @@
       "calibration_status": "nominal_unverified_operator_demonstrated"
     },
     "acquisition": {
+      "mode": "continuous_forward",
       "budget_m": 0.15,
       "step_m": 0.010,
       "speed_mps": 0.030,
@@ -102,6 +103,7 @@
   },
   "held_box": {
     "nominal_size_m": [0.400, 0.253, 0.160],
+    "minimum_height_m": 0.156,
     "maximum_height_m": 0.164,
     "center_offset_from_eef_midpoint_m": [0.085463, 0.008236, 0.0],
     "center_offset_frame": "base_at_fixed_pallet_ready_pose",
@@ -120,6 +122,7 @@
     "nominal_ready_proxy_usage": "replay_dry_run_and_explicit_fixed_ready_geometry_mvp"
   },
   "perception": {
+    "strict_unknown_keys": true,
     "min_depth_m": 0.20,
     "max_depth_m": 2.0,
     "workspace_u0_v0_u1_v1": [20, 20, 620, 470],
@@ -128,6 +131,7 @@
     "maximum_orthogonality_error_deg": 5.0,
     "maximum_plane_p95_residual_m": 0.008,
     "minimum_plane_points": 600,
+    "plane_fit_max_points": 12000,
     "plane_ransac_iterations": 160,
     "plane_ransac_tolerance_m": 0.008,
     "closer_plane_rejection_margin_m": 0.08,
@@ -136,6 +140,7 @@
     "live_yaw_spread_deg": 2.0,
     "replay_center_std_m": 0.005,
     "replay_yaw_std_deg": 1.5,
+    "maximum_measurement_jump_age_s": 0.50,
     "l_corner": {
       "edge_band_m": 0.012,
       "min_front_support_m": 0.450,
@@ -157,6 +162,7 @@
     }
   },
   "servo": {
+    "strict_unknown_keys": true,
     "control_rate_hz": 20.0,
     "observation_stale_after_s": 0.30,
     "maximum_measurement_jump_m": 0.030,
@@ -178,6 +184,59 @@
     "wheel_stop_angular_radps": 0.02,
     "wheel_stop_dwell_s": 0.35
   },
+  "placement": {
+    "strict_unknown_keys": true,
+    "enabled": true,
+    "geometry_only_lowering_enabled": true,
+    "vision_geometry_release_enabled": true,
+    "minimum_time_s": 0.05,
+    "linear_velocity_limit_mps": 0.03,
+    "angular_velocity_limit_radps": 0.20,
+    "linear_acceleration_limit_mps2": 0.08,
+    "angular_acceleration_limit_radps2": 0.30,
+    "lowering_distance_m": 0.050,
+    "squeeze_offset_m": 0.150,
+    "release_spread_m": 0.080,
+    "maximum_release_spread_m": 0.120,
+    "joint_stiffness_nm_per_rad": [150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0],
+    "joint_damping_ratio": 1.0,
+    "nullspace_weight": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "nullspace_kp": 0.5,
+    "nullspace_kd": 0.5,
+    "nullspace_cost_weight": 0.01,
+    "pre_place_verify_dwell_s": 0.15,
+    "lowering_timeout_s": 4.0,
+    "seated_dwell_s": 0.35,
+    "release_timeout_s": 4.5,
+    "release_target_dwell_s": 0.35,
+    "feedback_stale_s": 0.25,
+    "lower_z_tolerance_m": 0.008,
+    "lower_midpoint_xy_drift_m": 0.015,
+    "lower_rotation_tolerance_deg": 3.0,
+    "release_target_translation_tolerance_m": 0.012,
+    "release_target_rotation_tolerance_deg": 4.0,
+    "vision_seating_residual_min_m": -0.020,
+    "vision_seating_residual_max_m": 0.010,
+    "vision_seating_max_uncertainty_m": 0.015,
+    "vision_evidence_fresh_after_s": 0.30,
+    "vision_plan_valid_for_s": 5.0,
+    "vision_gap_stability_tolerance_m": 0.008,
+    "vision_evidence_min_samples": 3,
+    "maximum_force_n": null,
+    "maximum_torque_nm": null,
+    "maximum_force_jump_n": null,
+    "maximum_torque_jump_nm": null,
+    "minimum_bilateral_load_transfer_n": null,
+    "maximum_load_transfer_asymmetry_n": null
+  },
   "safety": {
     "actuation_commissioned": false,
     "commissioning_mode": "explicit_loaded_ready_fixed_geometry_mvp",
@@ -185,11 +244,11 @@
     "minimum_clearance_m": 0.050,
     "state_fresh_after_s": 0.15,
     "grip_continuity_dwell_s": 0.50,
-    "persistent_hold_states": ["ACQUIRE_STACK", "PERCEPTION_HOLD", "FAULT_HOLD", "ARRIVED_HOLD", "SHUTDOWN_PENDING_HOLD"],
-    "live_request_flags": ["--ensure-slot1-ready", "--auto-palletize-slot1", "--allow-nominal-registration", "--allow-geometry-only-grip-check"],
+    "persistent_hold_states": ["ACQUIRE_STACK", "PERCEPTION_HOLD", "FAULT_HOLD", "ARRIVED_HOLD", "LOWERED_HOLD", "RELEASED", "SHUTDOWN_PENDING_HOLD"],
+    "live_request_flags": ["--ensure-slot1-ready", "--auto-palletize-slot1", "--auto-place-slot1", "--allow-nominal-registration", "--allow-geometry-only-grip-check", "--allow-vision-geometry-release"],
     "flags_authorize_motion": true,
-    "terminal_action": "zero_mobility_body_hold_only",
-    "forbidden_actions": ["descent", "contact", "release", "gripper", "slide", "power_off"]
+    "terminal_action": "zero_mobility_cartesian_hold_after_vision_gated_release",
+    "forbidden_actions": ["release_without_target_ack", "release_without_seating_evidence", "slide", "power_off"]
   },
   "grip_interlock": {
     "minimum_dwell_s": 0.50,

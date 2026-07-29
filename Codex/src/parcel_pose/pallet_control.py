@@ -1,11 +1,12 @@
-"""Fail-closed RB-Y1 whole-body stream adapter for pallet slot-1 hover.
+"""Fail-closed RB-Y1 whole-body stream adapter for pallet slot-1 placement.
 
 The module intentionally imports ``rby1_sdk`` only after explicit execution
 authorization.  One stream owner sends every robot command: a single ready
-transition followed by fixed-rate combined body-hold and SE(2) commands.
+transition followed by one fixed-rate combined stream containing torso/head
+Position, bilateral Cartesian impedance, and SE(2) mobility commands.
 
-This controller only supports the hover/alignment boundary.  It contains no
-vertical placement or end-effector opening operation.
+This controller owns only the persistent combined stream.  Higher-level runtime
+code sequences hover/alignment, placement descent, and release gates.
 """
 
 from __future__ import annotations
@@ -39,11 +40,16 @@ TORQUE_POLICY = "sdk_default"
 HARD_MAX_LINEAR_SPEED_MPS = 0.08
 HARD_MAX_ANGULAR_SPEED_RADPS = 0.10
 
-_DYN_LINK_NAMES = ("base", "link_head_2", "ee_right", "ee_left")
+TORSO_REFERENCE_LINK = "link_torso_5"
+RIGHT_EEF_LINK = "ee_right"
+LEFT_EEF_LINK = "ee_left"
+
+_DYN_LINK_NAMES = ("base", TORSO_REFERENCE_LINK, "link_head_2", RIGHT_EEF_LINK, LEFT_EEF_LINK)
 _BASE_LINK_INDEX = 0
-_HEAD_LINK_INDEX = 1
-_RIGHT_EEF_LINK_INDEX = 2
-_LEFT_EEF_LINK_INDEX = 3
+_TORSO_LINK_INDEX = 1
+_HEAD_LINK_INDEX = 2
+_RIGHT_EEF_LINK_INDEX = 3
+_LEFT_EEF_LINK_INDEX = 4
 
 
 class PalletControlError(RuntimeError):
@@ -224,6 +230,27 @@ class PalletControlConfig:
     force_torque_feedback_required: bool = True
     unconfigured_force_torque_policy: str = "nonzero_mobility_fail_closed"
     fixed_ready_geometry_only_commissioning_enabled: bool = False
+    # A streamed Cartesian packet must not restart a multi-second trajectory on
+    # every 20 Hz update.  Smoothness comes from the explicit velocity and
+    # acceleration limits; minimum_time only spans one stream period.
+    placement_minimum_time_s: float = 0.05
+    placement_linear_velocity_limit_mps: float = 0.03
+    placement_angular_velocity_limit_radps: float = 0.20
+    placement_linear_acceleration_limit_mps2: float = 0.08
+    placement_angular_acceleration_limit_radps2: float = 0.30
+    placement_lowering_distance_m: float = 0.050
+    # Preserve the same 150 mm inward Cartesian target offset used by the
+    # box-pick lift command.  It is a compliant target error, not a requested
+    # physical penetration into the carton.
+    placement_squeeze_offset_m: float = 0.150
+    placement_release_spread_m: float = 0.080
+    placement_max_release_spread_m: float = 0.120
+    placement_joint_stiffness: tuple[float, ...] = (150.0,) * 7
+    placement_joint_damping_ratio: float = 1.0
+    placement_nullspace_weight: tuple[float, ...] = (1.0,) * 7
+    placement_nullspace_kp: float = 0.5
+    placement_nullspace_kd: float = 0.5
+    placement_nullspace_cost_weight: float = 0.01
 
     @classmethod
     def from_root_config(
@@ -250,6 +277,59 @@ class PalletControlConfig:
         camera = section("camera")
         stream = section("control_stream")
         grip_interlock = section("grip_interlock")
+        placement = section("placement")
+
+        placement_keys = {
+            "strict_unknown_keys",
+            "enabled",
+            "geometry_only_lowering_enabled",
+            "vision_geometry_release_enabled",
+            "minimum_time_s",
+            "linear_velocity_limit_mps",
+            "angular_velocity_limit_radps",
+            "linear_acceleration_limit_mps2",
+            "angular_acceleration_limit_radps2",
+            "lowering_distance_m",
+            "squeeze_offset_m",
+            "release_spread_m",
+            "maximum_release_spread_m",
+            "joint_stiffness_nm_per_rad",
+            "joint_damping_ratio",
+            "nullspace_weight",
+            "nullspace_kp",
+            "nullspace_kd",
+            "nullspace_cost_weight",
+            "pre_place_verify_dwell_s",
+            "lowering_timeout_s",
+            "seated_dwell_s",
+            "release_timeout_s",
+            "release_target_dwell_s",
+            "feedback_stale_s",
+            "lower_z_tolerance_m",
+            "lower_midpoint_xy_drift_m",
+            "lower_rotation_tolerance_deg",
+            "release_target_translation_tolerance_m",
+            "release_target_rotation_tolerance_deg",
+            "vision_seating_residual_min_m",
+            "vision_seating_residual_max_m",
+            "vision_seating_max_uncertainty_m",
+            "vision_evidence_fresh_after_s",
+            "vision_plan_valid_for_s",
+            "vision_gap_stability_tolerance_m",
+            "vision_evidence_min_samples",
+            "maximum_force_n",
+            "maximum_torque_nm",
+            "maximum_force_jump_n",
+            "maximum_torque_jump_nm",
+            "minimum_bilateral_load_transfer_n",
+            "maximum_load_transfer_asymmetry_n",
+        }
+        if bool(placement.get("strict_unknown_keys", False)):
+            unknown = sorted(set(placement) - placement_keys)
+            if unknown:
+                raise ValueError(
+                    "unknown placement configuration key(s): " + ", ".join(unknown)
+                )
 
         model_name = str(robot.get("model", "")).strip().upper()
         version = str(robot.get("version", "")).strip().lower().removeprefix("v")
@@ -484,6 +564,87 @@ class PalletControlConfig:
             fixed_ready_geometry_only_commissioning_enabled=(
                 geometry_only_enabled
             ),
+            placement_minimum_time_s=float(
+                placement.get("minimum_time_s", defaults.placement_minimum_time_s)
+            ),
+            placement_linear_velocity_limit_mps=float(
+                placement.get(
+                    "linear_velocity_limit_mps",
+                    defaults.placement_linear_velocity_limit_mps,
+                )
+            ),
+            placement_angular_velocity_limit_radps=float(
+                placement.get(
+                    "angular_velocity_limit_radps",
+                    defaults.placement_angular_velocity_limit_radps,
+                )
+            ),
+            placement_linear_acceleration_limit_mps2=float(
+                placement.get(
+                    "linear_acceleration_limit_mps2",
+                    defaults.placement_linear_acceleration_limit_mps2,
+                )
+            ),
+            placement_angular_acceleration_limit_radps2=float(
+                placement.get(
+                    "angular_acceleration_limit_radps2",
+                    defaults.placement_angular_acceleration_limit_radps2,
+                )
+            ),
+            placement_lowering_distance_m=float(
+                placement.get(
+                    "lowering_distance_m",
+                    defaults.placement_lowering_distance_m,
+                )
+            ),
+            placement_squeeze_offset_m=float(
+                placement.get(
+                    "squeeze_offset_m",
+                    defaults.placement_squeeze_offset_m,
+                )
+            ),
+            placement_release_spread_m=float(
+                placement.get(
+                    "release_spread_m",
+                    defaults.placement_release_spread_m,
+                )
+            ),
+            placement_max_release_spread_m=float(
+                placement.get(
+                    "maximum_release_spread_m",
+                    defaults.placement_max_release_spread_m,
+                )
+            ),
+            placement_joint_stiffness=tuple(
+                placement.get(
+                    "joint_stiffness_nm_per_rad",
+                    defaults.placement_joint_stiffness,
+                )
+            ),
+            placement_joint_damping_ratio=float(
+                placement.get(
+                    "joint_damping_ratio",
+                    defaults.placement_joint_damping_ratio,
+                )
+            ),
+            placement_nullspace_weight=tuple(
+                placement.get(
+                    "nullspace_weight",
+                    defaults.placement_nullspace_weight,
+                )
+            ),
+            placement_nullspace_kp=float(
+                placement.get("nullspace_kp", defaults.placement_nullspace_kp)
+            ),
+            placement_nullspace_kd=float(
+                placement.get("nullspace_kd", defaults.placement_nullspace_kd)
+            ),
+            placement_nullspace_cost_weight=float(
+                placement.get(
+                    "nullspace_cost_weight",
+                    defaults.placement_nullspace_cost_weight,
+                )
+            ),
         )
 
     def __post_init__(self) -> None:
@@ -523,6 +684,19 @@ class PalletControlConfig:
             "clearance_scene_max_span_s",
             "maximum_box_height_m",
             "minimum_clearance_m",
+            "placement_minimum_time_s",
+            "placement_linear_velocity_limit_mps",
+            "placement_angular_velocity_limit_radps",
+            "placement_linear_acceleration_limit_mps2",
+            "placement_angular_acceleration_limit_radps2",
+            "placement_lowering_distance_m",
+            "placement_squeeze_offset_m",
+            "placement_release_spread_m",
+            "placement_max_release_spread_m",
+            "placement_joint_damping_ratio",
+            "placement_nullspace_kp",
+            "placement_nullspace_kd",
+            "placement_nullspace_cost_weight",
         ):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
         if self.ready_transition_minimum_time_s < 5.0:
@@ -575,6 +749,58 @@ class PalletControlConfig:
             raise ValueError("maximum box height cannot be below measured 164 mm")
         if self.minimum_clearance_m < 0.050 - 1e-12:
             raise ValueError("minimum vertical clearance cannot be below 50 mm")
+        stream_period_s = 1.0 / self.send_rate_hz
+        if self.placement_minimum_time_s + 1e-12 < stream_period_s:
+            raise ValueError(
+                "placement minimum time must span at least one stream period"
+            )
+        if self.placement_minimum_time_s > 0.10 + 1e-12:
+            raise ValueError(
+                "placement minimum time cannot exceed 0.10 s in the repeated stream; "
+                "velocity/acceleration limits own trajectory smoothing"
+            )
+        if self.placement_linear_velocity_limit_mps > 0.05 + 1e-12:
+            raise ValueError("placement linear velocity limit cannot exceed 0.05 m/s")
+        if self.placement_angular_velocity_limit_radps > 0.30 + 1e-12:
+            raise ValueError("placement angular velocity limit cannot exceed 0.30 rad/s")
+        if self.placement_linear_acceleration_limit_mps2 > 0.15 + 1e-12:
+            raise ValueError("placement linear acceleration cannot exceed 0.15 m/s^2")
+        if self.placement_angular_acceleration_limit_radps2 > 0.50 + 1e-12:
+            raise ValueError(
+                "placement angular acceleration cannot exceed 0.50 rad/s^2"
+            )
+        if abs(self.placement_lowering_distance_m - 0.050) > 1e-12:
+            raise ValueError("placement lowering distance must be exactly 0.050 m")
+        if self.placement_squeeze_offset_m > 0.150 + 1e-12:
+            raise ValueError("placement squeeze offset cannot exceed 150 mm")
+        if self.placement_release_spread_m > self.placement_max_release_spread_m:
+            raise ValueError("placement release spread cannot exceed its max bound")
+        if self.placement_max_release_spread_m > 0.150 + 1e-12:
+            raise ValueError("placement max release spread cannot exceed 150 mm")
+        object.__setattr__(
+            self,
+            "placement_joint_stiffness",
+            _finite_vector(
+                self.placement_joint_stiffness,
+                7,
+                "placement_joint_stiffness",
+            ),
+        )
+        if min(self.placement_joint_stiffness) <= 0.0:
+            raise ValueError("placement joint stiffness values must be positive")
+        object.__setattr__(
+            self,
+            "placement_nullspace_weight",
+            _finite_vector(
+                self.placement_nullspace_weight,
+                7,
+                "placement_nullspace_weight",
+            ),
+        )
+        if min(self.placement_nullspace_weight) < 0.0:
+            raise ValueError("placement nullspace weights must be non-negative")
+        if max(self.placement_nullspace_weight) <= 0.0:
+            raise ValueError("at least one placement nullspace weight must be positive")
         if self.wheel_stop_linear_mps > 0.01 + 1e-12:
             raise ValueError("wheel-stop linear threshold cannot exceed 0.01 m/s")
         if self.wheel_stop_angular_radps > 0.02 + 1e-12:
@@ -622,6 +848,103 @@ class MobilityCommand:
 
 
 ZERO_MOBILITY = MobilityCommand(0.0, 0.0, 0.0)
+
+
+class ArmStreamMode(str, Enum):
+    JOINT_READY_HOLD = "JOINT_READY_HOLD"
+    CARTESIAN_LOADED_HOLD = "CARTESIAN_LOADED_HOLD"
+    CARTESIAN_PLACEMENT_LOWERING = "CARTESIAN_PLACEMENT_LOWERING"
+    CARTESIAN_PLACEMENT_RELEASE = "CARTESIAN_PLACEMENT_RELEASE"
+
+
+@dataclass(frozen=True, slots=True)
+class CartesianArmTarget:
+    mode: ArmStreamMode
+    right_T_torso_eef: np.ndarray
+    left_T_torso_eef: np.ndarray
+    right_T_base_eef: np.ndarray
+    left_T_base_eef: np.ndarray
+    right_nullspace_joint_rad: tuple[float, ...]
+    left_nullspace_joint_rad: tuple[float, ...]
+    inter_eef_axis_base: tuple[float, float, float]
+    created_monotonic_s: float
+    source_state_sequence: int
+    lowering_distance_m: float = 0.0
+    squeeze_offset_m: float = 0.0
+    release_spread_m: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mode, ArmStreamMode):
+            object.__setattr__(self, "mode", ArmStreamMode(str(self.mode)))
+        object.__setattr__(
+            self,
+            "right_T_torso_eef",
+            _readonly_matrix(self.right_T_torso_eef, "right_T_torso_eef"),
+        )
+        object.__setattr__(
+            self,
+            "left_T_torso_eef",
+            _readonly_matrix(self.left_T_torso_eef, "left_T_torso_eef"),
+        )
+        object.__setattr__(
+            self,
+            "right_T_base_eef",
+            _readonly_matrix(self.right_T_base_eef, "right_T_base_eef"),
+        )
+        object.__setattr__(
+            self,
+            "left_T_base_eef",
+            _readonly_matrix(self.left_T_base_eef, "left_T_base_eef"),
+        )
+        object.__setattr__(
+            self,
+            "right_nullspace_joint_rad",
+            _finite_vector(
+                self.right_nullspace_joint_rad,
+                7,
+                "right_nullspace_joint_rad",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "left_nullspace_joint_rad",
+            _finite_vector(
+                self.left_nullspace_joint_rad,
+                7,
+                "left_nullspace_joint_rad",
+            ),
+        )
+        axis = _finite_vector(self.inter_eef_axis_base, 3, "inter_eef_axis_base")
+        if abs(float(np.linalg.norm(axis)) - 1.0) > 1e-6:
+            raise ValueError("inter_eef_axis_base must be unit length")
+        object.__setattr__(self, "inter_eef_axis_base", axis)
+        if not math.isfinite(float(self.created_monotonic_s)):
+            raise ValueError("created_monotonic_s must be finite")
+        if self.source_state_sequence < 1:
+            raise ValueError("source_state_sequence must be positive")
+        for name in ("lowering_distance_m", "squeeze_offset_m", "release_spread_m"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class PlacementTelemetry:
+    arm_mode: ArmStreamMode
+    placement_started: bool
+    source_state_sequence: int | None
+    target_created_monotonic_s: float | None
+    right_T_base_eef_target: np.ndarray | None
+    left_T_base_eef_target: np.ndarray | None
+    measured_T_base_torso_available: bool
+    measured_T_base_right_eef_available: bool
+    measured_T_base_left_eef_available: bool
+    zero_latched: bool
+    wheel_stopped: bool
+    stream_running: bool
+    target_acknowledged: bool
+    acknowledged_command_sequence: int
+    last_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -954,6 +1277,7 @@ class MeasuredRobotState:
     right_torque_nm: tuple[float, float, float] | None
     left_force_n: tuple[float, float, float] | None
     left_torque_nm: tuple[float, float, float] | None
+    T_base_torso: np.ndarray | None = None
     kinematics_error: str | None = None
     odometry_error: str | None = None
 
@@ -1049,6 +1373,9 @@ class StreamTelemetry:
     torque_policy: str
     last_feedback_error: str | None
     last_error: str | None
+    arm_mode: ArmStreamMode = ArmStreamMode.JOINT_READY_HOLD
+    placement_started: bool = False
+    placement_target_sequence: int | None = None
 
 
 class RBY1PalletController:
@@ -1075,6 +1402,11 @@ class RBY1PalletController:
         self._source_handoff: GripHandoff | LoadedSlot1ReadyBootstrap | None = None
         self._active_right_arm_target_rad = self.config.ready_pose.right_arm_rad
         self._active_left_arm_target_rad = self.config.ready_pose.left_arm_rad
+        self._arm_stream_mode = ArmStreamMode.JOINT_READY_HOLD
+        self._cartesian_arm_target: CartesianArmTarget | None = None
+        self._placement_started = False
+        self._placement_last_reason: str | None = None
+        self._last_acknowledged_body_target_token: str | None = None
         self._grip_result: GripContinuityResult | None = None
 
         self._condition = threading.Condition(threading.RLock())
@@ -1493,6 +1825,13 @@ class RBY1PalletController:
         """Start the fixed-rate steady hold pump after transition verification."""
 
         self._require_execute_and_connected()
+        cartesian_hold = self._make_cartesian_arm_target(
+            self.get_measured_state(),
+            mode=ArmStreamMode.CARTESIAN_LOADED_HOLD,
+            base_z_offset_m=0.0,
+            squeeze_offset_m=self.config.placement_squeeze_offset_m,
+            release_spread_m=0.0,
+        )
         with self._condition:
             if self._phase is ControllerPhase.FAULT_HOLD:
                 raise CombinedStreamError(
@@ -1512,6 +1851,11 @@ class RBY1PalletController:
             self._stop_event.clear()
             self._latest_proposal = ZERO_MOBILITY
             self._latest_proposal_s = self._clock()
+            self._arm_stream_mode = ArmStreamMode.CARTESIAN_LOADED_HOLD
+            self._cartesian_arm_target = cartesian_hold
+            self._placement_started = False
+            self._placement_last_reason = None
+            self._body_target_token = self._make_body_target_token()
             self._proposal_generation += 1
             startup_generation = self._proposal_generation
             self._phase = ControllerPhase.STEADY_HOLD
@@ -1640,6 +1984,10 @@ class RBY1PalletController:
             and now_s - source_s + 1e-12 >= self.config.command_stale_after_s
         ):
             command = ZERO_MOBILITY
+        with self._condition:
+            placement_started = self._placement_started
+        if placement_started and not command.is_zero:
+            raise CombinedStreamError("placement mode permits zero mobility only")
         if not command.is_zero:
             self._require_nonzero_motion_evidence(now_s)
 
@@ -1750,6 +2098,15 @@ class RBY1PalletController:
             )
         return np.array(state.T_base_head, copy=True)
 
+    def get_measured_T_base_torso(self) -> np.ndarray:
+        state = self.get_measured_state()
+        T_base_torso = self._T_base_torso_for_cartesian(state)
+        if T_base_torso is None:
+            raise MeasuredStateError(
+                f"fresh measured torso FK is unavailable: {state.kinematics_error}"
+            )
+        return np.array(T_base_torso, copy=True)
+
     def get_measured_eef_transforms(self) -> tuple[np.ndarray, np.ndarray]:
         state = self.get_measured_state()
         if state.T_base_right_eef is None or state.T_base_left_eef is None:
@@ -1760,6 +2117,143 @@ class RBY1PalletController:
             np.array(state.T_base_right_eef, copy=True),
             np.array(state.T_base_left_eef, copy=True),
         )
+
+    def start_cartesian_lowering_hold(
+        self,
+        *,
+        squeeze_offset_m: float | None = None,
+    ) -> CartesianArmTarget:
+        """Switch the persistent stream to bilateral Cartesian lowering targets.
+
+        The target is exactly 50 mm downward in the RB-Y1 base z axis from the
+        latest measured EEF poses, transformed into ``link_torso_5`` for the SDK.
+        The measured inter-EEF axis is preserved and the targets keep a small
+        inward squeeze.  Entry is allowed only after an acknowledged zero latch,
+        a fresh wheel-stop dwell, and healthy Running stream feedback.
+        """
+
+        squeeze = (
+            self.config.placement_squeeze_offset_m
+            if squeeze_offset_m is None
+            else _positive(squeeze_offset_m, "squeeze_offset_m")
+        )
+        if squeeze > self.config.placement_squeeze_offset_m + 1e-12:
+            raise ValueError(
+                "squeeze_offset_m cannot exceed the configured placement squeeze"
+            )
+        state = self._require_cartesian_placement_entry_state()
+        target = self._make_cartesian_arm_target(
+            state,
+            mode=ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING,
+            base_z_offset_m=-self.config.placement_lowering_distance_m,
+            squeeze_offset_m=squeeze,
+            release_spread_m=0.0,
+        )
+        with self._condition:
+            self._require_cartesian_entry_locked()
+            self._arm_stream_mode = target.mode
+            self._cartesian_arm_target = target
+            self._placement_started = True
+            self._placement_last_reason = None
+            self._zero_latched = True
+            self._latest_proposal = ZERO_MOBILITY
+            self._latest_proposal_s = self._clock()
+            self._proposal_generation += 1
+            self._body_target_token = self._make_body_target_token()
+            self._condition.notify_all()
+        return target
+
+    def start_cartesian_release_hold(
+        self,
+        *,
+        release_spread_m: float | None = None,
+    ) -> CartesianArmTarget:
+        """Spread both EEF targets outward along the measured inter-EEF axis."""
+
+        spread = (
+            self.config.placement_release_spread_m
+            if release_spread_m is None
+            else _positive(release_spread_m, "release_spread_m")
+        )
+        if spread > self.config.placement_max_release_spread_m + 1e-12:
+            raise ValueError("release_spread_m exceeds the configured release bound")
+        state = self._require_cartesian_placement_continuation_state()
+        with self._condition:
+            lowering_target = self._cartesian_arm_target
+        if (
+            lowering_target is None
+            or lowering_target.mode is not ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING
+        ):
+            raise CombinedStreamError(
+                "cartesian release requires the acknowledged lowering target"
+            )
+        target = self._make_release_target_from_lowering(
+            state,
+            lowering_target=lowering_target,
+            release_spread_m=spread,
+        )
+        with self._condition:
+            self._require_cartesian_continuation_locked()
+            if self._cartesian_arm_target is not lowering_target:
+                raise CombinedStreamError(
+                    "lowering target changed while constructing release target"
+                )
+            self._arm_stream_mode = target.mode
+            self._cartesian_arm_target = target
+            self._placement_last_reason = None
+            self._zero_latched = True
+            self._latest_proposal = ZERO_MOBILITY
+            self._latest_proposal_s = self._clock()
+            self._proposal_generation += 1
+            self._body_target_token = self._make_body_target_token()
+            self._condition.notify_all()
+        return target
+
+    def placement_telemetry(self) -> PlacementTelemetry:
+        with self._condition:
+            state = self._latest_state
+            target = self._cartesian_arm_target
+            wheel = self.wheel_stop_status()
+            stream_running = self._stream_feedback_healthy_locked(self._clock())
+            return PlacementTelemetry(
+                arm_mode=self._arm_stream_mode,
+                placement_started=self._placement_started,
+                source_state_sequence=(
+                    None if target is None else target.source_state_sequence
+                ),
+                target_created_monotonic_s=(
+                    None if target is None else target.created_monotonic_s
+                ),
+                right_T_base_eef_target=(
+                    None
+                    if target is None
+                    else np.array(target.right_T_base_eef, copy=True)
+                ),
+                left_T_base_eef_target=(
+                    None if target is None else np.array(target.left_T_base_eef, copy=True)
+                ),
+                measured_T_base_torso_available=(
+                    state is not None
+                    and self._T_base_torso_for_cartesian(state) is not None
+                ),
+                measured_T_base_right_eef_available=(
+                    state is not None and state.T_base_right_eef is not None
+                ),
+                measured_T_base_left_eef_available=(
+                    state is not None and state.T_base_left_eef is not None
+                ),
+                zero_latched=self._zero_latched,
+                wheel_stopped=wheel.stopped,
+                stream_running=stream_running,
+                target_acknowledged=bool(
+                    self._last_acknowledged_body_target_token
+                    == self._body_target_token
+                ),
+                acknowledged_command_sequence=(
+                    self._last_acknowledged_command_sequence
+                ),
+                last_reason=self._placement_last_reason,
+            )
 
     def get_measured_odometry(self) -> tuple[np.ndarray, int, float]:
         """Return fresh ``T_odom_base``, source state sequence, and sample age.
@@ -2416,6 +2910,13 @@ class RBY1PalletController:
                 torque_policy=TORQUE_POLICY,
                 last_feedback_error=self._last_feedback_error,
                 last_error=None if self._last_error is None else str(self._last_error),
+                arm_mode=self._arm_stream_mode,
+                placement_started=self._placement_started,
+                placement_target_sequence=(
+                    None
+                    if self._cartesian_arm_target is None
+                    else self._cartesian_arm_target.source_state_sequence
+                ),
             )
 
     def ingest_robot_state(self, robot_state: Any) -> None:
@@ -2444,16 +2945,20 @@ class RBY1PalletController:
                 self._condition.notify_all()
             return
 
+        T_torso: np.ndarray | None = None
         T_head: np.ndarray | None = None
         T_right: np.ndarray | None = None
         T_left: np.ndarray | None = None
         base_twist: tuple[float, float, float] | None = None
         kinematics_error: str | None = None
         try:
-            T_head, T_right, T_left, base_twist = self._compute_measured_kinematics(
-                position,
-                velocity,
-            )
+            (
+                T_torso,
+                T_head,
+                T_right,
+                T_left,
+                base_twist,
+            ) = self._compute_measured_kinematics(position, velocity)
         except Exception as exc:
             kinematics_error = str(exc)
 
@@ -2492,6 +2997,7 @@ class RBY1PalletController:
                 position_rad=position_copy,
                 velocity_radps=velocity_copy,
                 is_ready=ready_copy,
+                T_base_torso=T_torso,
                 T_base_head=T_head,
                 T_base_right_eef=T_right,
                 T_base_left_eef=T_left,
@@ -2598,20 +3104,30 @@ class RBY1PalletController:
         self,
         position: np.ndarray,
         velocity: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float, float]]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple[float, float, float]]:
         if self._fk_provider is not None:
             result = self._fk_provider(position, velocity)
             if isinstance(result, Mapping):
+                T_torso = result["T_base_torso"]
                 T_head = result["T_base_head"]
                 T_right = result["T_base_right_eef"]
                 T_left = result["T_base_left_eef"]
                 twist = result["base_twist_w_vx_vy"]
             else:
-                T_head, T_right, T_left, twist = result
+                if len(result) == 5:
+                    T_torso, T_head, T_right, T_left, twist = result
+                else:
+                    T_head, T_right, T_left, twist = result
+                    T_torso = np.eye(4, dtype=np.float64)
         elif self._dyn_model is not None and self._dyn_state is not None:
             self._dyn_state.set_q(position)
             self._dyn_state.set_qdot(velocity)
             self._dyn_model.compute_forward_kinematics(self._dyn_state)
+            T_torso = self._dyn_model.compute_transformation(
+                self._dyn_state,
+                _BASE_LINK_INDEX,
+                _TORSO_LINK_INDEX,
+            )
             T_head = self._dyn_model.compute_transformation(
                 self._dyn_state,
                 _BASE_LINK_INDEX,
@@ -2635,6 +3151,7 @@ class RBY1PalletController:
         if twist_array.shape != (3,) or not np.all(np.isfinite(twist_array)):
             raise MeasuredStateError("measured base twist must be finite [w, vx, vy]")
         return (
+            _readonly_matrix(T_torso, "T_base_torso"),
             _readonly_matrix(T_head, "T_base_head"),
             _readonly_matrix(T_right, "T_base_right_eef"),
             _readonly_matrix(T_left, "T_base_left_eef"),
@@ -2716,8 +3233,18 @@ class RBY1PalletController:
         torso_position = getattr(torso, "joint_position_command", None)
         right = getattr(body_components, "right_arm_command", None)
         right_impedance = getattr(right, "joint_impedance_control_command", None)
+        right_cartesian = getattr(
+            right,
+            "cartesian_impedance_control_command",
+            None,
+        )
         left = getattr(body_components, "left_arm_command", None)
         left_impedance = getattr(left, "joint_impedance_control_command", None)
+        left_cartesian = getattr(
+            left,
+            "cartesian_impedance_control_command",
+            None,
+        )
         head = getattr(component, "head_command", None)
         head_position = getattr(head, "joint_position_command", None)
 
@@ -2731,12 +3258,16 @@ class RBY1PalletController:
             ),
             head=all(_node_is_valid(node) for node in (head, head_position)),
             right_arm=all(
-                _node_is_valid(node)
-                for node in (body, body_components, right, right_impedance)
+                _node_is_valid(node) for node in (body, body_components, right)
+            )
+            and (
+                _node_is_valid(right_impedance) or _node_is_valid(right_cartesian)
             ),
             left_arm=all(
-                _node_is_valid(node)
-                for node in (body, body_components, left, left_impedance)
+                _node_is_valid(node) for node in (body, body_components, left)
+            )
+            and (
+                _node_is_valid(left_impedance) or _node_is_valid(left_cartesian)
             ),
             status_code=status,
             finish_code=finish,
@@ -2779,9 +3310,10 @@ class RBY1PalletController:
                         ControllerPhase.FAULT_HOLD,
                     )
                 selected = ZERO_MOBILITY if stale or force_zero else proposal
-                command = self._build_combined_command(
+                command, built_body_target_token = self._build_combined_command(
                     selected,
                     minimum_time_s=self.config.steady_minimum_time_s,
+                    return_body_target_token=True,
                 )
                 with self._condition:
                     self._command_sequence += 1
@@ -2804,6 +3336,9 @@ class RBY1PalletController:
                     if ack.running:
                         self._steady_running_count += 1
                         self._last_acknowledged_command_sequence = command_sequence
+                        self._last_acknowledged_body_target_token = (
+                            built_body_target_token
+                        )
                         self._last_sent_mobility = selected
                         if not stale or proposal.is_zero:
                             self._sent_generation = max(
@@ -2837,15 +3372,272 @@ class RBY1PalletController:
         except Exception as exc:
             self._record_fatal_stream_error(exc)
 
+    def _stream_feedback_healthy_locked(self, now_s: float) -> bool:
+        return bool(
+            self._stream is not None
+            and self._pump_thread is not None
+            and self._pump_thread.is_alive()
+            and self._phase is ControllerPhase.STEADY_HOLD
+            and self._steady_running_count > 0
+            and self._last_feedback_error is None
+            and self._last_error is None
+            and self._last_send_s is not None
+            and now_s - self._last_send_s <= self.config.state_stale_after_s
+        )
+
+    def _exact_zero_latch_acked_locked(self) -> bool:
+        return bool(
+            self._zero_latched
+            and self._zero_latch_command_sequence is not None
+            and self._last_acknowledged_command_sequence
+            >= self._zero_latch_command_sequence
+            and self._last_sent_mobility.is_zero
+        )
+
+    def _placement_fail_closed_locked(self, reason: str) -> None:
+        self._placement_last_reason = reason
+        if self._placement_started:
+            self._zero_latched = True
+            self._latest_proposal = ZERO_MOBILITY
+            self._latest_proposal_s = self._clock()
+            self._proposal_generation += 1
+            self._condition.notify_all()
+
+    def _require_cartesian_entry_locked(self) -> None:
+        now_s = self._clock()
+        if self._placement_started:
+            self._placement_fail_closed_locked("placement_already_started")
+            raise CombinedStreamError("cartesian placement has already started")
+        if not self._stream_feedback_healthy_locked(now_s):
+            self._placement_fail_closed_locked("stream_not_healthy")
+            raise CombinedStreamError("cartesian placement requires a healthy stream")
+        if not self._exact_zero_latch_acked_locked():
+            self._placement_fail_closed_locked("zero_latch_not_acknowledged")
+            raise CombinedStreamError(
+                "cartesian placement requires an acknowledged zero-mobility latch"
+            )
+        wheel = self.wheel_stop_status()
+        if not wheel.stopped:
+            self._placement_fail_closed_locked("wheel_stop_not_fresh")
+            raise MeasuredStateError(
+                "cartesian placement requires fresh stopped-wheel dwell"
+            )
+
+    def _require_cartesian_continuation_locked(self) -> None:
+        now_s = self._clock()
+        if not self._placement_started:
+            self._placement_fail_closed_locked("placement_not_started")
+            raise CombinedStreamError("cartesian release requires placement start")
+        if not self._stream_feedback_healthy_locked(now_s):
+            self._placement_fail_closed_locked("stream_not_healthy")
+            raise CombinedStreamError("cartesian placement stream is not healthy")
+        if not self._exact_zero_latch_acked_locked():
+            self._placement_fail_closed_locked("zero_latch_not_acknowledged")
+            raise CombinedStreamError(
+                "cartesian placement continuation requires acknowledged zero latch"
+            )
+        wheel = self.wheel_stop_status()
+        if not wheel.stopped:
+            self._placement_fail_closed_locked("wheel_stop_not_fresh")
+            raise MeasuredStateError(
+                "cartesian placement continuation requires fresh wheel stop"
+            )
+
+    def _require_cartesian_placement_entry_state(self) -> MeasuredRobotState:
+        with self._condition:
+            self._require_cartesian_entry_locked()
+        state = self.get_measured_state()
+        self._validate_cartesian_state(state)
+        return state
+
+    def _require_cartesian_placement_continuation_state(self) -> MeasuredRobotState:
+        with self._condition:
+            self._require_cartesian_continuation_locked()
+        state = self.get_measured_state()
+        self._validate_cartesian_state(state)
+        return state
+
+    def _validate_cartesian_state(self, state: MeasuredRobotState) -> None:
+        missing: list[str] = []
+        if self._T_base_torso_for_cartesian(state) is None:
+            missing.append("T_base_torso")
+        if state.T_base_right_eef is None:
+            missing.append("T_base_right_eef")
+        if state.T_base_left_eef is None:
+            missing.append("T_base_left_eef")
+        if missing:
+            with self._condition:
+                self._placement_fail_closed_locked("cartesian_fk_unavailable")
+            raise MeasuredStateError(
+                "cartesian arm target requires fresh torso and EEF FK: "
+                f"missing={tuple(missing)} detail={state.kinematics_error}"
+            )
+
+    def _make_cartesian_arm_target(
+        self,
+        state: MeasuredRobotState,
+        *,
+        mode: ArmStreamMode,
+        base_z_offset_m: float,
+        squeeze_offset_m: float,
+        release_spread_m: float,
+    ) -> CartesianArmTarget:
+        self._validate_cartesian_state(state)
+        T_base_torso = self._T_base_torso_for_cartesian(state)
+        if T_base_torso is None:
+            raise MeasuredStateError("T_base_torso unexpectedly missing")
+        if state.T_base_right_eef is None or state.T_base_left_eef is None:
+            raise MeasuredStateError("EEF FK unexpectedly missing")
+        right_base = np.array(state.T_base_right_eef, dtype=np.float64, copy=True)
+        left_base = np.array(state.T_base_left_eef, dtype=np.float64, copy=True)
+        right_nullspace, left_nullspace = self._arm_joint_vectors_for_target(state)
+        axis = right_base[:3, 3] - left_base[:3, 3]
+        axis_norm = float(np.linalg.norm(axis))
+        if not math.isfinite(axis_norm) or axis_norm < 0.10:
+            if self._legacy_direct_state_fixture_mode():
+                axis = np.asarray((0.0, -1.0, 0.0), dtype=np.float64)
+            else:
+                with self._condition:
+                    self._placement_fail_closed_locked("inter_eef_axis_invalid")
+                raise MeasuredStateError("measured inter-EEF axis is invalid")
+        else:
+            axis /= axis_norm
+        base_z = np.asarray((0.0, 0.0, float(base_z_offset_m)), dtype=np.float64)
+        right_base[:3, 3] += base_z - axis * squeeze_offset_m + axis * release_spread_m
+        left_base[:3, 3] += base_z + axis * squeeze_offset_m - axis * release_spread_m
+        T_torso_base = np.linalg.inv(T_base_torso)
+        right_torso = T_torso_base @ right_base
+        left_torso = T_torso_base @ left_base
+        return CartesianArmTarget(
+            mode=mode,
+            right_T_torso_eef=right_torso,
+            left_T_torso_eef=left_torso,
+            right_T_base_eef=right_base,
+            left_T_base_eef=left_base,
+            right_nullspace_joint_rad=right_nullspace,
+            left_nullspace_joint_rad=left_nullspace,
+            inter_eef_axis_base=tuple(float(value) for value in axis),
+            created_monotonic_s=self._clock(),
+            source_state_sequence=state.sequence,
+            lowering_distance_m=abs(float(base_z_offset_m)),
+            squeeze_offset_m=squeeze_offset_m,
+            release_spread_m=release_spread_m,
+        )
+
+    def _arm_joint_vectors_for_target(
+        self,
+        state: MeasuredRobotState,
+    ) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        """Freeze redundant Cartesian DOFs near the measured arm posture."""
+
+        right_indices = self._indices.get("right_arm")
+        left_indices = self._indices.get("left_arm")
+        if right_indices is not None and left_indices is not None:
+            right = state.position_rad[right_indices]
+            left = state.position_rad[left_indices]
+            return (
+                _finite_vector(right, 7, "measured_right_arm_rad"),
+                _finite_vector(left, 7, "measured_left_arm_rad"),
+            )
+        if self._legacy_direct_state_fixture_mode():
+            return (
+                tuple(self._active_right_arm_target_rad),
+                tuple(self._active_left_arm_target_rad),
+            )
+        raise MeasuredStateError(
+            "Cartesian nullspace hold requires measured right/left arm indices"
+        )
+
+    def _make_release_target_from_lowering(
+        self,
+        state: MeasuredRobotState,
+        *,
+        lowering_target: CartesianArmTarget,
+        release_spread_m: float,
+    ) -> CartesianArmTarget:
+        """Open from the planned lowered geometry, not from a deflected wrist pose.
+
+        The lowering target contains a virtual inward squeeze error.  Undo that
+        offset first, then add the commanded outward spread.  This makes the
+        release target invariant to compliance, creep, or a stalled measured
+        hand pose at the instant release is requested.
+        """
+
+        self._validate_cartesian_state(state)
+        if lowering_target.mode is not ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING:
+            raise ValueError("lowering_target must be a placement-lowering target")
+        T_base_torso = self._T_base_torso_for_cartesian(state)
+        if T_base_torso is None:
+            raise MeasuredStateError("T_base_torso unexpectedly missing")
+        axis = np.asarray(lowering_target.inter_eef_axis_base, dtype=np.float64)
+        outward = axis * (
+            lowering_target.squeeze_offset_m + float(release_spread_m)
+        )
+        right_base = np.array(
+            lowering_target.right_T_base_eef,
+            dtype=np.float64,
+            copy=True,
+        )
+        left_base = np.array(
+            lowering_target.left_T_base_eef,
+            dtype=np.float64,
+            copy=True,
+        )
+        right_base[:3, 3] += outward
+        left_base[:3, 3] -= outward
+        T_torso_base = np.linalg.inv(T_base_torso)
+        right_nullspace, left_nullspace = self._arm_joint_vectors_for_target(state)
+        return CartesianArmTarget(
+            mode=ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE,
+            right_T_torso_eef=T_torso_base @ right_base,
+            left_T_torso_eef=T_torso_base @ left_base,
+            right_T_base_eef=right_base,
+            left_T_base_eef=left_base,
+            right_nullspace_joint_rad=right_nullspace,
+            left_nullspace_joint_rad=left_nullspace,
+            inter_eef_axis_base=tuple(float(value) for value in axis),
+            created_monotonic_s=self._clock(),
+            source_state_sequence=state.sequence,
+            lowering_distance_m=lowering_target.lowering_distance_m,
+            squeeze_offset_m=0.0,
+            release_spread_m=float(release_spread_m),
+        )
+
+    def _legacy_direct_state_fixture_mode(self) -> bool:
+        return bool(
+            not self._state_update_started
+            and self._fk_provider is None
+            and self._dyn_model is None
+        )
+
+    def _T_base_torso_for_cartesian(
+        self,
+        state: MeasuredRobotState,
+    ) -> np.ndarray | None:
+        if state.T_base_torso is not None:
+            return state.T_base_torso
+        if self._legacy_direct_state_fixture_mode():
+            identity = np.eye(4, dtype=np.float64)
+            identity.setflags(write=False)
+            return identity
+        return None
+
     def _build_combined_command(
         self,
         mobility: MobilityCommand,
         *,
         minimum_time_s: float,
+        return_body_target_token: bool = False,
     ) -> Any:
         if self._sdk is None:
             raise CombinedStreamError("RB-Y1 SDK is not loaded")
         pose = self.config.ready_pose
+        with self._condition:
+            arm_mode = self._arm_stream_mode
+            cartesian_target = self._cartesian_arm_target
+            right_joint_target = self._active_right_arm_target_rad
+            left_joint_target = self._active_left_arm_target_rad
+            body_target_token = self._body_target_token
 
         def header() -> Any:
             return self._sdk.CommandHeaderBuilder().set_control_hold_time(
@@ -2875,11 +3667,88 @@ class RBY1PalletController:
                 .set_stiffness(np.asarray(ARM_STIFFNESS, dtype=np.float64))
             )
 
+        def cartesian_arm(
+            link_name: str,
+            target: np.ndarray,
+            nullspace_joint_rad: tuple[float, ...],
+        ) -> Any:
+            # Deliberately omit torque-limit override; the SDK policy stays default.
+            cartesian_builder = getattr(
+                self._sdk,
+                "CartesianImpedanceControlCommandBuilder",
+                None,
+            )
+            if not callable(cartesian_builder):
+                if self._legacy_direct_state_fixture_mode():
+                    target_rad = (
+                        right_joint_target
+                        if link_name == RIGHT_EEF_LINK
+                        else left_joint_target
+                    )
+                    return arm(target_rad)
+                raise CombinedStreamError(
+                    "RB-Y1 SDK does not provide Cartesian impedance commands"
+                )
+            builder = (
+                cartesian_builder()
+                .set_command_header(header())
+                .add_target(
+                    TORSO_REFERENCE_LINK,
+                    link_name,
+                    np.asarray(target, dtype=np.float64),
+                    self.config.placement_linear_velocity_limit_mps,
+                    self.config.placement_angular_velocity_limit_radps,
+                    self.config.placement_linear_acceleration_limit_mps2,
+                    self.config.placement_angular_acceleration_limit_radps2,
+                )
+                .set_joint_stiffness(
+                    np.asarray(self.config.placement_joint_stiffness, dtype=np.float64)
+                )
+                .set_joint_damping_ratio(self.config.placement_joint_damping_ratio)
+                .set_minimum_time(minimum_time_s)
+            )
+            set_nullspace = getattr(builder, "set_nullspace_joint_target", None)
+            if not callable(set_nullspace):
+                if not self._legacy_direct_state_fixture_mode():
+                    raise CombinedStreamError(
+                        "RB-Y1 Cartesian impedance builder lacks nullspace hold"
+                    )
+            else:
+                builder = set_nullspace(
+                    np.asarray(nullspace_joint_rad, dtype=np.float64),
+                    np.asarray(
+                        self.config.placement_nullspace_weight,
+                        dtype=np.float64,
+                    ),
+                    self.config.placement_nullspace_kp,
+                    self.config.placement_nullspace_kd,
+                    self.config.placement_nullspace_cost_weight,
+                )
+            set_reset_reference = getattr(builder, "set_reset_reference", None)
+            if callable(set_reset_reference):
+                builder = set_reset_reference(False)
+            return builder
+
+        if arm_mode is ArmStreamMode.JOINT_READY_HOLD or cartesian_target is None:
+            right_arm = arm(right_joint_target)
+            left_arm = arm(left_joint_target)
+        else:
+            right_arm = cartesian_arm(
+                RIGHT_EEF_LINK,
+                cartesian_target.right_T_torso_eef,
+                cartesian_target.right_nullspace_joint_rad,
+            )
+            left_arm = cartesian_arm(
+                LEFT_EEF_LINK,
+                cartesian_target.left_T_torso_eef,
+                cartesian_target.left_nullspace_joint_rad,
+            )
+
         body = (
             self._sdk.BodyComponentBasedCommandBuilder()
             .set_torso_command(torso)
-            .set_right_arm_command(arm(self._active_right_arm_target_rad))
-            .set_left_arm_command(arm(self._active_left_arm_target_rad))
+            .set_right_arm_command(right_arm)
+            .set_left_arm_command(left_arm)
         )
         se2 = (
             self._sdk.SE2VelocityCommandBuilder()
@@ -2904,7 +3773,10 @@ class RBY1PalletController:
             .set_body_command(body)
             .set_head_command(head)
         )
-        return self._sdk.RobotCommandBuilder().set_command(component)
+        command = self._sdk.RobotCommandBuilder().set_command(component)
+        if return_body_target_token:
+            return command, body_target_token
+        return command
 
     def _normalize_mobility(self, mobility: MobilityCommand | Any) -> MobilityCommand:
         if isinstance(mobility, MobilityCommand):
@@ -3039,6 +3911,13 @@ class RBY1PalletController:
 
     def _make_body_target_token(self) -> str:
         pose = self.config.ready_pose
+        cartesian_payload: dict[str, Any] | None = None
+        if self._cartesian_arm_target is not None:
+            cartesian_payload = {
+                "mode": self._cartesian_arm_target.mode.value,
+                "right_T_torso_eef": self._cartesian_arm_target.right_T_torso_eef.tolist(),
+                "left_T_torso_eef": self._cartesian_arm_target.left_T_torso_eef.tolist(),
+            }
         payload = {
             "torso": pose.torso_rad,
             "right_arm": self._active_right_arm_target_rad,
@@ -3047,6 +3926,8 @@ class RBY1PalletController:
             "right_stiffness": ARM_STIFFNESS,
             "left_stiffness": ARM_STIFFNESS,
             "torque_policy": TORQUE_POLICY,
+            "arm_stream_mode": self._arm_stream_mode.value,
+            "cartesian": cartesian_payload,
         }
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -3132,6 +4013,8 @@ class RBY1PalletController:
 
 __all__ = [
     "ARM_STIFFNESS",
+    "ArmStreamMode",
+    "CartesianArmTarget",
     "CommandId",
     "CommandOwnershipError",
     "CombinedStreamError",
@@ -3151,6 +4034,7 @@ __all__ = [
     "MobilityCommand",
     "PalletControlConfig",
     "PalletControlError",
+    "PlacementTelemetry",
     "RBY1PalletController",
     "ReadyPose",
     "ReadyHoldHandoff",
@@ -3160,6 +4044,7 @@ __all__ = [
     "RobotMotionDisabledError",
     "StreamTelemetry",
     "TORQUE_POLICY",
+    "TORSO_REFERENCE_LINK",
     "WheelStopStatus",
     "ZERO_MOBILITY",
 ]

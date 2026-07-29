@@ -1,4 +1,4 @@
-"""Live D435 facade and in-process slot-1 hover coordinator.
+"""Live D435 facade and in-process slot-1 coordinator.
 
 Plain ``pallet live`` is perception-only: it never imports the RB-Y1 SDK and
 never connects to a robot.  Explicit loaded slot-1 execution first verifies the
@@ -8,14 +8,15 @@ legacy active/released box-pick ownership-transfer scaffolds remain rejected;
 this MVP starts only after the previous process has ended and the current
 session has freshly measured the already-held ready posture.
 
-The execute path terminates alignment in a persistent zero-mobility body hold.
-This module has no descent, contact, release, gripper, or slide operation.
+The default execute path terminates alignment in a persistent zero-mobility
+body hold.  Slot-1 lowering/release is available only behind explicit runtime
+and config commissioning gates, and remains exact-zero mobility throughout.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 import json
 import math
 import os
@@ -50,6 +51,15 @@ from .pallet_models import (
     load_slot1_hole_reference,
 )
 from .pallet_control import MobilityCommand
+from .pallet_place import (
+    PlacementConfig,
+    PlacementInput,
+    PlacementOutput,
+    PlacementRequest,
+    PlacementState,
+    Slot1PlacementSequencer,
+    WrenchNorms,
+)
 from .pallet_servo import (
     PalletServoConfig,
     PalletServoOutput,
@@ -105,6 +115,20 @@ class _ControllerLike(Protocol):
     def get_measured_eef_transforms(self) -> tuple[np.ndarray, np.ndarray]: ...
 
     def get_measured_state(self) -> Any: ...
+
+    def placement_telemetry(self) -> Any: ...
+
+    def start_cartesian_lowering_hold(
+        self,
+        *,
+        squeeze_offset_m: float | None = None,
+    ) -> Any: ...
+
+    def start_cartesian_release_hold(
+        self,
+        *,
+        release_spread_m: float | None = None,
+    ) -> Any: ...
 
     def get_measured_odometry(self) -> tuple[np.ndarray, int, float]: ...
 
@@ -921,6 +945,246 @@ def _controller_scene_sample(
     }
 
 
+def _wrench_norms_from_state(state: Any | None) -> tuple[WrenchNorms, str]:
+    """Return F/T norms when present; otherwise provide explicit zero telemetry.
+
+    The current slot-1 commissioning path is vision/geometry based.  Missing F/T
+    feedback must not block it, but logs should still make that absence visible.
+    """
+
+    if state is None:
+        return WrenchNorms(0.0, 0.0, 0.0, 0.0), "measured_state_unavailable"
+
+    right_force = getattr(state, "right_force_n", None)
+    left_force = getattr(state, "left_force_n", None)
+    right_torque = getattr(state, "right_torque_nm", None)
+    left_torque = getattr(state, "left_torque_nm", None)
+    vectors = (right_force, left_force, right_torque, left_torque)
+    if any(vector is None for vector in vectors):
+        return WrenchNorms(0.0, 0.0, 0.0, 0.0), "force_torque_unavailable_zero_fallback"
+    try:
+        return (
+            WrenchNorms(
+                float(np.linalg.norm(right_force)),
+                float(np.linalg.norm(left_force)),
+                float(np.linalg.norm(right_torque)),
+                float(np.linalg.norm(left_torque)),
+            ),
+            "measured_force_torque",
+        )
+    except Exception:
+        return WrenchNorms(0.0, 0.0, 0.0, 0.0), "force_torque_invalid_zero_fallback"
+
+
+def _held_box_height_bounds(root: Mapping[str, Any]) -> tuple[float, float, float]:
+    held = _section(root, "held_box")
+    nominal_size = tuple(
+        float(value) for value in held.get("nominal_size_m", (0.400, 0.253, 0.160))
+    )
+    if len(nominal_size) != 3:
+        raise ValueError("held_box.nominal_size_m must contain three values")
+    nominal_height = float(nominal_size[2])
+    minimum_height = float(held.get("minimum_height_m", 0.156))
+    maximum_height = float(held.get("maximum_height_m", 0.164))
+    if not all(
+        math.isfinite(value) and value > 0.0
+        for value in (minimum_height, nominal_height, maximum_height)
+    ):
+        raise ValueError("held-box height bounds must be finite and positive")
+    if minimum_height > nominal_height or nominal_height > maximum_height:
+        raise ValueError(
+            "held-box height bounds must satisfy minimum <= nominal <= maximum"
+        )
+    return minimum_height, nominal_height, maximum_height
+
+
+def _predict_box_bottom_gap(
+    root: Mapping[str, Any],
+    scene: PalletSceneObservation,
+) -> tuple[float | None, float | None, dict[str, Any]]:
+    """Predict held box bottom clearance above the stack top plane.
+
+    This intentionally uses direct held-top depth evidence rather than the FK
+    box-center proxy.  If either complete-hole stack geometry or held-top
+    evidence is invalid, the sequencer receives ``None`` and stays fail-closed
+    unless geometry-only lowering is explicitly requested.
+    """
+
+    minimum_height, nominal_height, maximum_height = _held_box_height_bounds(root)
+    height_half_range_m = 0.5 * (maximum_height - minimum_height)
+    held = scene.held_top
+    stack = scene.stack
+    diagnostics: dict[str, Any] = {
+        "source": "held_top_minus_nominal_height_minus_valid_stack_plane",
+        "minimum_box_height_m": minimum_height,
+        "nominal_box_height_m": nominal_height,
+        "maximum_box_height_m": maximum_height,
+        "height_half_range_m": height_half_range_m,
+        "valid": False,
+    }
+    if held is None or not held.valid:
+        diagnostics["reason"] = (
+            "held_top_invalid"
+            if held is None
+            else ";".join(held.rejection_reasons)
+        )
+        return None, None, diagnostics
+    if (
+        held.top_plane_z_base_m is None
+        or held.top_plane_z_uncertainty_m is None
+        or not math.isfinite(float(held.top_plane_z_base_m))
+        or not math.isfinite(float(held.top_plane_z_uncertainty_m))
+    ):
+        diagnostics["reason"] = "held_top_z_unavailable"
+        return None, None, diagnostics
+    if not stack.valid or stack.plane_height_base_m is None:
+        diagnostics["reason"] = (
+            "stack_plane_invalid"
+            if stack.valid
+            else ";".join(stack.rejection_reasons)
+        )
+        return None, None, diagnostics
+    stack_residual = stack.quality.get("stack_plane_p95_residual_m")
+    if stack_residual is None or not math.isfinite(float(stack_residual)):
+        diagnostics["reason"] = "stack_plane_residual_unavailable"
+        return None, None, diagnostics
+
+    held_top_z = float(held.top_plane_z_base_m)
+    stack_top_z = float(stack.plane_height_base_m)
+    held_uncertainty = max(0.0, float(held.top_plane_z_uncertainty_m))
+    stack_uncertainty = max(0.0, float(stack_residual))
+    gap_m = held_top_z - nominal_height - stack_top_z
+    uncertainty_m = held_uncertainty + stack_uncertainty + height_half_range_m
+    diagnostics.update(
+        {
+            "valid": True,
+            "held_top_z_base_m": held_top_z,
+            "stack_top_z_base_m": stack_top_z,
+            "held_top_uncertainty_m": held_uncertainty,
+            "stack_plane_p95_residual_m": stack_uncertainty,
+            "predicted_box_bottom_gap_m": gap_m,
+            "predicted_box_bottom_gap_uncertainty_m": uncertainty_m,
+        }
+    )
+    return gap_m, uncertainty_m, diagnostics
+
+
+def _controller_arm_mode_string(placement_telemetry: Any | None) -> str:
+    if placement_telemetry is None:
+        return ""
+    mode = getattr(placement_telemetry, "arm_mode", "")
+    return str(getattr(mode, "value", mode))
+
+
+def _placement_telemetry_payload(placement_telemetry: Any | None) -> Any:
+    if placement_telemetry is None:
+        return None
+    if is_dataclass(placement_telemetry):
+        return to_jsonable(asdict(placement_telemetry))
+    payload = {
+        name: getattr(placement_telemetry, name, None)
+        for name in (
+            "arm_mode",
+            "placement_started",
+            "source_state_sequence",
+            "target_created_monotonic_s",
+            "right_T_base_eef_target",
+            "left_T_base_eef_target",
+            "zero_latched",
+            "wheel_stopped",
+            "stream_running",
+            "target_acknowledged",
+            "acknowledged_command_sequence",
+            "last_reason",
+        )
+        if hasattr(placement_telemetry, name)
+    }
+    if "arm_mode" in payload:
+        mode = payload["arm_mode"]
+        payload["arm_mode"] = str(getattr(mode, "value", mode))
+    return to_jsonable(payload)
+
+
+def _placement_input(
+    root: Mapping[str, Any],
+    scene: PalletSceneObservation,
+    controller: _ControllerLike,
+    *,
+    now_s: float,
+    gap_observation_timestamp_s: float,
+    gap_observation_sequence: int,
+    decision: PalletServoOutput,
+    zero_acknowledged: bool,
+    stationary: bool,
+    allow_geometry_only_lowering: bool,
+    allow_vision_geometry_release: bool,
+) -> tuple[PlacementInput, dict[str, Any]]:
+    measured_state = controller.get_measured_state()
+    right_eef, left_eef = controller.get_measured_eef_transforms()
+    telemetry = controller.placement_telemetry()
+    wrench, wrench_source = _wrench_norms_from_state(measured_state)
+    gap_m, gap_uncertainty_m, gap_diagnostics = _predict_box_bottom_gap(root, scene)
+    feedback_timestamp_s = float(getattr(measured_state, "received_monotonic_s", now_s))
+    input_sample = PlacementInput(
+        now_s=now_s,
+        feedback_timestamp_s=feedback_timestamp_s,
+        right_eef_base=right_eef,
+        left_eef_base=left_eef,
+        wrench_norms=wrench,
+        arrived_hold=decision.state is PalletServoState.ARRIVED_HOLD,
+        post_zero_wheel_stop=bool(stationary and zero_acknowledged),
+        zero_command_ack=bool(zero_acknowledged),
+        measured_state_fresh=True,
+        controller_stream_healthy=bool(getattr(telemetry, "stream_running", False)),
+        controller_arm_mode=_controller_arm_mode_string(telemetry),
+        controller_target_ack=bool(getattr(telemetry, "target_acknowledged", False)),
+        right_target_base=getattr(telemetry, "right_T_base_eef_target", None),
+        left_target_base=getattr(telemetry, "left_T_base_eef_target", None),
+        allow_geometry_only_lowering=bool(allow_geometry_only_lowering),
+        allow_vision_geometry_release=bool(allow_vision_geometry_release),
+        predicted_box_bottom_gap_m=gap_m,
+        predicted_box_bottom_gap_uncertainty_m=gap_uncertainty_m,
+        gap_observation_timestamp_s=gap_observation_timestamp_s,
+        gap_observation_sequence=gap_observation_sequence,
+    )
+    diagnostics = {
+        "wrench_source": wrench_source,
+        "gap_prediction": gap_diagnostics,
+        "placement_telemetry": _placement_telemetry_payload(telemetry),
+    }
+    return input_sample, diagnostics
+
+
+def _annotate_placement_output(
+    output: PalletServoOutput,
+    placement: PlacementOutput | None,
+    diagnostics: Mapping[str, Any] | None = None,
+) -> PalletServoOutput:
+    if placement is None:
+        return output
+    merged = dict(output.diagnostics)
+    merged["placement"] = {
+        "state": placement.state.value,
+        "request": placement.request.value,
+        "reason": placement.reason,
+        "done": placement.done,
+        "faulted": placement.faulted,
+        "release_authorized": placement.release_authorized,
+        "diagnostics": dict(placement.diagnostics),
+        "runtime": dict(diagnostics or {}),
+    }
+    reason = f"{output.reason}; placement:{placement.reason}"
+    return PalletServoOutput(
+        command=output.command,
+        state=output.state,
+        arrived=output.arrived,
+        hold_body=output.hold_body,
+        measurement_accepted=output.measurement_accepted,
+        reason=reason,
+        diagnostics=merged,
+    )
+
+
 def _wheel_measurement(
     status: Any,
     now_s: float,
@@ -1079,6 +1343,23 @@ def _annotate_fine_output(
     )
 
 
+def _placement_zero_hold_output(output: PalletServoOutput) -> PalletServoOutput:
+    """Freeze mobile authority after the first placement Cartesian command."""
+
+    diagnostics = dict(output.diagnostics)
+    diagnostics["controller_owner"] = "slot1_placement"
+    diagnostics["mobile_authority_locked_zero"] = True
+    return PalletServoOutput(
+        command=VelocityCommand(),
+        state=PalletServoState.ARRIVED_HOLD,
+        arrived=True,
+        hold_body=True,
+        measurement_accepted=output.measurement_accepted,
+        reason="placement_active_exact_zero_mobility",
+        diagnostics=diagnostics,
+    )
+
+
 def _send_persistent_zero(controller: _ControllerLike) -> None:
     telemetry = controller.telemetry()
     if bool(getattr(telemetry, "zero_latched", False)):
@@ -1097,6 +1378,24 @@ def _live_result_fresh(
         and -1e-9 <= age_s
         and age_s + 1e-12 < _MAX_LIVE_CONTROL_RESULT_AGE_S
     )
+
+
+def _raw_complete_hole_evidence(
+    scene: PalletSceneObservation,
+    *,
+    frame_result_fresh: bool,
+) -> tuple[bool, float | None]:
+    """Expose raw complete-hole evidence so continuous acquisition can brake."""
+
+    if not frame_result_fresh or not scene.stack.valid:
+        return False, None
+    try:
+        timestamp_s = float(scene.stack.timestamp_s)
+    except (AttributeError, TypeError, ValueError):
+        return False, None
+    if not math.isfinite(timestamp_s):
+        return False, None
+    return True, timestamp_s
 
 
 def _dispatch_live_decision(
@@ -1175,6 +1474,7 @@ def _draw_live_overlay(
     stationary_source: str = "unknown",
     motion_interlock_reason: str = "",
     dispatch_result: str = "not_dispatched",
+    placement: PlacementOutput | None = None,
 ) -> np.ndarray:
     try:
         import cv2  # type: ignore[import-not-found]
@@ -1340,12 +1640,29 @@ def _draw_live_overlay(
             f"budget={acquisition.remaining_budget_m:.3f}m"
         )
     )
+    if placement is None:
+        placement_line = "placement: inactive"
+        placement_gap_line = "placement gap: --"
+    else:
+        gap = placement.diagnostics.get("predicted_box_bottom_gap_m")
+        uncertainty = placement.diagnostics.get("predicted_box_bottom_gap_uncertainty_m")
+        placement_line = (
+            f"placement: {placement.state.value} request={placement.request.value} "
+            f"{placement.reason}"
+        )
+        placement_gap_line = (
+            "placement gap: --"
+            if gap is None or uncertainty is None
+            else f"placement gap: {float(gap):+.3f} +/- {float(uncertainty):.3f} m"
+        )
     lines = (
         f"PALLET SLOT 1: {mode}",
         f"owner: {owner}  servo: {servo_output.state.value}",
         f"vision: hole={'valid' if scene.valid else 'abstain'}  stationary={stationary_source}",
         gate_line,
         acquisition_line,
+        placement_line,
+        placement_gap_line,
         f"dispatch: {dispatch_result}",
         "motion interlock: " + (motion_interlock_reason or "PASS"),
         error_line,
@@ -1435,6 +1752,9 @@ def _telemetry_record(
     dispatch_result: str = "dry_run_no_actuation",
     T_base_depth: np.ndarray | None = None,
     slot1_hole_reference: Slot1HoleReference | None = None,
+    placement: PlacementOutput | None = None,
+    placement_runtime_diagnostics: Mapping[str, Any] | None = None,
+    loop_timing: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     proposal_accepted = dispatch_result == "nonzero_proposal_accepted"
     selected_zero = dispatch_result in {
@@ -1488,6 +1808,7 @@ def _telemetry_record(
         ),
         "odometry": None if odometry is None else asdict(odometry),
         "odometry_error": odometry_error,
+        "timing": dict(loop_timing or {}),
         "alignment": {
             "state": output.state.value,
             "arrived": output.arrived,
@@ -1510,6 +1831,20 @@ def _telemetry_record(
             "transmitted_twist": None,
             "diagnostics": dict(output.diagnostics),
         },
+        "placement": (
+            None
+            if placement is None
+            else {
+                "state": placement.state.value,
+                "request": placement.request.value,
+                "reason": placement.reason,
+                "done": placement.done,
+                "faulted": placement.faulted,
+                "release_authorized": placement.release_authorized,
+                "diagnostics": dict(placement.diagnostics),
+                "runtime": dict(placement_runtime_diagnostics or {}),
+            }
+        ),
     }
     if controller is not None:
         record["whole_body_owner"] = to_jsonable(controller.telemetry())
@@ -1581,6 +1916,9 @@ def run_pallet_live(
     execute: bool = False,
     allow_nominal_registration: bool = False,
     allow_geometry_only_grip_check: bool = False,
+    auto_place_slot1: bool = False,
+    allow_geometry_only_lowering: bool = False,
+    allow_vision_geometry_release: bool = False,
     ensure_slot1_ready: bool = False,
     robot_address: str = "192.168.30.1:50051",
     robot_power: str = ".*",
@@ -1596,7 +1934,7 @@ def run_pallet_live(
     ready_hold_handoff: Any | None = None,
     source_release_witness: Any | None = None,
 ) -> int:
-    """Run pallet perception or loaded-box slot-1 base alignment.
+    """Run pallet perception, loaded-box slot-1 alignment, and gated placement.
 
     Execution is a standalone post-pick boundary: the previous process must be
     stopped, the configured loaded ready posture is verified, and this process
@@ -1630,6 +1968,16 @@ def run_pallet_live(
         )
     if execute and not ensure_slot1_ready:
         raise ValueError("loaded slot-1 execution requires ensure_slot1_ready=True")
+    if auto_place_slot1 and not execute:
+        raise ValueError("slot-1 placement requires execute=True")
+    if allow_geometry_only_lowering and not auto_place_slot1:
+        raise ValueError(
+            "allow_geometry_only_lowering is valid only with auto_place_slot1=True"
+        )
+    if allow_vision_geometry_release and not auto_place_slot1:
+        raise ValueError(
+            "allow_vision_geometry_release is valid only with auto_place_slot1=True"
+        )
 
     calibration = _section(root_config, "calibration")
     absolute_registration = bool(calibration.get("absolute_base_validated", False))
@@ -1670,6 +2018,28 @@ def run_pallet_live(
     if not execute and allow_geometry_only_grip_check:
         raise ValueError(
             "allow_geometry_only_grip_check is valid only with execute=True"
+        )
+    placement_section = _section(root_config, "placement")
+    placement_config_enabled = bool(placement_section.get("enabled", False))
+    geometry_lowering_policy_enabled = bool(
+        placement_section.get("geometry_only_lowering_enabled", False)
+    )
+    vision_release_policy_enabled = bool(
+        placement_section.get("vision_geometry_release_enabled", False)
+    )
+    if auto_place_slot1 and not placement_config_enabled:
+        raise RuntimeError(
+            "slot-1 placement requires placement.enabled=true in the reviewed config"
+        )
+    if allow_geometry_only_lowering and not geometry_lowering_policy_enabled:
+        raise RuntimeError(
+            "geometry-only lowering requires "
+            "placement.geometry_only_lowering_enabled=true"
+        )
+    if allow_vision_geometry_release and not vision_release_policy_enabled:
+        raise RuntimeError(
+            "vision/geometry release requires "
+            "placement.vision_geometry_release_enabled=true"
         )
     if not execute and any(
         value is not None
@@ -1734,8 +2104,16 @@ def run_pallet_live(
         ),
     )
     servo = PalletSlot1Servo(PalletServoConfig.from_root_config(root_config))
+    placement_config = PlacementConfig.from_root_config(root_config)
+    placement_sequencer = (
+        Slot1PlacementSequencer(placement_config) if auto_place_slot1 else None
+    )
     authority = CoarseFineAuthority()
     shutdown_pending = False
+    placement_lowering_started = False
+    placement_release_started = False
+    last_placement_output: PlacementOutput | None = None
+    last_placement_runtime_diagnostics: dict[str, Any] | None = None
     scene_window: deque[dict[str, Any]] = deque(maxlen=30)
     calibration_status = "nominal_ready_assumed"
     T_base_depth = configured_T_base_from_depth(root_config)
@@ -1856,6 +2234,7 @@ def run_pallet_live(
                     continue
 
                 frame_received_monotonic_s = time.monotonic()
+                estimator_started_monotonic_s = frame_received_monotonic_s
                 validated_frame_age_s = frame_gate.validate(frame)
                 frame_source_monotonic_s = (
                     frame_received_monotonic_s - validated_frame_age_s
@@ -1889,6 +2268,7 @@ def run_pallet_live(
                     held_box_hint=_held_hint(root_config, held_proxy),
                     calibration_status=calibration_status,
                 )
+                estimator_finished_monotonic_s = time.monotonic()
                 decision_now_s = time.monotonic()
                 frame_result_fresh = _live_result_fresh(
                     frame_source_monotonic_s,
@@ -1976,6 +2356,12 @@ def run_pallet_live(
                     if raw_l_corner_visible and coarse is not None
                     else None
                 )
+                raw_hole_visible, raw_hole_timestamp_s = (
+                    _raw_complete_hole_evidence(
+                        scene,
+                        frame_result_fresh=frame_result_fresh,
+                    )
+                )
                 l_status = l_corner_gate.update(
                     coarse,
                     stationary=stationary_for_vision,
@@ -2025,6 +2411,8 @@ def run_pallet_live(
                             if raw_l_corner_visible and coarse is not None
                             else None
                         ),
+                        hole_visible=raw_hole_visible,
+                        hole_visible_timestamp_s=raw_hole_timestamp_s,
                         hole_dwell_complete=hole_status.dwell_complete,
                         hole_window_started_at_s=(
                             hole_status.window_started_at_s
@@ -2068,6 +2456,21 @@ def run_pallet_live(
                         )
                         decision_owner = PalletControlOwner.FORWARD_ACQUISITION
 
+                placement_motion_active = bool(
+                    auto_place_slot1
+                    and placement_sequencer is not None
+                    and not shutdown_pending
+                    and (
+                        placement_lowering_started
+                        or placement_release_started
+                        or placement_sequencer.state
+                        is not PlacementState.PRE_PLACE_VERIFY
+                    )
+                )
+                if placement_motion_active:
+                    decision = _placement_zero_hold_output(decision)
+                    decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
+
                 dispatch_result = "dry_run_no_actuation"
                 if execute:
                     assert controller is not None
@@ -2079,6 +2482,91 @@ def run_pallet_live(
                         motion_interlocks_ok=motion_interlocks_ok,
                         source_timestamp_s=frame_source_monotonic_s,
                     )
+
+                placement_output: PlacementOutput | None = None
+                placement_runtime_diagnostics: dict[str, Any] | None = None
+                if (
+                    execute
+                    and auto_place_slot1
+                    and placement_sequencer is not None
+                    and (
+                        decision.state is PalletServoState.ARRIVED_HOLD
+                        or placement_motion_active
+                    )
+                    and dispatch_result
+                    in {"state_requires_persistent_zero", "exact_zero_decision"}
+                ):
+                    assert controller is not None
+                    sample, placement_runtime_diagnostics = _placement_input(
+                        root_config,
+                        scene,
+                        controller,
+                        now_s=time.monotonic(),
+                        gap_observation_timestamp_s=frame_source_monotonic_s,
+                        gap_observation_sequence=frame.depth_frame_number,
+                        decision=decision,
+                        zero_acknowledged=_zero_command_acknowledged(controller),
+                        stationary=stationary,
+                        allow_geometry_only_lowering=allow_geometry_only_lowering,
+                        allow_vision_geometry_release=allow_vision_geometry_release,
+                    )
+                    placement_output = placement_sequencer.update(sample)
+                    if (
+                        placement_output.request
+                        is PlacementRequest.LOWER_CARTESIAN_50MM
+                        and not placement_lowering_started
+                    ):
+                        controller.start_cartesian_lowering_hold()
+                        placement_lowering_started = True
+                        assert containment is not None
+                        containment.mark_robot_touch()
+                        containment.mark_destination_commanded()
+                        placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                            "start_cartesian_lowering_hold"
+                        )
+                    elif (
+                        placement_output.request is PlacementRequest.SPREAD_RELEASE
+                        and not placement_release_started
+                    ):
+                        controller.start_cartesian_release_hold()
+                        placement_release_started = True
+                        assert containment is not None
+                        containment.mark_robot_touch()
+                        containment.mark_destination_commanded()
+                        placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                            "start_cartesian_release_hold"
+                        )
+                    else:
+                        placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                            "none"
+                        )
+                    last_placement_output = placement_output
+                    last_placement_runtime_diagnostics = placement_runtime_diagnostics
+                    decision = _annotate_placement_output(
+                        decision,
+                        placement_output,
+                        placement_runtime_diagnostics,
+                    )
+                elif last_placement_output is not None:
+                    decision = _annotate_placement_output(
+                        decision,
+                        last_placement_output,
+                        last_placement_runtime_diagnostics,
+                    )
+
+                loop_finished_monotonic_s = time.monotonic()
+                loop_timing = {
+                    "capture_age_s": float(validated_frame_age_s),
+                    "estimator_ms": 1000.0
+                    * (
+                        estimator_finished_monotonic_s
+                        - estimator_started_monotonic_s
+                    ),
+                    "post_estimator_decision_ms": 1000.0
+                    * (loop_finished_monotonic_s - estimator_finished_monotonic_s),
+                    "loop_ms": 1000.0
+                    * (loop_finished_monotonic_s - frame_received_monotonic_s),
+                }
 
                 overlay = _draw_live_overlay(
                     color,
@@ -2096,6 +2584,7 @@ def run_pallet_live(
                     stationary_source=stationary_source,
                     motion_interlock_reason=motion_interlock_reason,
                     dispatch_result=dispatch_result,
+                    placement=placement_output or last_placement_output,
                 )
                 if video_writer is None and output_mp4 is not None:
                     video_writer = _open_video(Path(output_mp4), overlay.shape[:2], fps)
@@ -2121,14 +2610,30 @@ def run_pallet_live(
                     dispatch_result=dispatch_result,
                     T_base_depth=T_base_depth,
                     slot1_hole_reference=slot1_hole_reference,
+                    placement=placement_output or last_placement_output,
+                    placement_runtime_diagnostics=(
+                        placement_runtime_diagnostics
+                        or last_placement_runtime_diagnostics
+                    ),
+                    loop_timing=loop_timing,
                 )
                 _write_record(log_stream, record)
                 if frame_count % fps == 0:
+                    placement_suffix = (
+                        ""
+                        if (placement_output or last_placement_output) is None
+                        else (
+                            " placement="
+                            f"{(placement_output or last_placement_output).state.value}:"
+                            f"{(placement_output or last_placement_output).reason}"
+                        )
+                    )
                     print(
                         f"[pallet] frame={frame_count} vision={'valid' if scene.valid else 'abstain'} "
                         f"state={decision.state.value} reason={decision.reason} "
                         f"dispatch={dispatch_result} interlock="
-                        f"{motion_interlock_reason or 'PASS'}",
+                        f"{motion_interlock_reason or 'PASS'}"
+                        f"{placement_suffix}",
                         file=sys.stderr,
                     )
                 frame_count += 1

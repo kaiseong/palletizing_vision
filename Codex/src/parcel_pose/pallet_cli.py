@@ -1,4 +1,4 @@
-"""CLI for metric pallet-stack replay and supervised slot-1 hover control."""
+"""CLI for metric pallet-stack replay and supervised slot-1 control."""
 
 from __future__ import annotations
 
@@ -74,8 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pallet",
         description=(
-            "D435 metric pallet-stack tools and supervised RB-Y1 slot-1 hover; "
-            "this MVP never descends or releases the carton"
+            "D435 metric pallet-stack tools and supervised RB-Y1 slot-1 "
+            "alignment/placement"
         ),
     )
     subparsers = parser.add_subparsers(dest="subcommand")
@@ -155,6 +155,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     live.add_argument(
+        "--auto-place-slot1",
+        action="store_true",
+        help=(
+            "after slot-1 ARRIVED_HOLD, run the gated 50 mm Cartesian lowering "
+            "and optional release sequence; requires --auto-palletize-slot1 and "
+            "placement.enabled=true in the config"
+        ),
+    )
+    live.add_argument(
         "--allow-nominal-registration",
         action="store_true",
         help="explicitly accept the nominal_unverified camera/base registration",
@@ -166,6 +175,22 @@ def build_parser() -> argparse.ArgumentParser:
             "commissioning-only: allow the fixed-ready FK/EEF geometry and measured "
             "joint continuity to replace unconfigured F/T plausibility thresholds; "
             "the loaded config must enable the same reviewed commissioning policy"
+        ),
+    )
+    live.add_argument(
+        "--allow-geometry-only-lowering",
+        action="store_true",
+        help=(
+            "commissioning-only: allow the 50 mm lowering to complete into a hold "
+            "without seating evidence; never authorizes release by itself"
+        ),
+    )
+    live.add_argument(
+        "--allow-vision-geometry-release",
+        action="store_true",
+        help=(
+            "commissioning-only: allow release when held-top/stack-plane geometry "
+            "predicts that the 50 mm lowering will seat the box; F/T is not required"
         ),
     )
     live.add_argument(
@@ -265,6 +290,16 @@ def _run_live(args: argparse.Namespace) -> int:
             "loaded slot-1 alignment requires --ensure-slot1-ready so the configured "
             "held-box posture is verified before the combined command stream starts"
         )
+    if args.auto_place_slot1 and not args.auto_palletize_slot1:
+        raise ValueError("--auto-place-slot1 requires --auto-palletize-slot1")
+    if args.allow_geometry_only_lowering and not args.auto_place_slot1:
+        raise ValueError(
+            "--allow-geometry-only-lowering requires --auto-place-slot1"
+        )
+    if args.allow_vision_geometry_release and not args.auto_place_slot1:
+        raise ValueError(
+            "--allow-vision-geometry-release requires --auto-place-slot1"
+        )
     if args.ensure_slot1_ready and not args.auto_palletize_slot1:
         print(
             "[pallet] mobile base disabled: --ensure-slot1-ready only verifies or "
@@ -283,6 +318,11 @@ def _run_live(args: argparse.Namespace) -> int:
             allow_nominal_registration=bool(args.allow_nominal_registration),
             allow_geometry_only_grip_check=bool(
                 args.allow_geometry_only_grip_check
+            ),
+            auto_place_slot1=bool(args.auto_place_slot1),
+            allow_geometry_only_lowering=bool(args.allow_geometry_only_lowering),
+            allow_vision_geometry_release=bool(
+                args.allow_vision_geometry_release
             ),
             ensure_slot1_ready=bool(args.ensure_slot1_ready),
             robot_address=str(args.robot_address),
