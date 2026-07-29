@@ -478,7 +478,10 @@ The loaded slot-1 path keeps one RB-Y1 component command stream alive at
 Every packet contains torso/head Position, bilateral arm commands, and mobile
 SE(2) velocity. The arms start from loaded Cartesian hold for placement and use
 Cartesian impedance with nullspace joint targets during lower/release; SDK
-torque limits remain default.
+torque limits remain default. RB-Y1 binds a stream to the controller types in
+its first packet, so that first packet already uses the same Cartesian arm
+controllers; switching a Joint Impedance stream later would be accepted but
+would not move the arms.
 
 | Stage | Motion allowed | Main gates and tolerances |
 | --- | --- | --- |

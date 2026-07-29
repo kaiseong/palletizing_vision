@@ -1246,8 +1246,8 @@ class RBY1PalletController:
 
         The caller must explicitly acknowledge that the box is still held at
         the configured slot-1 ready posture.  This method opens no stream and
-        sends no command; it only installs local provenance so the normal
-        zero-mobility combined ready transition can be sent next.
+        sends no command; it installs local provenance and the immutable
+        loaded Cartesian hold used by the first combined-stream packet.
         """
 
         self._require_execute_and_connected()
@@ -1309,6 +1309,13 @@ class RBY1PalletController:
                 f"all_ready={all_ready}"
             )
 
+        cartesian_hold = self._make_cartesian_arm_target(
+            state,
+            mode=ArmStreamMode.CARTESIAN_LOADED_HOLD,
+            base_z_offset_m=0.0,
+            squeeze_offset_m=self.config.placement_squeeze_offset_m,
+            release_spread_m=0.0,
+        )
         pose = self.config.ready_pose
         provenance = LoadedSlot1ReadyBootstrap(
             owner_epoch=self._owner_epoch,
@@ -1333,6 +1340,8 @@ class RBY1PalletController:
                 )
             self._active_right_arm_target_rad = pose.right_arm_rad
             self._active_left_arm_target_rad = pose.left_arm_rad
+            self._arm_stream_mode = ArmStreamMode.CARTESIAN_LOADED_HOLD
+            self._cartesian_arm_target = cartesian_hold
             self._source_handoff = provenance
             self._body_target_token = self._make_body_target_token()
             self._condition.notify_all()
@@ -1345,6 +1354,10 @@ class RBY1PalletController:
         on_send_attempt: Callable[[], None] | None = None,
     ) -> CommandId:
         """Send exactly one zero-base, five-component ready transition.
+
+        RB-Y1 binds a command stream to the controller types in its first
+        packet.  The loaded arms therefore start in Cartesian impedance here;
+        later lowering and release targets must reuse that same stream type.
 
         ``on_send_attempt`` runs after stream creation and command construction,
         immediately before transport I/O.  The containment layer uses that
@@ -1481,13 +1494,6 @@ class RBY1PalletController:
         """Start the fixed-rate steady hold pump after transition verification."""
 
         self._require_execute_and_connected()
-        cartesian_hold = self._make_cartesian_arm_target(
-            self.get_measured_state(),
-            mode=ArmStreamMode.CARTESIAN_LOADED_HOLD,
-            base_z_offset_m=0.0,
-            squeeze_offset_m=self.config.placement_squeeze_offset_m,
-            release_spread_m=0.0,
-        )
         with self._condition:
             if self._phase is ControllerPhase.FAULT_HOLD:
                 raise CombinedStreamError(
@@ -1504,14 +1510,20 @@ class RBY1PalletController:
                 return
             if self._stream is None:
                 raise CombinedStreamError("combined command stream is not open")
+            if (
+                self._arm_stream_mode is not ArmStreamMode.CARTESIAN_LOADED_HOLD
+                or self._cartesian_arm_target is None
+                or self._cartesian_arm_target.mode
+                is not ArmStreamMode.CARTESIAN_LOADED_HOLD
+            ):
+                raise ReadyTransitionError(
+                    "steady pump requires the first-packet Cartesian loaded hold"
+                )
             self._stop_event.clear()
             self._latest_proposal = ZERO_MOBILITY
             self._latest_proposal_s = self._clock()
-            self._arm_stream_mode = ArmStreamMode.CARTESIAN_LOADED_HOLD
-            self._cartesian_arm_target = cartesian_hold
             self._placement_started = False
             self._placement_last_reason = None
-            self._body_target_token = self._make_body_target_token()
             self._proposal_generation += 1
             startup_generation = self._proposal_generation
             self._phase = ControllerPhase.STEADY_HOLD
@@ -1861,8 +1873,21 @@ class RBY1PalletController:
         if state.T_base_right_eef is None or state.T_base_left_eef is None:
             raise MeasuredStateError("EEF FK unexpectedly missing")
         self._validate_descent_plan_matches_state(descent_plan, state)
-        right_base = np.array(descent_plan.right_target_base, dtype=np.float64, copy=True)
-        left_base = np.array(descent_plan.left_target_base, dtype=np.float64, copy=True)
+        # Continue from the acknowledged loaded-hold command, not from the
+        # compliant measured wrists.  Re-basing on measurement would ratchet
+        # or discard the virtual squeeze that keeps the carton supported.
+        right_base = np.array(
+            loaded_target.right_T_base_eef,
+            dtype=np.float64,
+            copy=True,
+        )
+        left_base = np.array(
+            loaded_target.left_T_base_eef,
+            dtype=np.float64,
+            copy=True,
+        )
+        right_base[2, 3] -= descent_plan.planned_delta_z_m
+        left_base[2, 3] -= descent_plan.planned_delta_z_m
         T_torso_base = np.linalg.inv(T_base_torso)
         axis = tuple(float(value) for value in loaded_target.inter_eef_axis_base)
         return CartesianArmTarget(

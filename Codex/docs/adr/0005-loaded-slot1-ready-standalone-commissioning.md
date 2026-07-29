@@ -3,8 +3,9 @@
 Status: accepted for supervised commissioning documentation
 
 Supersedes the "automatic palletizing always stops before robot connection"
-claim in ADR 0004 and the README. ADR 0003's metric slot model, one combined
-owner requirement, and hover-only terminal scope remain active. ADR 0004's
+claim in ADR 0004 and the README. ADR 0007 later supersedes this document's
+Joint Impedance stream composition and hover-only terminal scope; its metric
+slot model and one combined-owner requirement remain active. ADR 0004's
 integrated box-pick-to-pallet handoff rejection remains active.
 
 ## Context

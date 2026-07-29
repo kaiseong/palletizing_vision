@@ -112,9 +112,12 @@ lower and release.
 The control stream also avoids a body/mobility ownership gap. Torso/head
 Position, arm Cartesian impedance, nullspace hold, and mobile velocity are
 sent through one stream at `20 Hz` with a `1.0 s` command hold and `0.05 s`
-packet minimum time. Running feedback is an acknowledgement that the stream
-accepted the current component command; target-specific success still comes
-from measured FK convergence and dwell gates.
+packet minimum time. The first packet uses Cartesian impedance for both arms
+because RB-Y1 binds the stream to that initial controller composition; a later
+Joint-to-Cartesian change can report Running without executing arm motion.
+Running feedback is therefore only an acknowledgement that the stream accepted
+the current component command; target-specific success still comes from
+measured FK convergence and dwell gates.
 
 This is not physical validation. The current replay and fake-controller tests
 exercise software gates, timing, command construction, and perception
