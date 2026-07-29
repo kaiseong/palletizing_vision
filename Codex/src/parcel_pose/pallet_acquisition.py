@@ -1131,16 +1131,14 @@ class ForwardAcquireServo:
                 "unexpected_reverse_odometry_during_step",
             )
             return self._output(decision, self._reason)
-        if progress > self._step_target_m + self.config.overshoot_tolerance_m:
-            self._record_step_progress(progress)
+        self._record_step_progress(max(0.0, progress))
+        if self._observed_forward_travel_m > self.config.budget_m + 1e-12:
             self._begin_brake(
                 now_s,
                 _AfterStop.FAULT_HOLD,
-                "step_target_overshoot",
+                "acquisition_budget_overrun_during_step",
             )
             return self._output(decision, self._reason)
-
-        self._record_step_progress(max(0.0, progress))
         if self._step_actual_m >= self._step_target_m - self.config.target_tolerance_m:
             self._begin_brake(now_s, _AfterStop.SETTLE, "step_target_reached")
             return self._output(decision, self._reason)
@@ -1473,8 +1471,6 @@ class ForwardAcquireServo:
         if progress < -self.config.overshoot_tolerance_m:
             return "unexpected_reverse_odometry_while_stopping"
         self._record_step_progress(max(0.0, progress))
-        if progress > self._step_target_m + self.config.overshoot_tolerance_m:
-            return "step_target_overshoot_while_stopping"
         if self._observed_forward_travel_m > self.config.budget_m + 1e-12:
             return "acquisition_budget_overrun_while_stopping"
         return None
