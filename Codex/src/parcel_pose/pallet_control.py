@@ -48,6 +48,10 @@ TORQUE_POLICY = "sdk_default"
 HARD_MAX_LINEAR_SPEED_MPS = 0.08
 HARD_MAX_ANGULAR_SPEED_RADPS = 0.10
 
+# Below this |axis_y| the left/right hand order along base Y is not decidable,
+# so no release direction may be inferred.
+_RELEASE_AXIS_SIGN_EPSILON = 1e-6
+
 TORSO_REFERENCE_LINK = "link_torso_5"
 RIGHT_EEF_LINK = "ee_right"
 LEFT_EEF_LINK = "ee_left"
@@ -154,6 +158,43 @@ def _read_field(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
+def resolve_base_y_release_axis(
+    inter_eef_axis_base: Sequence[float],
+    *,
+    max_deviation_rad: float,
+) -> tuple[np.ndarray, float]:
+    """Snap a measured inter-EEF axis onto the exact base ``+/-Y`` opening axis.
+
+    Slot-1 release opens the hands along base Y only, so the commanded target
+    keeps its base X and Z components untouched.  The returned axis is exactly
+    ``(0, +/-1, 0)`` with the sign of the measured axis, and the returned angle
+    is the deviation between the measured axis and that opening axis.  This
+    function only reports the deviation; the caller owns the accept/reject
+    decision so a single place in the controller can fail closed.
+    """
+
+    axis = np.asarray(inter_eef_axis_base, dtype=np.float64).reshape(3)
+    if not np.all(np.isfinite(axis)):
+        raise ValueError("inter_eef_axis_base must be finite")
+    norm = float(np.linalg.norm(axis))
+    if not math.isfinite(norm) or norm <= 1e-9:
+        raise ValueError("inter_eef_axis_base must be a non-zero direction")
+    limit = float(max_deviation_rad)
+    if not math.isfinite(limit) or limit <= 0.0:
+        raise ValueError("max_deviation_rad must be finite and positive")
+    unit = axis / norm
+    lateral = float(unit[1])
+    if abs(lateral) <= _RELEASE_AXIS_SIGN_EPSILON:
+        raise ValueError(
+            "inter_eef_axis_base has no decidable base-Y sign; the hands are "
+            "not separated along base Y"
+        )
+    sign = 1.0 if lateral > 0.0 else -1.0
+    release_axis = np.array((0.0, sign, 0.0), dtype=np.float64)
+    deviation_rad = math.acos(float(np.clip(abs(lateral), 0.0, 1.0)))
+    return release_axis, deviation_rad
+
+
 @dataclass(frozen=True, slots=True)
 class ReadyPose:
     torso_rad: tuple[float, ...] = READY_TORSO_RAD
@@ -234,8 +275,14 @@ class PalletControlConfig:
     # box-pick lift command.  It is a compliant target error, not a requested
     # physical penetration into the carton.
     placement_squeeze_offset_m: float = 0.150
-    placement_release_spread_m: float = 0.120
-    placement_max_release_spread_m: float = 0.120
+    # Slot-1 release opens along base Y only.  The commanded travel per hand is
+    # exactly this spread because the loaded-hold squeeze cancels out, so a
+    # small value keeps both arms far from the reach singularity.
+    placement_release_spread_m: float = 0.030
+    placement_max_release_spread_m: float = 0.040
+    # A measured inter-EEF axis further than this from base +/-Y would shear the
+    # carton sideways instead of opening, so release fails closed instead.
+    placement_release_axis_max_deviation_rad: float = math.radians(10.0)
     placement_joint_stiffness: tuple[float, ...] = (150.0,) * 7
     placement_joint_damping_ratio: float = 1.0
     placement_nullspace_weight: tuple[float, ...] = (1.0,) * 7
@@ -508,6 +555,16 @@ class PalletControlConfig:
                     defaults.placement_max_release_spread_m,
                 )
             ),
+            placement_release_axis_max_deviation_rad=math.radians(
+                float(
+                    placement.get(
+                        "release_axis_max_deviation_deg",
+                        math.degrees(
+                            defaults.placement_release_axis_max_deviation_rad
+                        ),
+                    )
+                )
+            ),
             placement_joint_stiffness=tuple(
                 placement.get(
                     "joint_stiffness_nm_per_rad",
@@ -586,6 +643,7 @@ class PalletControlConfig:
             "placement_squeeze_offset_m",
             "placement_release_spread_m",
             "placement_max_release_spread_m",
+            "placement_release_axis_max_deviation_rad",
             "placement_joint_damping_ratio",
             "placement_nullspace_kp",
             "placement_nullspace_kd",
@@ -670,8 +728,12 @@ class PalletControlConfig:
             raise ValueError("placement squeeze offset cannot exceed 150 mm")
         if self.placement_release_spread_m > self.placement_max_release_spread_m:
             raise ValueError("placement release spread cannot exceed its max bound")
-        if self.placement_max_release_spread_m > 0.150 + 1e-12:
-            raise ValueError("placement max release spread cannot exceed 150 mm")
+        if self.placement_max_release_spread_m > 0.040 + 1e-12:
+            raise ValueError("placement max release spread cannot exceed 40 mm")
+        if self.placement_release_axis_max_deviation_rad > math.radians(30.0) + 1e-12:
+            raise ValueError(
+                "placement release axis deviation limit cannot exceed 30 degrees"
+            )
         object.__setattr__(
             self,
             "placement_joint_stiffness",
@@ -753,6 +815,7 @@ class CartesianArmTarget:
     lowering_distance_m: float = 0.0
     squeeze_offset_m: float = 0.0
     release_spread_m: float = 0.0
+    release_axis_deviation_rad: float = 0.0
     descent_plan_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -808,6 +871,12 @@ class CartesianArmTarget:
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
+        deviation = float(self.release_axis_deviation_rad)
+        if not math.isfinite(deviation) or deviation < 0.0:
+            raise ValueError(
+                "release_axis_deviation_rad must be finite and non-negative"
+            )
+        object.__setattr__(self, "release_axis_deviation_rad", deviation)
         if self.descent_plan_id is not None:
             plan_id = str(self.descent_plan_id).strip()
             if not plan_id:
@@ -833,6 +902,10 @@ class PlacementTelemetry:
     acknowledged_command_sequence: int
     last_reason: str | None = None
     descent_plan_id: str | None = None
+    lowering_distance_m: float | None = None
+    release_spread_m: float | None = None
+    release_axis_base: tuple[float, float, float] | None = None
+    release_axis_deviation_rad: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1108,6 +1181,7 @@ class RBY1PalletController:
         self._cartesian_arm_target: CartesianArmTarget | None = None
         self._placement_started = False
         self._placement_last_reason: str | None = None
+        self._descent_plan: PlacementDescentPlan | None = None
         self._last_acknowledged_body_target_token: str | None = None
         self._grip_result: GripContinuityResult | None = None
 
@@ -1835,6 +1909,7 @@ class RBY1PalletController:
                 )
             self._arm_stream_mode = target.mode
             self._cartesian_arm_target = target
+            self._descent_plan = descent_plan
             self._placement_started = True
             self._placement_last_reason = None
             self._zero_latched = True
@@ -1978,7 +2053,7 @@ class RBY1PalletController:
         *,
         release_spread_m: float | None = None,
     ) -> CartesianArmTarget:
-        """Spread both EEF targets outward along the measured inter-EEF axis."""
+        """Open both EEF targets outward along the base ``+/-Y`` axis only."""
 
         spread = (
             self.config.placement_release_spread_m
@@ -1990,6 +2065,7 @@ class RBY1PalletController:
         state = self._require_cartesian_placement_continuation_state()
         with self._condition:
             lowering_target = self._cartesian_arm_target
+            descent_plan = self._descent_plan
         if (
             lowering_target is None
             or lowering_target.mode is not ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING
@@ -1997,9 +2073,17 @@ class RBY1PalletController:
             raise CombinedStreamError(
                 "cartesian release requires the acknowledged lowering target"
             )
-        target = self._make_release_target_from_lowering(
+        if descent_plan is None:
+            with self._condition:
+                self._placement_fail_closed_locked("release_descent_plan_unavailable")
+            raise CombinedStreamError(
+                "cartesian release requires the frozen descent plan that started "
+                "the placement"
+            )
+        target = self._make_release_target_from_plan(
             state,
             lowering_target=lowering_target,
+            descent_plan=descent_plan,
             release_spread_m=spread,
         )
         with self._condition:
@@ -2103,6 +2187,18 @@ class RBY1PalletController:
                 ),
                 last_reason=self._placement_last_reason,
                 descent_plan_id=None if target is None else target.descent_plan_id,
+                lowering_distance_m=(
+                    None if target is None else target.lowering_distance_m
+                ),
+                release_spread_m=(
+                    None if target is None else target.release_spread_m
+                ),
+                release_axis_base=(
+                    None if target is None else tuple(target.inter_eef_axis_base)
+                ),
+                release_axis_deviation_rad=(
+                    None if target is None else target.release_axis_deviation_rad
+                ),
             )
 
     def get_measured_odometry(self) -> tuple[np.ndarray, int, float]:
@@ -3290,38 +3386,66 @@ class RBY1PalletController:
             "Cartesian nullspace hold requires measured right/left arm indices"
         )
 
-    def _make_release_target_from_lowering(
+    def _make_release_target_from_plan(
         self,
         state: MeasuredRobotState,
         *,
         lowering_target: CartesianArmTarget,
+        descent_plan: PlacementDescentPlan,
         release_spread_m: float,
     ) -> CartesianArmTarget:
-        """Open from the planned lowered geometry, not from a deflected wrist pose.
+        """Open from the frozen plan geometry along base ``+/-Y`` only.
 
-        The lowering target contains a virtual inward squeeze error.  Undo that
-        offset first, then add the commanded outward spread.  This makes the
-        release target invariant to compliance, creep, or a stalled measured
-        hand pose at the instant release is requested.
+        ``descent_plan.right_target_base`` already is "measured hand at plan
+        freeze, lowered by the planned descent, no squeeze", so adding the
+        spread here makes the commanded travel exactly one spread per hand and
+        leaves base X and Z untouched.  Deriving the target from the frozen plan
+        rather than the live wrists keeps it invariant to compliance, creep, or
+        a stalled measured pose at the instant release is requested.
         """
 
         self._validate_cartesian_state(state)
         if lowering_target.mode is not ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING:
             raise ValueError("lowering_target must be a placement-lowering target")
+        if lowering_target.descent_plan_id != descent_plan.plan_id:
+            with self._condition:
+                self._placement_fail_closed_locked("release_plan_id_mismatch")
+            raise CombinedStreamError(
+                "release descent plan does not match the acknowledged lowering "
+                f"target: {lowering_target.descent_plan_id!r} != "
+                f"{descent_plan.plan_id!r}"
+            )
         T_base_torso = self._T_base_torso_for_cartesian(state)
         if T_base_torso is None:
             raise MeasuredStateError("T_base_torso unexpectedly missing")
-        axis = np.asarray(lowering_target.inter_eef_axis_base, dtype=np.float64)
-        outward = axis * (
-            lowering_target.squeeze_offset_m + float(release_spread_m)
-        )
+        max_deviation_rad = self.config.placement_release_axis_max_deviation_rad
+        try:
+            release_axis, deviation_rad = resolve_base_y_release_axis(
+                lowering_target.inter_eef_axis_base,
+                max_deviation_rad=max_deviation_rad,
+            )
+        except ValueError as exc:
+            with self._condition:
+                self._placement_fail_closed_locked("release_axis_unresolved")
+            raise MeasuredStateError(
+                f"base-Y release axis is unresolvable: {exc}"
+            ) from exc
+        if deviation_rad > max_deviation_rad:
+            with self._condition:
+                self._placement_fail_closed_locked("release_axis_deviation")
+            raise MeasuredStateError(
+                "measured inter-EEF axis deviates "
+                f"{math.degrees(deviation_rad):.2f} deg from base Y; the limit is "
+                f"{math.degrees(max_deviation_rad):.2f} deg"
+            )
+        outward = release_axis * float(release_spread_m)
         right_base = np.array(
-            lowering_target.right_T_base_eef,
+            descent_plan.right_target_base,
             dtype=np.float64,
             copy=True,
         )
         left_base = np.array(
-            lowering_target.left_T_base_eef,
+            descent_plan.left_target_base,
             dtype=np.float64,
             copy=True,
         )
@@ -3337,13 +3461,14 @@ class RBY1PalletController:
             left_T_base_eef=left_base,
             right_nullspace_joint_rad=right_nullspace,
             left_nullspace_joint_rad=left_nullspace,
-            inter_eef_axis_base=tuple(float(value) for value in axis),
+            inter_eef_axis_base=tuple(float(value) for value in release_axis),
             created_monotonic_s=self._clock(),
             source_state_sequence=state.sequence,
             lowering_distance_m=lowering_target.lowering_distance_m,
             squeeze_offset_m=0.0,
             release_spread_m=float(release_spread_m),
-            descent_plan_id=lowering_target.descent_plan_id,
+            descent_plan_id=descent_plan.plan_id,
+            release_axis_deviation_rad=deviation_rad,
         )
 
     def _make_measured_cartesian_hold_target(
@@ -3784,4 +3909,5 @@ __all__ = [
     "TORSO_REFERENCE_LINK",
     "WheelStopStatus",
     "ZERO_MOBILITY",
+    "resolve_base_y_release_axis",
 ]

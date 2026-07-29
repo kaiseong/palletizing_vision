@@ -409,6 +409,13 @@ class ActuationContainmentState:
     interrupt_count: int = 0
     support_owner: str = "standalone_ready_session"
     last_hold_error: str | None = None
+    # An expired/cancelled command stream can never be recovered into a zero
+    # body hold, so waiting forever only delays the operator's decision.  A
+    # recoverable hold keeps the original unbounded contract.
+    unrecoverable_timeout_s: float = 30.0
+    hold_unrecoverable: bool = False
+    _unrecoverable_since_s: float | None = None
+    _clock: Callable[[], float] = time.monotonic
 
     def mark_robot_touch(self) -> None:
         self.robot_touched = True
@@ -420,6 +427,41 @@ class ActuationContainmentState:
     def mark_destination_steady(self) -> None:
         self.destination_steady = True
         self.support_owner = "destination_steady"
+
+    @staticmethod
+    def _hold_is_unrecoverable(detail: str) -> bool:
+        """Detect a stream the SDK will refuse for the rest of this session."""
+
+        text = detail.lower()
+        return any(
+            fragment in text
+            for fragment in (
+                "stream is expired",
+                "stream expired",
+                "stream is closed",
+                "stream was cancelled",
+                "stream was canceled",
+            )
+        )
+
+    def _note_hold_failure(self, detail: str) -> None:
+        self.last_hold_error = detail
+        if not self._hold_is_unrecoverable(detail):
+            return
+        self.hold_unrecoverable = True
+        if self._unrecoverable_since_s is None:
+            self._unrecoverable_since_s = self._clock()
+
+    def unrecoverable_elapsed_s(self) -> float:
+        if self._unrecoverable_since_s is None:
+            return 0.0
+        return max(0.0, self._clock() - self._unrecoverable_since_s)
+
+    def escape_deadline_reached(self) -> bool:
+        return bool(
+            self.hold_unrecoverable
+            and self.unrecoverable_elapsed_s() >= self.unrecoverable_timeout_s
+        )
 
     @staticmethod
     def _telemetry_confirms_zero_body_hold(telemetry: Any) -> bool:
@@ -450,12 +492,14 @@ class ActuationContainmentState:
                     self.persistent_support_confirmed = True
                     self.support_owner = "destination_zero_body_hold"
                     self.last_hold_error = None
+                    self.hold_unrecoverable = False
+                    self._unrecoverable_since_s = None
                     return True
-                self.last_hold_error = (
+                self._note_hold_failure(
                     "destination telemetry did not confirm zero mobility plus body hold"
                 )
             except BaseException as exc:  # containment must include interrupts here
-                self.last_hold_error = f"destination hold confirmation failed: {exc}"
+                self._note_hold_failure(f"destination hold confirmation failed: {exc}")
 
         if not self.destination_commanded:
             self.persistent_support_confirmed = True
@@ -481,7 +525,13 @@ class ActuationContainmentState:
         return True
 
     def block_until_escape_is_safe(self) -> None:
-        """Never unwind uncertain carried-load ownership without explicit override."""
+        """Never unwind uncertain carried-load ownership without explicit override.
+
+        The wait is unbounded while the zero/body hold is still recoverable.  An
+        expired or cancelled command stream can never be re-held, so that case
+        is bounded by ``unrecoverable_timeout_s`` and then reported instead of
+        spinning forever.
+        """
 
         while not (self.successor_acknowledged or self.forced_cancel):
             try:
@@ -500,14 +550,34 @@ class ActuationContainmentState:
                 if phase == "HANDOFF_ACKNOWLEDGED":
                     self.successor_acknowledged = True
                     return
+                if self.escape_deadline_reached():
+                    print(
+                        "DANGER: the RB-Y1 command stream is unrecoverable after "
+                        f"{self.unrecoverable_elapsed_s():.1f}s, so no zero/body "
+                        "hold can be re-established from this process. Carried-load "
+                        "support is NOT guaranteed; secure the load manually. "
+                        f"detail={self.last_hold_error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
                 state = (
                     "successor acknowledgement pending"
                     if self.persistent_support_confirmed
                     else "carried-load support unconfirmed"
                 )
+                progress = (
+                    ""
+                    if not self.hold_unrecoverable
+                    else (
+                        " unrecoverable for "
+                        f"{self.unrecoverable_elapsed_s():.1f}s of "
+                        f"{self.unrecoverable_timeout_s:.0f}s"
+                    )
+                )
                 print(
-                    f"DANGER: {state}; runtime remains alive. A second Ctrl-C "
-                    f"forces cancellation. detail={self.last_hold_error}",
+                    f"DANGER: {state}; runtime remains alive.{progress} A second "
+                    f"Ctrl-C forces cancellation. detail={self.last_hold_error}",
                     file=sys.stderr,
                 )
                 time.sleep(0.20)
@@ -524,7 +594,17 @@ class ActuationContainmentState:
             except BaseException as exc:
                 # This is already the last containment boundary.  Telemetry,
                 # transfer, logging, and SDK cleanup failures must not unwind it.
-                self.last_hold_error = f"containment operation failed: {exc}"
+                self._note_hold_failure(f"containment operation failed: {exc}")
+                if self.escape_deadline_reached():
+                    print(
+                        "DANGER: containment cannot recover the RB-Y1 command "
+                        f"stream after {self.unrecoverable_elapsed_s():.1f}s. "
+                        "Carried-load support is NOT guaranteed; secure the load "
+                        f"manually. detail={self.last_hold_error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
                 try:
                     time.sleep(0.20)
                 except KeyboardInterrupt:
@@ -1232,6 +1312,11 @@ def _placement_telemetry_payload(placement_telemetry: Any | None) -> Any:
             "target_acknowledged",
             "acknowledged_command_sequence",
             "last_reason",
+            "descent_plan_id",
+            "lowering_distance_m",
+            "release_spread_m",
+            "release_axis_base",
+            "release_axis_deviation_rad",
         )
         if hasattr(placement_telemetry, name)
     }
@@ -1692,6 +1777,7 @@ def _draw_live_overlay(
     motion_interlock_reason: str = "",
     dispatch_result: str = "not_dispatched",
     placement: PlacementOutput | None = None,
+    placement_runtime: Mapping[str, Any] | None = None,
 ) -> np.ndarray:
     try:
         import cv2  # type: ignore[import-not-found]
@@ -1888,6 +1974,7 @@ def _draw_live_overlay(
     if placement is None:
         placement_line = "placement: inactive"
         placement_gap_line = "placement gap: --"
+        placement_open_line = "placement open: --"
     else:
         gap = placement.diagnostics.get("predicted_box_bottom_gap_m")
         uncertainty = placement.diagnostics.get("predicted_box_bottom_gap_uncertainty_m")
@@ -1900,6 +1987,28 @@ def _draw_live_overlay(
             if gap is None or uncertainty is None
             else f"placement gap: {float(gap):+.3f} +/- {float(uncertainty):.3f} m"
         )
+        plan = placement.descent_plan
+        controller_telemetry = (
+            placement_runtime.get("placement_telemetry")
+            if isinstance(placement_runtime, Mapping)
+            else None
+        )
+        if not isinstance(controller_telemetry, Mapping):
+            controller_telemetry = {}
+        deviation_rad = controller_telemetry.get("release_axis_deviation_rad")
+        spread_m = controller_telemetry.get("release_spread_m")
+        placement_open_line = (
+            "placement open: descent="
+            + ("--" if plan is None else f"{1000.0 * plan.planned_delta_z_m:.0f}mm")
+            + " spread="
+            + ("--" if spread_m is None else f"{1000.0 * float(spread_m):.0f}mm")
+            + " dev="
+            + (
+                "--"
+                if deviation_rad is None
+                else f"{math.degrees(float(deviation_rad)):.1f}deg"
+            )
+        )
     lines = (
         f"PALLET SLOT 1: {mode}",
         f"owner: {owner}  servo: {servo_output.state.value}",
@@ -1910,6 +2019,7 @@ def _draw_live_overlay(
         acquisition_line,
         placement_line,
         placement_gap_line,
+        placement_open_line,
         f"dispatch: {dispatch_result}",
         "motion interlock: " + (motion_interlock_reason or "PASS"),
         error_line,
@@ -2135,6 +2245,12 @@ def _recovery_contract_record(
         "planned_delta_z_m": None
         if not isinstance(plan_payload, Mapping)
         else plan_payload.get("planned_delta_z_m"),
+        "placement_gap_m": None
+        if not isinstance(plan_payload, Mapping)
+        else plan_payload.get("gap_m"),
+        "placement_gap_uncertainty_m": None
+        if not isinstance(plan_payload, Mapping)
+        else plan_payload.get("gap_uncertainty_m"),
         "placement_descent_plan": plan_payload,
     }
 
@@ -3147,6 +3263,10 @@ def run_pallet_live(
                     motion_interlock_reason=motion_interlock_reason,
                     dispatch_result=dispatch_result,
                     placement=placement_output or last_placement_output,
+                    placement_runtime=(
+                        placement_runtime_diagnostics
+                        or last_placement_runtime_diagnostics
+                    ),
                 )
                 if video_writer is None and output_mp4 is not None:
                     video_writer = _open_video(Path(output_mp4), overlay.shape[:2], fps)

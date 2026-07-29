@@ -491,9 +491,17 @@ would not move the arms.
 | Metric handoff | zero | Five stopped strict L-corner proxy frames stable within `0.008 m`, or a dwell-complete hole; exact-zero acknowledgement and measured wheel stop precede the one-way owner transfer. A raw strict proxy/hole appearing during fallback cruise first commands braking. |
 | Fine align | `x/y/yaw` | Fixed-outer L-corner proxy initially, complete-hole measurement as cross-check/refinement when valid, both against the same demonstrated reference `[0.865000, 0.139523] m`, `-90 deg`; the existing jump gate guards source transitions. Arrival requires five frames and `0.35 s` inside `0.015 m` / `5 deg`, with inner threshold `0.010 m` / `3 deg`. |
 | Placement entry | zero only | `ARRIVED_HOLD`, a current metric alignment feature, `1.0 s` placement-arm dwell after arrival, exact-zero command acknowledgement, fresh stopped-wheel dwell `0.35 s`, loaded Cartesian-hold mode, stream Running feedback, and fresh measured FK. |
-| Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=15.0 s`, FK box-bottom lower bound minus stack-plane upper bound `>=0.050 m`, uncertainty `<=0.025 m`, raw gap `<=0.250 m`; the accepted sample freezes a typed `PlacementDescentPlan`. |
-| Lower | arm Cartesian only | The acknowledged loaded-hold target is copied, preserving orientation, squeeze, and nullspace targets, then shifted by `2/3` of the frozen raw base-z gap. Timeout `12.0 s`; measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
-| Release | arm Cartesian only | Vision geometry evidence held for `0.35 s`; the squeeze target is cancelled and each arm spreads an additional `0.120 m`. Timeout `12.0 s`, each EEF within `0.012 m` / `4 deg` of target, measured inter-EEF separation increase at least `0.216 m`, then `0.35 s` release-target dwell. |
+| Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=15.0 s`, FK box-bottom lower bound minus stack-plane upper bound `>=0.050 m`, uncertainty `<=0.025 m`, raw gap `<=0.250 m` and `<= maximum_release_gap_m` (`0.120 m`); the accepted sample freezes a typed `PlacementDescentPlan`. |
+| Lower | none commanded | `maximum_planned_descent_m` is `0.0`, so the plan commands no vertical motion and the acknowledged loaded-hold target is held unchanged. The stage still verifies measured EEF z within `0.008 m` of the frozen target, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, and target acknowledgement, with a `12.0 s` timeout. Raising the cap restores the `2/3`-of-gap descent without any code change. |
+| Release | arm Cartesian, base Y only | Vision geometry evidence held for `0.35 s`; both hands open from the frozen plan targets along the exact base `+/-Y` axis by `0.030 m` each (ceiling `0.040 m`), leaving base X and Z untouched. A measured inter-EEF axis more than `10 deg` off base `+/-Y` fails closed. Timeout `12.0 s`, each EEF within `0.012 m` / `4 deg` of target, measured separation increase at least `0.036 m`, then `0.35 s` release-target dwell. |
+
+The carton is released at the aligned height, so it falls the whole measured
+gap — at least the `0.050 m` clearance floor. `maximum_release_gap_m` is the
+only bound on that drop and must be tightened against the measured `gap_m`
+recorded in the live JSONL. See
+[ADR 0008](docs/adr/0008-base-y-release-without-descent.md) for why the descent
+was removed and why `SEATED` is a geometric residual-gap state rather than a
+contact detection.
 
 ### Current commissioning boundary
 
@@ -858,7 +866,18 @@ independently before unattended operation.
 python3.12 -m compileall -q src live_view.py
 PYTHONPATH=src python3.12 -m parcel_pose.cli --help
 PYTHONPATH=src python3.12 -c 'import parcel_pose.cli, parcel_pose.realtime, parcel_pose.auto_grab'
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3.12 -m pytest tests
+ruff check .
 ```
+
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` is required on hosts that also have a ROS
+distribution on `PYTHONPATH`, because ROS registers pytest plugins that fail to
+import outside their own environment.
+
+`tests/` covers the placement sequencer, descent-plan invariants, Cartesian
+release geometry, the base-Y release axis, the placement config schema, runtime
+placement telemetry, containment escape, and the CLI error split. All of it runs
+without a camera or `rby1_sdk`.
 
 These checks are hardware-free: `pyrealsense2` and `rby1_sdk` stay lazy until
 their live or robot paths are explicitly started. Camera capture and physical
@@ -876,4 +895,6 @@ See [ADR 0001](docs/adr/0001-metric-top-plane-estimator.md) for the estimator
 decision, [ADR 0002](docs/adr/0002-opt-in-mobile-auto-grab.md) for the
 box-pick robot-control boundary, and
 [ADR 0007](docs/adr/0007-continuous-slot1-place.md) for the current slot-1
-continuous acquisition and vision-gated placement contract.
+continuous acquisition and vision-gated placement contract, and
+[ADR 0008](docs/adr/0008-base-y-release-without-descent.md) for the descent-free
+base-Y release that supersedes ADR 0007's descent stage.

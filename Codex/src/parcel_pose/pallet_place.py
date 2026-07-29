@@ -2,9 +2,11 @@
 
 The module has no robot-SDK side effects.  It begins only after fine mobile
 alignment has latched ``ARRIVED_HOLD`` and every output requires exact-zero
-mobility.  Spreading the hands requires a Running stream acknowledgement,
-measured vertical descent, and fresh bounded vision geometry. Placement does
-not read force/torque feedback.
+mobility.  Spreading the hands requires a Running stream acknowledgement, the
+measured planned descent (commissioned to zero, so the aligned pose is held),
+and fresh bounded vision geometry.  Placement does not read force/torque
+feedback, so ``SEATED`` is a geometric residual-gap state and not a contact
+detection.
 """
 
 from __future__ import annotations
@@ -89,6 +91,14 @@ class PlacementConfig:
     pre_motion_clearance_floor_m: float = 0.050
     maximum_descent_m: float = 0.250
     descent_fraction: float = 2.0 / 3.0
+    # Commissioned slot-1 release lowers nothing: the arms would extend toward a
+    # singularity before reaching the stack, so the carton is opened at the
+    # aligned pose instead.  Raising this value re-enables the planned descent
+    # without touching the plan/gate wiring.
+    maximum_planned_descent_m: float = 0.0
+    # With no descent the carton falls the whole measured gap, so an upper gap
+    # bound is the only control over release height.
+    maximum_release_gap_m: float = 0.120
     alignment_hold_before_place_s: float = 1.0
     pre_place_verify_dwell_s: float = 0.15
     lowering_timeout_s: float = 12.0
@@ -113,6 +123,7 @@ class PlacementConfig:
             "pre_motion_clearance_floor_m",
             "maximum_descent_m",
             "descent_fraction",
+            "maximum_release_gap_m",
             "lowering_timeout_s",
             "release_timeout_s",
             "feedback_stale_s",
@@ -133,12 +144,22 @@ class PlacementConfig:
             "pre_place_verify_dwell_s",
             "seated_dwell_s",
             "release_target_dwell_s",
+            "maximum_planned_descent_m",
         ):
             object.__setattr__(self, name, _nonnegative(getattr(self, name), name))
         if self.pre_motion_clearance_floor_m < 0.050 - 1e-12:
             raise ValueError("pre-motion clearance floor cannot be below 50 mm")
         if self.maximum_descent_m > 0.300 + 1e-12:
             raise ValueError("maximum planned descent cannot exceed 300 mm")
+        if self.maximum_planned_descent_m > self.maximum_descent_m + 1e-12:
+            raise ValueError(
+                "maximum_planned_descent_m cannot exceed maximum_descent_m"
+            )
+        if self.maximum_release_gap_m < self.pre_motion_clearance_floor_m - 1e-12:
+            raise ValueError(
+                "maximum_release_gap_m cannot be below the clearance floor; no gap "
+                "would be admissible"
+            )
         if self.descent_fraction > 1.0 + 1e-12:
             raise ValueError("descent_fraction cannot exceed 1.0")
         if self.vision_seating_max_uncertainty_m > 0.030 + 1e-12:
@@ -174,6 +195,9 @@ class PlacementConfig:
             "pre_motion_clearance_floor_m",
             "maximum_descent_m",
             "descent_fraction",
+            "maximum_planned_descent_m",
+            "maximum_release_gap_m",
+            "release_axis_max_deviation_deg",
             "alignment_hold_before_place_s",
             "squeeze_offset_m",
             "release_spread_m",
@@ -220,6 +244,15 @@ class PlacementConfig:
             ),
             descent_fraction=float(
                 raw.get("descent_fraction", defaults.descent_fraction)
+            ),
+            maximum_planned_descent_m=float(
+                raw.get(
+                    "maximum_planned_descent_m",
+                    defaults.maximum_planned_descent_m,
+                )
+            ),
+            maximum_release_gap_m=float(
+                raw.get("maximum_release_gap_m", defaults.maximum_release_gap_m)
             ),
             pre_place_verify_dwell_s=float(
                 raw.get(
@@ -372,8 +405,8 @@ class PlacementDescentPlan:
             "stack_plane_uncertainty_m",
         ):
             object.__setattr__(self, name, _nonnegative(getattr(self, name), name))
-        if self.planned_delta_z_m <= 0.0:
-            raise ValueError("planned_delta_z_m must be positive")
+        if self.planned_delta_z_m < 0.0:
+            raise ValueError("planned_delta_z_m cannot be negative")
         if self.min_delta_z_m <= 0.0 or self.max_delta_z_m <= 0.0:
             raise ValueError("delta bounds must be positive")
         if self.min_delta_z_m > self.gap_m + 1e-12:
@@ -1207,10 +1240,15 @@ class Slot1PlacementSequencer:
             rejection = "descent_gap_nonpositive"
         elif gap > self.config.maximum_descent_m:
             rejection = "descent_distance_too_large"
+        elif gap > self.config.maximum_release_gap_m:
+            rejection = "descent_gap_above_release_limit"
         if rejection is not None:
             return None, rejection
 
-        planned_delta = gap * self.config.descent_fraction
+        planned_delta = min(
+            gap * self.config.descent_fraction,
+            self.config.maximum_planned_descent_m,
+        )
         right_target = np.array(sample.right_eef_base, dtype=np.float64, copy=True)
         left_target = np.array(sample.left_eef_base, dtype=np.float64, copy=True)
         right_target[2, 3] -= planned_delta

@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 import sys
+import traceback
 from typing import Any, Sequence
 
 from .output import dumps_strict
@@ -53,6 +54,14 @@ def _resolve_session(args: argparse.Namespace) -> Path:
     if session is None:
         raise ValueError("a recording session is required")
     return Path(session)
+
+
+def _control_error_types() -> tuple[type[BaseException], ...]:
+    """Import the controller error base lazily; the SDK stays untouched."""
+
+    from .pallet_control import PalletControlError
+
+    return (PalletControlError,)
 
 
 def _load_config(path: Path) -> dict[str, Any]:
@@ -342,6 +351,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("interrupted by user", file=sys.stderr)
         return 130
+    except _control_error_types() as exc:
+        # A control/stream fault is an operational failure, not CLI misuse, so it
+        # must not be reported as an argparse usage error.
+        traceback.print_exc()
+        print(f"pallet control fault: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
     except (ValueError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
         return 2
