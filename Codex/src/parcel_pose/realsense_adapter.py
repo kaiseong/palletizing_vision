@@ -296,8 +296,25 @@ class RealSenseAdapter:
     ) -> SessionMetadata:
         if self._profile_metadata is None:
             raise RuntimeError("start the RealSense adapter before requesting metadata")
+        # Keep live-only identity fields such as ``camera_name`` out of the
+        # persisted session schema. An explicit allow-list also prevents future
+        # live diagnostics from becoming unexpected constructor arguments.
+        session_profile = {
+            key: self._profile_metadata[key]
+            for key in (
+                "camera_serial",
+                "camera_firmware",
+                "usb_type",
+                "depth_scale_m",
+                "depth_profile",
+                "color_profile",
+                "depth_to_color",
+                "color_to_depth",
+                "capture_options",
+            )
+        }
         return SessionMetadata(
-            **self._profile_metadata,
+            **session_profile,
             robot_state=dict(robot_state),
             nominal_transform=dict(nominal_transform),
             table=dict(table),

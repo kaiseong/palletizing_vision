@@ -542,6 +542,29 @@ pose remains depth-derived; during robot motion, the D435 rolling-shutter RGB
 image can momentarily misalign with the projected edge even when the numeric
 pose is current.
 
+From an SSH session without `DISPLAY`/`WAYLAND_DISPLAY`, add `--headless`.
+This bypasses only the OpenCV window; the same perception, camera-registration,
+robot-model, posture, and automatic-motion safety gates remain active:
+
+```bash
+python live_view.py \
+  --auto-grab \
+  --allow-nominal-registration \
+  --headless
+```
+
+Optional annotated video and per-frame telemetry can be saved while headless.
+Both paths must be new files:
+
+```bash
+python live_view.py \
+  --auto-grab \
+  --allow-nominal-registration \
+  --headless \
+  --output-mp4 ../out/box_pick_live_01.mp4 \
+  --log-jsonl ../out/box_pick_live_01.jsonl
+```
+
 The default `rby1m_v1_2_fixed_table_nominal.json` is explicitly
 `nominal_unverified`. The command warns once on stderr and displays its base
 coordinates for diagnostics. Plain `python live_view.py` never imports the
