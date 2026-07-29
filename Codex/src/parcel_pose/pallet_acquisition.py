@@ -120,9 +120,11 @@ class AcquisitionConfig:
     lateral_drift_limit_m: float = 0.015
     yaw_drift_limit_rad: float = math.radians(3.0)
     target_tolerance_m: float = 0.001
-    # Maximum physical travel beyond one step target, including zero-command
-    # braking. It is both a per-step runaway boundary and a reserved budget.
+    # Reverse odometry tolerance; this remains tighter than forward braking.
     overshoot_tolerance_m: float = 0.003
+    # Maximum physical travel beyond one forward step target, including
+    # zero-command braking. It is also reserved from the session budget.
+    braking_allowance_m: float = 0.003
     settle_duration_s: float = 0.35
     brake_timeout_s: float = 1.50
 
@@ -168,6 +170,7 @@ class AcquisitionConfig:
             "yaw_drift_limit_rad",
             "target_tolerance_m",
             "overshoot_tolerance_m",
+            "braking_allowance_m",
             "settle_duration_s",
             "brake_timeout_s",
         )
@@ -185,6 +188,7 @@ class AcquisitionConfig:
             "yaw_drift_limit_rad": math.radians(5.0),
             "target_tolerance_m": 0.003,
             "overshoot_tolerance_m": 0.010,
+            "braking_allowance_m": 0.010,
             "brake_timeout_s": 5.0,
         }
         for name, limit in hard_upper_bounds.items():
@@ -201,6 +205,10 @@ class AcquisitionConfig:
         if self.overshoot_tolerance_m < self.target_tolerance_m:
             raise ValueError(
                 "overshoot_tolerance_m must be at least target_tolerance_m"
+            )
+        if self.braking_allowance_m < self.target_tolerance_m:
+            raise ValueError(
+                "braking_allowance_m must be at least target_tolerance_m"
             )
         if self.settle_duration_s < 0.35:
             raise ValueError("settle_duration_s cannot be less than 0.35 s")
@@ -322,6 +330,15 @@ class AcquisitionConfig:
                 (section,),
                 ("overshoot_tolerance_m",),
                 defaults.overshoot_tolerance_m,
+            ),
+            "braking_allowance_m": _first(
+                (section,),
+                (
+                    "braking_allowance_m",
+                    "stopping_allowance_m",
+                    "coast_allowance_m",
+                ),
+                defaults.braking_allowance_m,
             ),
             "settle_duration_s": _first(
                 (section,),
@@ -1053,7 +1070,7 @@ class ForwardAcquireServo:
             return self._output(decision, self._fault_reason or drift_reason)
 
         remaining = self.remaining_budget_m
-        required_budget_m = self.config.step_m + self.config.overshoot_tolerance_m
+        required_budget_m = self.config.step_m + self.config.braking_allowance_m
         # A shortened tail step is below the useful resolution of this 10 Hz
         # stop-and-observe loop, while its physical stopping distance is not.
         if remaining + 1e-12 < required_budget_m:
@@ -1140,7 +1157,7 @@ class ForwardAcquireServo:
                 "acquisition_budget_overrun_during_step",
             )
             return self._output(decision, self._reason)
-        if progress > self._step_target_m + self.config.overshoot_tolerance_m:
+        if progress > self._step_target_m + self.config.braking_allowance_m:
             self._begin_brake(
                 now_s,
                 _AfterStop.FAULT_HOLD,
@@ -1481,7 +1498,7 @@ class ForwardAcquireServo:
         self._record_step_progress(max(0.0, progress))
         if self._observed_forward_travel_m > self.config.budget_m + 1e-12:
             return "acquisition_budget_overrun_while_stopping"
-        if progress > self._step_target_m + self.config.overshoot_tolerance_m:
+        if progress > self._step_target_m + self.config.braking_allowance_m:
             return "step_braking_allowance_exceeded_while_stopping"
         return None
 

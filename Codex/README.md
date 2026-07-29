@@ -267,7 +267,8 @@ stopping allowance inside the session budget. That allowance covers the
 while a larger per-step excursion still latches a fault. Odometry never
 authorizes the next step without a new five-frame visual gate, and the
 controller does not emit a shortened tail step when the remaining budget
-cannot cover one full 10 mm step plus its stopping allowance.
+cannot cover one full 10 mm step plus its stopping allowance. Reverse odometry
+keeps its separate, tighter 3 mm tolerance.
 
 Replay the supplied recordings without a camera or robot SDK:
 

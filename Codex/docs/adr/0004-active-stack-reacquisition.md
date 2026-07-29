@@ -43,9 +43,11 @@ are intentionally not used as final slot-pose sources.
   the configured stopping allowance, and odometry remains monitored through
   zero-command braking and verified wheel stop. Coasting is charged against
   the same session budget instead of being hidden, while the finite per-step
-  allowance still distinguishes expected braking from a runaway command. A
-  new step requires enough remaining budget for the full configured step plus
-  that allowance; no shortened tail step is emitted near budget exhaustion.
+  allowance still distinguishes expected braking from a runaway command. The
+  forward braking allowance is separate from the tighter reverse-odometry
+  tolerance. A new step requires enough remaining budget for the full
+  configured step plus that allowance; no shortened tail step is emitted near
+  budget exhaustion.
 - Require five complete-hole frames spanning at least 0.35 s, then transfer
   authority once at exact zero and measured wheel stop. Coarse authority is
   permanently revoked for that session.
