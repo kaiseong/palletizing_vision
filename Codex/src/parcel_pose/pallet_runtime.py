@@ -2921,6 +2921,10 @@ def run_pallet_live(
                 if placement_motion_active:
                     decision = _placement_zero_hold_output(decision)
                     decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
+                    motion_interlocks_ok = True
+                    motion_interlock_reason = (
+                        "placement_cartesian_motion_exact_zero_base"
+                    )
 
                 decision_source_max_age_s = (
                     _MAX_ODOMETRY_PREDICTION_AGE_S

@@ -251,8 +251,8 @@ loaded ready/body hold with exact zero mobility
   -> ARRIVED_HOLD
   -> exact-zero mobile lock
   -> freeze a typed PlacementDescentPlan from FK box-bottom and stack plane
-  -> planned base-z Cartesian lowering
-  -> vision-gated 80 mm-per-arm spread release
+  -> empirical 2/3 base-z Cartesian lowering from the frozen vision gap
+  -> vision-gated 120 mm-per-arm spread release
 ```
 
 The coarse observation consists of the completed stack's near/front boundary
@@ -456,20 +456,21 @@ The pure controller's intended terminal state is `ARRIVED_HOLD`: torso/head and
 both arms remain supported by one combined body+mobility stream while mobility
 stays zero. With `--auto-place-slot1`, the same stream then freezes mobile
 velocity at exact zero, freezes a `PlacementDescentPlan`, lowers both Cartesian
-EEF targets by that plan's base-z distance, and spreads both hands by `80 mm`
-per arm from the planned lowered geometry. It does not command slide,
-power-off, or a separate gripper command.
+EEF targets by two thirds of that plan's measured base-z gap, and then cancels
+the loaded squeeze target and spreads both hands an additional `120 mm` per
+arm. It does not command slide, power-off, or a separate gripper command.
 The current camera registration still includes the empirical base-y `+0.050 m`
 correction and no external ground truth, so replay and live telemetry prove
 repeatability and observability, not absolute placement accuracy.
 
 The previous fixed-distance lowering is intentionally gone. `0.050 m` is now
 only the pre-motion clearance floor. At placement entry, the runtime computes
-the actual descent from the FK box-bottom estimate and current stack plane,
-stores the result in a frozen typed plan, and rejects release if the plan is
-stale, inconsistent, too uncertain, below the clearance floor, or above the
-configured maximum descent. This is not contact proof or absolute placement
-validation.
+the raw gap from the FK box-bottom estimate and current stack plane, stores the
+result in a frozen typed plan, and rejects release if the raw geometry is stale,
+inconsistent, too uncertain, below the clearance floor, or above the configured
+maximum descent. The supervised MVP commands `2/3` of that raw gap because the
+nominal registration overestimated the physical descent. This empirical scale
+is not contact proof or absolute placement validation.
 
 ### Slot-1 stage and tolerance summary
 
@@ -490,9 +491,9 @@ would not move the arms.
 | Metric handoff | zero | Five stopped strict L-corner proxy frames stable within `0.008 m`, or a dwell-complete hole; exact-zero acknowledgement and measured wheel stop precede the one-way owner transfer. A raw strict proxy/hole appearing during fallback cruise first commands braking. |
 | Fine align | `x/y/yaw` | Fixed-outer L-corner proxy initially, complete-hole measurement as cross-check/refinement when valid, both against the same demonstrated reference `[0.865000, 0.139523] m`, `-90 deg`; the existing jump gate guards source transitions. Arrival requires five frames and `0.35 s` inside `0.015 m` / `5 deg`, with inner threshold `0.010 m` / `3 deg`. |
 | Placement entry | zero only | `ARRIVED_HOLD`, exact-zero command acknowledgement, fresh stopped-wheel dwell `0.35 s`, loaded Cartesian-hold mode, stream Running feedback, and fresh measured FK. |
-| Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=15.0 s`, FK box-bottom lower bound minus stack-plane upper bound `>=0.050 m`, uncertainty `<=0.025 m`, descent `<=0.250 m`; the accepted sample freezes a typed `PlacementDescentPlan`. |
-| Lower | arm Cartesian only | The acknowledged loaded-hold target is copied, preserving orientation, squeeze, and nullspace targets, then shifted by the frozen plan's base-z distance. Timeout `12.0 s`; measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
-| Release | arm Cartesian only | Vision seating evidence held for `0.35 s`, spread `0.080 m` per arm, timeout `4.5 s`, each EEF within `0.012 m` / `4 deg` of target, measured inter-EEF separation increase at least `0.136 m`, then `0.35 s` release-target dwell. |
+| Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=15.0 s`, FK box-bottom lower bound minus stack-plane upper bound `>=0.050 m`, uncertainty `<=0.025 m`, raw gap `<=0.250 m`; the accepted sample freezes a typed `PlacementDescentPlan`. |
+| Lower | arm Cartesian only | The acknowledged loaded-hold target is copied, preserving orientation, squeeze, and nullspace targets, then shifted by `2/3` of the frozen raw base-z gap. Timeout `12.0 s`; measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
+| Release | arm Cartesian only | Vision geometry evidence held for `0.35 s`; the squeeze target is cancelled and each arm spreads an additional `0.120 m`. Timeout `12.0 s`, each EEF within `0.012 m` / `4 deg` of target, measured inter-EEF separation increase at least `0.216 m`, then `0.35 s` release-target dwell. |
 
 ### Current commissioning boundary
 

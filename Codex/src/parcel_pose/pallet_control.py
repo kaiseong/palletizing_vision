@@ -234,7 +234,7 @@ class PalletControlConfig:
     # box-pick lift command.  It is a compliant target error, not a requested
     # physical penetration into the carton.
     placement_squeeze_offset_m: float = 0.150
-    placement_release_spread_m: float = 0.080
+    placement_release_spread_m: float = 0.120
     placement_max_release_spread_m: float = 0.120
     placement_joint_stiffness: tuple[float, ...] = (150.0,) * 7
     placement_joint_damping_ratio: float = 1.0
@@ -2236,6 +2236,10 @@ class RBY1PalletController:
         now_s = self._clock()
         sample_margin_s = 2.0 / self.config.state_update_rate_hz
         with self._condition:
+            placement_arm_motion = self._arm_stream_mode in (
+                ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING,
+                ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE,
+            )
             states = [
                 state
                 for state in self._state_history
@@ -2256,20 +2260,21 @@ class RBY1PalletController:
         arm_error_max: float | None = None
         separations: list[np.ndarray] = []
         for state in states:
-            errors, all_ready = self._ready_joint_errors(state)
-            arm_indices = np.r_[
-                np.arange(6, 13, dtype=np.int64),
-                np.arange(13, 20, dtype=np.int64),
-            ]
-            arm_errors = np.abs(errors[arm_indices])
-            current_max = float(np.max(arm_errors))
-            arm_error_max = (
-                current_max
-                if arm_error_max is None
-                else max(arm_error_max, current_max)
-            )
-            if not all_ready:
-                reasons.append("target_joint_not_ready")
+            if not placement_arm_motion:
+                errors, all_ready = self._ready_joint_errors(state)
+                arm_indices = np.r_[
+                    np.arange(6, 13, dtype=np.int64),
+                    np.arange(13, 20, dtype=np.int64),
+                ]
+                arm_errors = np.abs(errors[arm_indices])
+                current_max = float(np.max(arm_errors))
+                arm_error_max = (
+                    current_max
+                    if arm_error_max is None
+                    else max(arm_error_max, current_max)
+                )
+                if not all_ready:
+                    reasons.append("target_joint_not_ready")
             if state.T_base_right_eef is None or state.T_base_left_eef is None:
                 reasons.append("fresh_eef_fk_unavailable")
             else:
@@ -2277,7 +2282,7 @@ class RBY1PalletController:
                     state.T_base_right_eef[:3, 3] - state.T_base_left_eef[:3, 3]
                 )
 
-        if (
+        if not placement_arm_motion and (
             arm_error_max is None
             or arm_error_max > self.config.arm_tracking_tolerance_rad
         ):

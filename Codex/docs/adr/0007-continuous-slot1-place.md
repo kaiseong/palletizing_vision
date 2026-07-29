@@ -66,9 +66,11 @@ part of the current placement decision; every `placement.maximum_force_n`,
 - The previous fixed-distance lowering is rejected. `0.050 m` is now only the
   pre-motion clearance floor. Placement freezes a typed immutable
   `PlacementDescentPlan` from the current FK box-bottom and stack-plane bounds,
-  then lowers by that plan's base-z distance.
+  retains that raw gap for clearance validation, then commands `2/3` of the
+  gap as the supervised MVP descent. This empirical factor compensates the
+  current nominal, externally unverified registration and is not contact proof.
 - The lowering command copies the acknowledged loaded-hold target and shifts
-  both EEF targets by the frozen plan distance in RB-Y1 base z. It preserves
+  both EEF targets by `2/3` of the frozen raw gap in RB-Y1 base z. It preserves
   orientation, squeeze metadata, and nullspace targets rather than re-basing on
   a compliant measured wrist pose and accidentally ratcheting the squeeze. It
   must reach measured z within `0.008 m`, midpoint XY drift within `0.015 m`,
@@ -76,12 +78,12 @@ part of the current placement decision; every `placement.maximum_force_n`,
 - Release is vision/FK gated. The sequencer requires at least three fresh gap
   samples, `0.008 m` gap stability, evidence age `<=0.30 s`, plan age
   `<=15.0 s`, FK box-bottom lower bound minus stack-plane upper bound
-  `>=0.050 m`, uncertainty `<=0.025 m`, and descent `<=0.250 m`. After a
-  `0.35 s` seated dwell, it spreads from the planned lowered geometry by
-  `0.080 m` per arm.
+  `>=0.050 m`, uncertainty `<=0.025 m`, and raw gap `<=0.250 m`. After a
+  `0.35 s` geometry-evidence dwell, it cancels the loaded squeeze target and
+  spreads an additional `0.120 m` per arm. The release timeout is `12.0 s`.
 - Release completion requires Running feedback, each EEF within `0.012 m` and
   `4 deg` of the release target, measured inter-EEF separation increase at
-  least `0.136 m`, and a `0.35 s` target dwell.
+  least `0.216 m`, and a `0.35 s` target dwell.
 - F/T values are optional telemetry in this configuration. Missing or invalid
   F/T becomes explicit zero-fallback diagnostics, and no F/T threshold can trip
   because the thresholds are `null`.

@@ -88,10 +88,11 @@ class PlacementRequest(str, Enum):
 class PlacementConfig:
     pre_motion_clearance_floor_m: float = 0.050
     maximum_descent_m: float = 0.250
+    descent_fraction: float = 2.0 / 3.0
     pre_place_verify_dwell_s: float = 0.15
-    lowering_timeout_s: float = 4.0
+    lowering_timeout_s: float = 12.0
     seated_dwell_s: float = 0.35
-    release_timeout_s: float = 4.5
+    release_timeout_s: float = 12.0
     release_target_dwell_s: float = 0.35
     feedback_stale_s: float = 0.25
     lower_z_tolerance_m: float = 0.008
@@ -99,10 +100,10 @@ class PlacementConfig:
     lower_rotation_tolerance_rad: float = math.radians(3.0)
     release_target_translation_tolerance_m: float = 0.012
     release_target_rotation_tolerance_rad: float = math.radians(4.0)
-    release_spread_m: float = 0.080
+    release_spread_m: float = 0.120
     vision_seating_max_uncertainty_m: float = 0.015
     vision_evidence_fresh_after_s: float = 0.30
-    vision_plan_valid_for_s: float = 5.0
+    vision_plan_valid_for_s: float = 15.0
     vision_gap_stability_tolerance_m: float = 0.008
     vision_evidence_min_samples: int = 3
 
@@ -110,6 +111,7 @@ class PlacementConfig:
         for name in (
             "pre_motion_clearance_floor_m",
             "maximum_descent_m",
+            "descent_fraction",
             "lowering_timeout_s",
             "release_timeout_s",
             "feedback_stale_s",
@@ -135,6 +137,8 @@ class PlacementConfig:
             raise ValueError("pre-motion clearance floor cannot be below 50 mm")
         if self.maximum_descent_m > 0.300 + 1e-12:
             raise ValueError("maximum planned descent cannot exceed 300 mm")
+        if self.descent_fraction > 1.0 + 1e-12:
+            raise ValueError("descent_fraction cannot exceed 1.0")
         if self.vision_seating_max_uncertainty_m > 0.030 + 1e-12:
             raise ValueError("descent uncertainty limit cannot exceed 30 mm")
         if self.vision_plan_valid_for_s < self.lowering_timeout_s:
@@ -167,6 +171,7 @@ class PlacementConfig:
             "angular_acceleration_limit_radps2",
             "pre_motion_clearance_floor_m",
             "maximum_descent_m",
+            "descent_fraction",
             "squeeze_offset_m",
             "release_spread_m",
             "maximum_release_spread_m",
@@ -209,6 +214,9 @@ class PlacementConfig:
             ),
             maximum_descent_m=float(
                 raw.get("maximum_descent_m", defaults.maximum_descent_m)
+            ),
+            descent_fraction=float(
+                raw.get("descent_fraction", defaults.descent_fraction)
             ),
             pre_place_verify_dwell_s=float(
                 raw.get(
@@ -359,10 +367,12 @@ class PlacementDescentPlan:
             raise ValueError("planned_delta_z_m must be positive")
         if self.min_delta_z_m <= 0.0 or self.max_delta_z_m <= 0.0:
             raise ValueError("delta bounds must be positive")
-        if self.min_delta_z_m > self.planned_delta_z_m + 1e-12:
-            raise ValueError("min_delta_z_m cannot exceed planned_delta_z_m")
-        if self.planned_delta_z_m > self.max_delta_z_m + 1e-12:
-            raise ValueError("planned_delta_z_m cannot exceed max_delta_z_m")
+        if self.min_delta_z_m > self.gap_m + 1e-12:
+            raise ValueError("min_delta_z_m cannot exceed gap_m")
+        if self.gap_m > self.max_delta_z_m + 1e-12:
+            raise ValueError("gap_m cannot exceed max_delta_z_m")
+        if self.planned_delta_z_m > self.gap_m + 1e-12:
+            raise ValueError("planned_delta_z_m cannot exceed gap_m")
         for name in ("stack_plane_sequence", "bilateral_eef_state_sequence"):
             sequence = int(getattr(self, name))
             if sequence < 1:
@@ -1191,15 +1201,16 @@ class Slot1PlacementSequencer:
         if rejection is not None:
             return None, rejection
 
+        planned_delta = gap * self.config.descent_fraction
         right_target = np.array(sample.right_eef_base, dtype=np.float64, copy=True)
         left_target = np.array(sample.left_eef_base, dtype=np.float64, copy=True)
-        right_target[2, 3] -= gap
-        left_target[2, 3] -= gap
+        right_target[2, 3] -= planned_delta
+        left_target[2, 3] -= planned_delta
         return (
             PlacementDescentPlan(
                 plan_id=uuid.uuid4().hex,
                 freeze_monotonic_s=sample.now_s,
-                planned_delta_z_m=gap,
+                planned_delta_z_m=planned_delta,
                 min_delta_z_m=min_delta,
                 max_delta_z_m=max_delta,
                 gap_m=gap,
