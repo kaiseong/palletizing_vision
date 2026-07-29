@@ -34,15 +34,18 @@ are intentionally not used as final slot-pose sources.
   stationary L gate may authorize one forward step of at most 10 mm and
   0.03 m/s. It can never emit `vy`, `wz`, or reverse motion.
 - Measure each authorized step with fresh `T_odom_base`. Lateral or yaw drift,
-  stale/nonfinite odometry, visual loss, timeout, no progress, session-budget
-  overrun, or a parent interlock failure selects exact zero. Odometry cannot
-  authorize the next step.
+  stale/nonfinite odometry, visual loss, timeout, no progress, a per-step
+  stopping-allowance breach, session-budget overrun, or a parent interlock
+  failure selects exact zero. Odometry cannot authorize the next step.
 - Conserve a session-wide forward budget without reset or refund. The shipped
   default is `0.0 m`; this release rejects values above `0.15 m`, while the
   documented absolute design ceiling remains `0.20 m`. Every target reserves
   the configured stopping allowance, and odometry remains monitored through
-  zero-command braking and verified wheel stop so target overshoot is charged
-  against the same session budget instead of being hidden.
+  zero-command braking and verified wheel stop. Coasting is charged against
+  the same session budget instead of being hidden, while the finite per-step
+  allowance still distinguishes expected braking from a runaway command. A
+  new step requires enough remaining budget for the full configured step plus
+  that allowance; no shortened tail step is emitted near budget exhaustion.
 - Require five complete-hole frames spanning at least 0.35 s, then transfer
   authority once at exact zero and measured wheel stop. Coarse authority is
   permanently revoked for that session.

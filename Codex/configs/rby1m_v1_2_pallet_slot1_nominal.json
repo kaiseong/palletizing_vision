@@ -96,7 +96,7 @@
         "yaw_limit_deg": 3.0
       },
       "target_tolerance_m": 0.001,
-      "overshoot_tolerance_m": 0.003
+      "overshoot_tolerance_m": 0.006
     }
   },
   "held_box": {

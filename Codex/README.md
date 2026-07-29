@@ -261,9 +261,13 @@ forward acquisition budget. The absolute design ceiling remains an unreachable
 `0.20 m`; every stop-and-observe step is limited to `0.010 m`, and forward
 speed is limited to `0.030 m/s`. Fresh `T_odom_base` measures a previously
 authorized step—including zero-command coasting through verified wheel stop—and
-monitors lateral/yaw drift. Each target reserves the configured 3 mm stopping
-allowance inside the session budget; odometry never authorizes the next step
-without a new five-frame visual gate.
+monitors lateral/yaw drift. Each target reserves the configured 6 mm physical
+stopping allowance inside the session budget. That allowance covers the
+4.95 mm worst measured post-brake travel from the first loaded RB-Y1 retry,
+while a larger per-step excursion still latches a fault. Odometry never
+authorizes the next step without a new five-frame visual gate, and the
+controller does not emit a shortened tail step when the remaining budget
+cannot cover one full 10 mm step plus its stopping allowance.
 
 Replay the supplied recordings without a camera or robot SDK:
 

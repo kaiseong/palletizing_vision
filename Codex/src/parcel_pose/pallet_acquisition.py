@@ -120,6 +120,8 @@ class AcquisitionConfig:
     lateral_drift_limit_m: float = 0.015
     yaw_drift_limit_rad: float = math.radians(3.0)
     target_tolerance_m: float = 0.001
+    # Maximum physical travel beyond one step target, including zero-command
+    # braking. It is both a per-step runaway boundary and a reserved budget.
     overshoot_tolerance_m: float = 0.003
     settle_duration_s: float = 0.35
     brake_timeout_s: float = 1.50
@@ -1051,14 +1053,13 @@ class ForwardAcquireServo:
             return self._output(decision, self._fault_reason or drift_reason)
 
         remaining = self.remaining_budget_m
-        usable_before_stop_m = remaining - self.config.overshoot_tolerance_m
-        if usable_before_stop_m <= 1e-12:
+        required_budget_m = self.config.step_m + self.config.overshoot_tolerance_m
+        # A shortened tail step is below the useful resolution of this 10 Hz
+        # stop-and-observe loop, while its physical stopping distance is not.
+        if remaining + 1e-12 < required_budget_m:
             self._latch_fault("insufficient_stopping_allowance_in_budget")
             return self._output(decision, self._fault_reason or "budget_exhausted")
-        target = min(self.config.step_m, usable_before_stop_m)
-        if target <= 0.0:
-            self._latch_fault("invalid_nonpositive_step_target")
-            return self._output(decision, self._fault_reason or "invalid_step")
+        target = self.config.step_m
 
         # Charge the full target at start.  A perception hold or interrupted
         # step cannot refund it and therefore cannot exceed the session budget.
@@ -1137,6 +1138,13 @@ class ForwardAcquireServo:
                 now_s,
                 _AfterStop.FAULT_HOLD,
                 "acquisition_budget_overrun_during_step",
+            )
+            return self._output(decision, self._reason)
+        if progress > self._step_target_m + self.config.overshoot_tolerance_m:
+            self._begin_brake(
+                now_s,
+                _AfterStop.FAULT_HOLD,
+                "step_braking_allowance_exceeded",
             )
             return self._output(decision, self._reason)
         if self._step_actual_m >= self._step_target_m - self.config.target_tolerance_m:
@@ -1473,6 +1481,8 @@ class ForwardAcquireServo:
         self._record_step_progress(max(0.0, progress))
         if self._observed_forward_travel_m > self.config.budget_m + 1e-12:
             return "acquisition_budget_overrun_while_stopping"
+        if progress > self._step_target_m + self.config.overshoot_tolerance_m:
+            return "step_braking_allowance_exceeded_while_stopping"
         return None
 
     def _active_timeout_expired(self, now_s: float) -> bool:
