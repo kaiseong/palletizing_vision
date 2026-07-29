@@ -60,9 +60,10 @@ part of the current placement decision; every `placement.maximum_force_n`,
   bilateral Cartesian impedance for arm lower/release with nullspace joint
   targets copied from measured arm joints. The mobile command is frozen at
   exact zero once placement begins.
-- Placement starts only from `ARRIVED_HOLD` with exact-zero Running feedback,
-  fresh stopped-wheel dwell, loaded Cartesian-hold mode, fresh measured FK, and
-  fresh vision geometry.
+- Placement starts only from `ARRIVED_HOLD` with a current metric alignment
+  feature held for `1.0 s`, exact-zero Running feedback, fresh stopped-wheel
+  dwell, loaded Cartesian-hold mode, fresh measured FK, and fresh vision
+  geometry.
 - The previous fixed-distance lowering is rejected. `0.050 m` is now only the
   pre-motion clearance floor. Placement freezes a typed immutable
   `PlacementDescentPlan` from the current FK box-bottom and stack-plane bounds,
