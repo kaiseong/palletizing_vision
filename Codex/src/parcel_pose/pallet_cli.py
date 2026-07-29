@@ -172,8 +172,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-geometry-only-grip-check",
         action="store_true",
         help=(
-            "commissioning-only: allow the fixed-ready FK/EEF geometry and measured "
-            "joint continuity to replace unconfigured F/T plausibility thresholds; "
+            "commissioning-only: acknowledge fixed-ready FK/EEF geometry, measured "
+            "joint continuity, and depth clearance as the loaded-demo interlock; "
+            "F/T is not a gate; "
             "the loaded config must enable the same reviewed commissioning policy"
         ),
     )
@@ -190,7 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "commissioning-only: allow release when held-top/stack-plane geometry "
-            "predicts that the 50 mm lowering will seat the box; F/T is not required"
+            "predicts that the 50 mm lowering will seat the box; placement does "
+            "not read F/T"
         ),
     )
     live.add_argument(

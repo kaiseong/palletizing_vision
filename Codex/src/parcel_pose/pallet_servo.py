@@ -1,9 +1,9 @@
 """Pure slot-1 pallet alignment servo with no robot-SDK side effects.
 
-The controller works entirely in metric RB-Y1 base coordinates.  It supports
-the legacy held-carton-to-world-target contract and the explicit current-world-
-feature-to-demonstrated-body-reference contract used by slot 1.  In both cases
-a world point ``p`` is expressed in the moving base frame.  For
+The controller works entirely in metric RB-Y1 base coordinates.  Its single
+input contract compares the current world feature with the demonstrated body
+reference used by slot 1.  The world point ``p`` is expressed in the moving
+base frame.  For
 ``xi_B = [vx, vy, wz]``,
 
 ``dot(p) = -v - wz * J * p``.
@@ -19,7 +19,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 import math
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Mapping
 
 import numpy as np
 from numpy.typing import NDArray
@@ -290,300 +290,57 @@ class PalletServoConfig:
 
     @classmethod
     def from_root_config(cls, value: Mapping[str, object]) -> "PalletServoConfig":
-        """Build from either the root pallet config or a servo-only mapping.
-
-        The canonical root layout is ``pallet.servo`` with a sibling
-        ``pallet.wheel_stop`` and ``pallet.T_mobility_base``.  Direct
-        ``pallet_servo``/``servo`` sections are accepted for replay tools.
-        Unknown fields stay owned by their respective subsystems and are not
-        forwarded into this safety-critical dataclass.
-        """
+        """Build from the one strict root-level demo servo schema."""
 
         if not isinstance(value, Mapping):
             raise TypeError("root config must be a mapping")
-        pallet_value = value.get("pallet", {})
-        pallet = pallet_value if isinstance(pallet_value, Mapping) else {}
-        servo_value = pallet.get(
-            "servo",
-            value.get("pallet_servo", value.get("servo", {})),
-        )
-        servo = servo_value if isinstance(servo_value, Mapping) else {}
-        wheel_value = pallet.get("wheel_stop", servo.get("wheel_stop", {}))
-        wheel = wheel_value if isinstance(wheel_value, Mapping) else {}
-        if bool(servo.get("strict_unknown_keys", False)):
-            allowed_servo_keys = {
-                "strict_unknown_keys",
-                "position_gain_per_s",
-                "xy_gain_per_s",
-                "yaw_gain_per_s",
-                "max_linear_speed_mps",
-                "max_angular_speed_radps",
-                "max_linear_acceleration_mps2",
-                "max_angular_acceleration_radps2",
-                "filter_window",
-                "jump_threshold_m",
-                "yaw_jump_threshold_rad",
-                "jump_reseed_frames",
-                "stale_after_s",
-                "observation_stale_after_s",
-                "timeout_s",
-                "safety_timeout_s",
-                "max_correction_m",
-                "start_yaw_limit_rad",
-                "arrival_inner_m",
-                "arrival_outer_m",
-                "arrival_yaw_inner_rad",
-                "arrival_yaw_outer_rad",
-                "arrival_min_frames",
-                "arrival_min_duration_s",
-                "expected_axis_branch",
-                "maximum_measurement_jump_m",
-                "maximum_initial_correction_m",
-                "arrival_inner_xy_m",
-                "arrival_outer_xy_m",
-                "maximum_linear_speed_mps",
-                "maximum_angular_speed_radps",
-                "kp_xy_per_s",
-                "kp_yaw_per_s",
-                "maximum_initial_yaw_deg",
-                "arrival_inner_yaw_deg",
-                "arrival_outer_yaw_deg",
-                "wheel_stop",
-                "linear_speed_mps",
-                "angular_speed_radps",
-                "wheel_linear_stop_mps",
-                "wheel_angular_stop_radps",
-                "duration_s",
-                "wheel_stop_duration_s",
-                "feedback_stale_after_s",
-                "wheel_feedback_stale_after_s",
-                "wheel_stop_linear_mps",
-                "wheel_stop_angular_radps",
-                "wheel_stop_dwell_s",
-                "control_rate_hz",
-                "absolute_linear_speed_limit_mps",
-                "absolute_angular_speed_limit_radps",
-            }
-            unknown = sorted(set(servo) - allowed_servo_keys)
-            if unknown:
-                raise ValueError(
-                    "unknown servo configuration key(s): " + ", ".join(unknown)
-                )
+        servo_value = value.get("servo")
+        if not isinstance(servo_value, Mapping):
+            raise ValueError("root config servo must be a mapping")
+        servo = servo_value
+        allowed_keys = {
+            "position_gain_per_s",
+            "yaw_gain_per_s",
+            "max_linear_speed_mps",
+            "max_angular_speed_radps",
+            "jump_threshold_m",
+            "max_correction_m",
+            "start_yaw_limit_rad",
+            "stale_after_s",
+            "arrival_inner_m",
+            "arrival_outer_m",
+            "arrival_yaw_inner_rad",
+            "arrival_yaw_outer_rad",
+            "arrival_min_frames",
+            "arrival_min_duration_s",
+            "wheel_linear_stop_mps",
+            "wheel_angular_stop_radps",
+            "wheel_stop_duration_s",
+        }
+        unknown = sorted(set(servo) - allowed_keys)
+        if unknown:
+            raise ValueError(
+                "unknown servo configuration key(s): " + ", ".join(unknown)
+            )
+        fields = {name: servo[name] for name in allowed_keys if name in servo}
 
-        aliases: dict[str, tuple[str, ...]] = {
-            "position_gain_per_s": ("position_gain_per_s", "xy_gain_per_s"),
-            "yaw_gain_per_s": ("yaw_gain_per_s",),
-            "max_linear_speed_mps": ("max_linear_speed_mps",),
-            "max_angular_speed_radps": ("max_angular_speed_radps",),
-            "max_linear_acceleration_mps2": ("max_linear_acceleration_mps2",),
-            "max_angular_acceleration_radps2": ("max_angular_acceleration_radps2",),
-            "filter_window": ("filter_window",),
-            "jump_threshold_m": ("jump_threshold_m",),
-            "yaw_jump_threshold_rad": ("yaw_jump_threshold_rad",),
-            "jump_reseed_frames": ("jump_reseed_frames",),
-            "stale_after_s": ("stale_after_s", "observation_stale_after_s"),
-            "timeout_s": ("timeout_s", "safety_timeout_s"),
-            "max_correction_m": ("max_correction_m",),
-            "start_yaw_limit_rad": ("start_yaw_limit_rad",),
-            "arrival_inner_m": ("arrival_inner_m",),
-            "arrival_outer_m": ("arrival_outer_m",),
-            "arrival_yaw_inner_rad": ("arrival_yaw_inner_rad",),
-            "arrival_yaw_outer_rad": ("arrival_yaw_outer_rad",),
-            "arrival_min_frames": ("arrival_min_frames",),
-            "arrival_min_duration_s": ("arrival_min_duration_s",),
-        }
-        fields: dict[str, object] = {}
-        for field_name, candidate_names in aliases.items():
-            for candidate_name in candidate_names:
-                if candidate_name in servo:
-                    fields[field_name] = servo[candidate_name]
-                    break
-        axis_branch = pallet.get("axis_branch", servo.get("expected_axis_branch"))
-        if axis_branch is not None:
-            fields["expected_axis_branch"] = str(axis_branch)
+        pallet = value.get("pallet")
+        if not isinstance(pallet, Mapping):
+            raise ValueError("root config pallet must be a mapping")
+        fields["expected_axis_branch"] = str(pallet.get("axis_branch", ""))
 
-        # Canonical shipped JSON uses descriptive ``maximum_*`` names and
-        # degrees at its human-facing boundary.
-        direct_aliases = {
-            "jump_threshold_m": "maximum_measurement_jump_m",
-            "max_correction_m": "maximum_initial_correction_m",
-            "arrival_inner_m": "arrival_inner_xy_m",
-            "arrival_outer_m": "arrival_outer_xy_m",
-            "max_linear_speed_mps": "maximum_linear_speed_mps",
-            "max_angular_speed_radps": "maximum_angular_speed_radps",
-            "yaw_gain_per_s": "kp_yaw_per_s",
-        }
-        for field_name, config_name in direct_aliases.items():
-            if field_name not in fields and config_name in servo:
-                fields[field_name] = servo[config_name]
-        if "position_gain_per_s" not in fields and "kp_xy_per_s" in servo:
-            gains = np.asarray(servo["kp_xy_per_s"], dtype=np.float64).reshape(-1)
-            if gains.size == 1:
-                fields["position_gain_per_s"] = float(gains[0])
-            elif gains.size == 2 and math.isclose(
-                float(gains[0]),
-                float(gains[1]),
-                rel_tol=1e-9,
-                abs_tol=1e-12,
-            ):
-                fields["position_gain_per_s"] = float(gains[0])
-            else:
-                raise ValueError(
-                    "kp_xy_per_s must be scalar or equal XY gains for this controller"
-                )
-        degree_aliases = {
-            "start_yaw_limit_rad": "maximum_initial_yaw_deg",
-            "arrival_yaw_inner_rad": "arrival_inner_yaw_deg",
-            "arrival_yaw_outer_rad": "arrival_outer_yaw_deg",
-        }
-        for field_name, config_name in degree_aliases.items():
-            if field_name not in fields and config_name in servo:
-                fields[field_name] = math.radians(float(servo[config_name]))
-
-        wheel_aliases = {
-            "wheel_linear_stop_mps": (
-                "linear_speed_mps",
-                "wheel_linear_stop_mps",
-            ),
-            "wheel_angular_stop_radps": (
-                "angular_speed_radps",
-                "wheel_angular_stop_radps",
-            ),
-            "wheel_stop_duration_s": ("duration_s", "wheel_stop_duration_s"),
-            "wheel_feedback_stale_after_s": (
-                "feedback_stale_after_s",
-                "wheel_feedback_stale_after_s",
-            ),
-        }
-        for field_name, candidate_names in wheel_aliases.items():
-            for candidate_name in candidate_names:
-                if candidate_name in wheel:
-                    fields[field_name] = wheel[candidate_name]
-                    break
-                if candidate_name in servo:
-                    fields[field_name] = servo[candidate_name]
-                    break
-        shipped_wheel_aliases = {
-            "wheel_linear_stop_mps": "wheel_stop_linear_mps",
-            "wheel_angular_stop_radps": "wheel_stop_angular_radps",
-            "wheel_stop_duration_s": "wheel_stop_dwell_s",
-        }
-        for field_name, config_name in shipped_wheel_aliases.items():
-            if field_name not in fields and config_name in servo:
-                fields[field_name] = servo[config_name]
-
-        mobility_frame_value = value.get("mobility_frame", {})
-        mobility_frame = (
-            mobility_frame_value if isinstance(mobility_frame_value, Mapping) else {}
-        )
-        transform_value = pallet.get(
-            "T_mobility_base",
-            value.get(
-                "T_mobility_base",
-                mobility_frame.get(
-                    "T_mobility_from_base",
-                    servo.get("T_mobility_base"),
-                ),
-            ),
-        )
-        if transform_value is not None:
-            if isinstance(transform_value, Mapping):
-                translation = transform_value.get(
-                    "translation_xy_m",
-                    transform_value.get("translation_m", (0.0, 0.0)),
-                )
-                yaw = transform_value.get(
-                    "yaw_target_source_rad",
-                    transform_value.get("yaw_rad", 0.0),
-                )
-                fields["mobility_from_base"] = SE2FrameTransform(
-                    translation_xy_m=_xy(translation, "T_mobility_base.translation"),
-                    yaw_target_source_rad=float(yaw),
-                )
-            else:
-                fields["mobility_from_base"] = SE2FrameTransform.from_matrix(
-                    transform_value
-                )
+        mobility_frame = value.get("mobility_frame")
+        if not isinstance(mobility_frame, Mapping):
+            raise ValueError("root config mobility_frame must be a mapping")
+        transform_value = mobility_frame.get("T_mobility_from_base")
+        if transform_value is None:
+            raise ValueError("mobility_frame.T_mobility_from_base is required")
+        fields["mobility_from_base"] = SE2FrameTransform.from_matrix(transform_value)
         return cls(**fields)
 
 
 @dataclass(frozen=True, slots=True)
-class PalletServoMeasurement:
-    """Minimal metric alignment observation consumed by the pure controller."""
-
-    timestamp_s: float
-    held_center_base: tuple[float, float] | None
-    held_yaw_base_rad: float | None
-    target_center_base: tuple[float, float] | None
-    target_yaw_base_rad: float | None
-    axis_branch: str | None = None
-    valid: bool = True
-    rejection_reasons: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "timestamp_s", _finite(self.timestamp_s, "timestamp_s")
-        )
-        object.__setattr__(
-            self,
-            "rejection_reasons",
-            tuple(str(reason) for reason in self.rejection_reasons),
-        )
-        if not self.valid:
-            return
-        branch = None if self.axis_branch is None else str(self.axis_branch).strip()
-        object.__setattr__(self, "axis_branch", branch or None)
-        if not branch:
-            raise ValueError("valid measurement requires axis_branch")
-        if self.held_center_base is None or self.target_center_base is None:
-            raise ValueError("valid measurement requires held and target centres")
-        if self.held_yaw_base_rad is None or self.target_yaw_base_rad is None:
-            raise ValueError("valid measurement requires held and target yaw")
-        object.__setattr__(
-            self,
-            "held_center_base",
-            _xy(self.held_center_base, "held_center_base"),
-        )
-        object.__setattr__(
-            self,
-            "target_center_base",
-            _xy(self.target_center_base, "target_center_base"),
-        )
-        object.__setattr__(
-            self,
-            "held_yaw_base_rad",
-            normalize_line_angle_rad(
-                _finite(self.held_yaw_base_rad, "held_yaw_base_rad")
-            ),
-        )
-        object.__setattr__(
-            self,
-            "target_yaw_base_rad",
-            normalize_line_angle_rad(
-                _finite(self.target_yaw_base_rad, "target_yaw_base_rad")
-            ),
-        )
-
-    @classmethod
-    def invalid(
-        cls,
-        timestamp_s: float,
-        *rejection_reasons: str,
-    ) -> "PalletServoMeasurement":
-        return cls(
-            timestamp_s=timestamp_s,
-            held_center_base=None,
-            held_yaw_base_rad=None,
-            target_center_base=None,
-            target_yaw_base_rad=None,
-            axis_branch=None,
-            valid=False,
-            rejection_reasons=tuple(rejection_reasons),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class WorldFeatureToBodyReferenceMeasurement:
+class PalletServoObservation:
     """Fine-servo contract for a fixed world feature and body-frame reference.
 
     ``current_observed_feature_center_base`` is the current world feature
@@ -679,7 +436,7 @@ class WorldFeatureToBodyReferenceMeasurement:
         timestamp_s: float,
         *rejection_reasons: str,
         reference_source: str = "invalid",
-    ) -> "WorldFeatureToBodyReferenceMeasurement":
+    ) -> "PalletServoObservation":
         return cls(
             timestamp_s=timestamp_s,
             current_observed_feature_center_base=None,
@@ -691,38 +448,6 @@ class WorldFeatureToBodyReferenceMeasurement:
             valid=False,
             rejection_reasons=tuple(rejection_reasons),
         )
-
-
-@runtime_checkable
-class SlotAlignmentGeometryLike(Protocol):
-    """Geometry fields shared with ``pallet_models.SlotAlignmentObservation``."""
-
-    held_center_base: object
-    held_yaw_base_rad: float
-    target_center_base: object
-    target_yaw_base_rad: float
-
-
-@runtime_checkable
-class SlotAlignmentLike(SlotAlignmentGeometryLike, Protocol):
-    """Timestamped alignment contract used directly by the servo."""
-
-    timestamp_s: float
-    axis_branch: str
-
-
-@runtime_checkable
-class WorldFeatureToBodyReferenceLike(Protocol):
-    """Explicit fine-servo feature/reference alignment contract."""
-
-    timestamp_s: float
-    current_observed_feature_center_base: object
-    current_observed_feature_yaw_base_rad: float
-    demonstrated_body_reference_center_base: object
-    demonstrated_body_reference_yaw_base_rad: float
-    axis_branch: str
-    reference_source: str
-
 
 @dataclass(frozen=True, slots=True)
 class WheelMotionMeasurement:
@@ -859,26 +584,15 @@ class PalletSlot1Servo:
 
     def update(
         self,
-        observation: (
-            SlotAlignmentLike
-            | SlotAlignmentGeometryLike
-            | PalletServoMeasurement
-            | WorldFeatureToBodyReferenceLike
-            | WorldFeatureToBodyReferenceMeasurement
-            | None
-        ),
+        observation: PalletServoObservation | None,
         now_s: float,
         wheel_motion: WheelMotionMeasurement | None = None,
-        *,
-        observation_timestamp_s: float | None = None,
     ) -> PalletServoOutput:
         """Advance perception servo and measured wheel-stop confirmation.
 
         ``wheel_motion`` is ignored before the zero-latched
         ``ARRIVAL_WHEEL_STOP`` state.  Its timestamp must be newer than the
         zero-latch cycle, preventing a pre-command sample from proving stop.
-        ``observation_timestamp_s`` lets the timestamp-free geometry contract
-        in :mod:`pallet_models` inherit its enclosing stack-frame timestamp.
         """
 
         rollback_output = self._fault_on_time_rollback(now_s)
@@ -902,11 +616,7 @@ class PalletSlot1Servo:
         branch_fault = self._axis_branch_fault(observation)
         if branch_fault is not None:
             return self.fault(branch_fault, now)
-        sample, invalid_reason = self._coerce_observation(
-            observation,
-            now,
-            timestamp_override_s=observation_timestamp_s,
-        )
+        sample, invalid_reason = self._coerce_observation(observation, now)
         accepted = False
         accept_reason = invalid_reason
         if sample is not None:
@@ -1040,36 +750,24 @@ class PalletSlot1Servo:
 
     def _coerce_observation(
         self,
-        observation: (
-            SlotAlignmentLike
-            | SlotAlignmentGeometryLike
-            | PalletServoMeasurement
-            | WorldFeatureToBodyReferenceLike
-            | WorldFeatureToBodyReferenceMeasurement
-            | None
-        ),
+        observation: PalletServoObservation | None,
         now_s: float,
-        *,
-        timestamp_override_s: float | None = None,
     ) -> tuple[_Sample | None, str | None]:
         if observation is None:
             return None, "observation_missing"
-        if not bool(getattr(observation, "valid", True)):
-            reasons = tuple(getattr(observation, "rejection_reasons", ()))
+        if not isinstance(observation, PalletServoObservation):
+            return None, "observation_contract_invalid"
+        if not observation.valid:
+            reasons = observation.rejection_reasons
             return None, str(reasons[0]) if reasons else "observation_invalid"
         try:
-            timestamp_source = (
-                timestamp_override_s
-                if timestamp_override_s is not None
-                else getattr(observation, "timestamp_s")
-            )
-            timestamp = _finite(timestamp_source, "timestamp_s")
+            timestamp = observation.timestamp_s
             age = now_s - timestamp
             if age < -1e-6:
                 return None, "observation_timestamp_in_future"
             if age > self.config.stale_after_s:
                 return None, "observation_stale"
-            axis_branch = str(getattr(observation, "axis_branch")).strip()
+            axis_branch = str(observation.axis_branch).strip()
             if not axis_branch:
                 return None, "axis_branch_missing"
             if (
@@ -1077,117 +775,43 @@ class PalletSlot1Servo:
                 and timestamp < self._last_raw.timestamp_s - 1e-9
             ):
                 return None, "observation_timestamp_regressed"
-            if hasattr(observation, "current_observed_feature_center_base") or hasattr(
-                observation, "observed_feature_center_base"
-            ):
-                current_center = getattr(
-                    observation,
-                    "current_observed_feature_center_base",
-                    getattr(observation, "observed_feature_center_base", None),
-                )
-                reference_center = getattr(
-                    observation,
-                    "demonstrated_body_reference_center_base",
-                    getattr(observation, "body_reference_center_base", None),
-                )
-                current_yaw_value = getattr(
-                    observation,
-                    "current_observed_feature_yaw_base_rad",
-                    getattr(observation, "observed_feature_yaw_base_rad", None),
-                )
-                reference_yaw_value = getattr(
-                    observation,
-                    "demonstrated_body_reference_yaw_base_rad",
-                    getattr(observation, "body_reference_yaw_base_rad", None),
-                )
-                current_xy = np.asarray(
-                    _xy(
-                        current_center,
-                        "current_observed_feature_center_base",
-                    ),
-                    dtype=np.float64,
-                )
-                reference_xy = np.asarray(
-                    _xy(
-                        reference_center,
-                        "demonstrated_body_reference_center_base",
-                    ),
-                    dtype=np.float64,
-                )
-                current_yaw = _finite(
-                    current_yaw_value,
-                    "current_observed_feature_yaw_base_rad",
-                )
-                reference_yaw = _finite(
-                    reference_yaw_value,
-                    "demonstrated_body_reference_yaw_base_rad",
-                )
-                reference_source = str(
-                    getattr(observation, "reference_source")
-                ).strip()
-                if not reference_source:
-                    return None, "reference_source_missing"
-                yaw_error = line_angle_difference_rad(current_yaw, reference_yaw)
-                return (
-                    _Sample(
-                        timestamp,
-                        current_xy,
-                        reference_xy,
-                        current_xy,
-                        yaw_error,
-                        axis_branch,
-                        "feature_to_body_reference",
-                        reference_source,
-                    ),
-                    None,
-                )
-            target_xy = np.asarray(
-                _xy(getattr(observation, "target_center_base"), "target_center_base"),
+            current_xy = np.asarray(
+                observation.current_observed_feature_center_base,
                 dtype=np.float64,
             )
-            held_xy = np.asarray(
-                _xy(getattr(observation, "held_center_base"), "held_center_base"),
+            reference_xy = np.asarray(
+                observation.demonstrated_body_reference_center_base,
                 dtype=np.float64,
             )
-            target_yaw = _finite(
-                getattr(observation, "target_yaw_base_rad"),
-                "target_yaw_base_rad",
+            yaw_error = line_angle_difference_rad(
+                observation.current_observed_feature_yaw_base_rad,
+                observation.demonstrated_body_reference_yaw_base_rad,
             )
-            held_yaw = _finite(
-                getattr(observation, "held_yaw_base_rad"),
-                "held_yaw_base_rad",
-            )
-        except (AttributeError, TypeError, ValueError) as exc:
+        except (TypeError, ValueError) as exc:
             return None, f"observation_corrupt:{exc}"
-        yaw_error = line_angle_difference_rad(target_yaw, held_yaw)
         return (
             _Sample(
                 timestamp,
-                target_xy,
-                held_xy,
-                target_xy,
+                current_xy,
+                reference_xy,
+                current_xy,
                 yaw_error,
                 axis_branch,
-                "held_box_alignment",
-                "held_box_measurement",
-                target_xy=target_xy,
-                held_xy=held_xy,
+                "feature_to_body_reference",
+                observation.reference_source,
             ),
             None,
         )
 
     def _axis_branch_fault(
         self,
-        observation: SlotAlignmentLike
-        | SlotAlignmentGeometryLike
-        | PalletServoMeasurement
-        | WorldFeatureToBodyReferenceLike
-        | WorldFeatureToBodyReferenceMeasurement
-        | None,
+        observation: PalletServoObservation | None,
     ) -> str | None:
-        if observation is None or not bool(getattr(observation, "valid", True)):
+        if observation is None or not isinstance(observation, PalletServoObservation):
             return None
-        branch = str(getattr(observation, "axis_branch", "")).strip()
+        if not observation.valid:
+            return None
+        branch = str(observation.axis_branch).strip()
         if not branch:
             return "axis_branch_missing"
         if branch != self._locked_axis_branch:
@@ -1651,27 +1275,12 @@ class PalletSlot1Servo:
         )
 
 
-# Explicit alias for callers that prefer the slot-scoped configuration name.
-PalletSlot1ServoConfig = PalletServoConfig
-SlotAlignmentMeasurement = PalletServoMeasurement
-SlotAlignmentObservation = PalletServoMeasurement
-FeatureReferenceMeasurement = WorldFeatureToBodyReferenceMeasurement
-
-
 __all__ = [
-    "FeatureReferenceMeasurement",
     "PalletServoConfig",
-    "PalletServoMeasurement",
+    "PalletServoObservation",
     "PalletServoOutput",
     "PalletServoState",
     "PalletSlot1Servo",
-    "PalletSlot1ServoConfig",
     "SE2FrameTransform",
-    "SlotAlignmentMeasurement",
-    "SlotAlignmentObservation",
-    "SlotAlignmentGeometryLike",
-    "SlotAlignmentLike",
     "WheelMotionMeasurement",
-    "WorldFeatureToBodyReferenceLike",
-    "WorldFeatureToBodyReferenceMeasurement",
 ]

@@ -4,9 +4,8 @@ The module has no robot-SDK side effects.  It begins only after fine mobile
 alignment has latched ``ARRIVED_HOLD`` and every output requires exact-zero
 mobility.  Geometry-only commissioning may lower the carton by 50 mm, but it
 can never authorize release by itself: spreading the hands requires a Running
-stream acknowledgement, measured vertical descent, and either fresh bounded
-vision geometry or explicitly configured bilateral F/T load-transfer evidence.
-The current commissioning configuration uses the vision path; F/T is optional.
+stream acknowledgement, measured vertical descent, and fresh bounded vision
+geometry. Placement does not read force/torque feedback.
 """
 
 from __future__ import annotations
@@ -44,10 +43,6 @@ def _nonnegative(value: float, name: str) -> float:
     if result < 0.0:
         raise ValueError(f"{name} must be nonnegative")
     return result
-
-
-def _optional_positive(value: float | None, name: str) -> float | None:
-    return None if value is None else _positive(value, name)
 
 
 def _readonly_transform(value: Any, name: str) -> np.ndarray:
@@ -91,23 +86,6 @@ class PlacementRequest(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class WrenchNorms:
-    right_force_n: float
-    left_force_n: float
-    right_torque_nm: float
-    left_torque_nm: float
-
-    def __post_init__(self) -> None:
-        for name in (
-            "right_force_n",
-            "left_force_n",
-            "right_torque_nm",
-            "left_torque_nm",
-        ):
-            object.__setattr__(self, name, _nonnegative(getattr(self, name), name))
-
-
-@dataclass(frozen=True, slots=True)
 class PlacementConfig:
     lowering_distance_m: float = 0.050
     pre_place_verify_dwell_s: float = 0.15
@@ -129,12 +107,6 @@ class PlacementConfig:
     vision_plan_valid_for_s: float = 5.0
     vision_gap_stability_tolerance_m: float = 0.008
     vision_evidence_min_samples: int = 3
-    max_absolute_force_n: float | None = None
-    max_absolute_torque_nm: float | None = None
-    max_force_jump_n: float | None = None
-    max_torque_jump_nm: float | None = None
-    min_bilateral_load_transfer_n: float | None = None
-    max_load_transfer_asymmetry_n: float | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -160,19 +132,6 @@ class PlacementConfig:
             "release_target_dwell_s",
         ):
             object.__setattr__(self, name, _nonnegative(getattr(self, name), name))
-        for name in (
-            "max_absolute_force_n",
-            "max_absolute_torque_nm",
-            "max_force_jump_n",
-            "max_torque_jump_nm",
-            "min_bilateral_load_transfer_n",
-            "max_load_transfer_asymmetry_n",
-        ):
-            object.__setattr__(
-                self,
-                name,
-                _optional_positive(getattr(self, name), name),
-            )
         if abs(self.lowering_distance_m - 0.050) > 1e-12:
             raise ValueError("slot-1 commissioning lowering must be exactly 0.050 m")
         residual_min = _finite(
@@ -194,18 +153,6 @@ class PlacementConfig:
             "vision_evidence_min_samples",
             int(self.vision_evidence_min_samples),
         )
-
-    @property
-    def has_release_thresholds(self) -> bool:
-        names = (
-            "max_absolute_force_n",
-            "max_absolute_torque_nm",
-            "max_force_jump_n",
-            "max_torque_jump_nm",
-            "min_bilateral_load_transfer_n",
-            "max_load_transfer_asymmetry_n",
-        )
-        return all(getattr(self, name) is not None for name in names)
 
     @classmethod
     def from_root_config(cls, root: Mapping[str, Any]) -> "PlacementConfig":
@@ -253,12 +200,6 @@ class PlacementConfig:
             "vision_plan_valid_for_s",
             "vision_gap_stability_tolerance_m",
             "vision_evidence_min_samples",
-            "maximum_force_n",
-            "maximum_torque_nm",
-            "maximum_force_jump_n",
-            "maximum_torque_jump_nm",
-            "minimum_bilateral_load_transfer_n",
-            "maximum_load_transfer_asymmetry_n",
         }
         if bool(raw.get("strict_unknown_keys", False)):
             unknown = sorted(set(raw) - allowed)
@@ -266,10 +207,6 @@ class PlacementConfig:
                 raise ValueError(
                     "unknown placement configuration key(s): " + ", ".join(unknown)
                 )
-
-        def optional_float(name: str) -> float | None:
-            value = raw.get(name)
-            return None if value is None else float(value)
 
         defaults = cls()
         return cls(
@@ -378,16 +315,6 @@ class PlacementConfig:
                     defaults.vision_evidence_min_samples,
                 )
             ),
-            max_absolute_force_n=optional_float("maximum_force_n"),
-            max_absolute_torque_nm=optional_float("maximum_torque_nm"),
-            max_force_jump_n=optional_float("maximum_force_jump_n"),
-            max_torque_jump_nm=optional_float("maximum_torque_jump_nm"),
-            min_bilateral_load_transfer_n=optional_float(
-                "minimum_bilateral_load_transfer_n"
-            ),
-            max_load_transfer_asymmetry_n=optional_float(
-                "maximum_load_transfer_asymmetry_n"
-            ),
         )
 
 
@@ -397,7 +324,6 @@ class PlacementInput:
     feedback_timestamp_s: float
     right_eef_base: Any
     left_eef_base: Any
-    wrench_norms: WrenchNorms
     arrived_hold: bool
     post_zero_wheel_stop: bool
     zero_command_ack: bool
@@ -508,7 +434,6 @@ class Slot1PlacementSequencer:
         self._contact_started_s: float | None = None
         self._release_target_started_s: float | None = None
         self._fault_reason: str | None = None
-        self._baseline_wrench: WrenchNorms | None = None
         self._baseline_gap_m: float | None = None
         self._baseline_gap_uncertainty_m: float | None = None
         self._baseline_gap_timestamp_s: float | None = None
@@ -517,7 +442,6 @@ class Slot1PlacementSequencer:
         self._vision_gap_sample_count = 0
         self._lower_start_right: np.ndarray | None = None
         self._lower_start_left: np.ndarray | None = None
-        self._previous_wrench: WrenchNorms | None = None
 
     def update(self, sample: PlacementInput) -> PlacementOutput:
         if not isinstance(sample, PlacementInput):
@@ -603,7 +527,6 @@ class Slot1PlacementSequencer:
 
     def _reset_pre_place_evidence(self) -> None:
         self._verify_started_s = None
-        self._baseline_wrench = None
         self._baseline_gap_m = None
         self._baseline_gap_uncertainty_m = None
         self._baseline_gap_timestamp_s = None
@@ -613,7 +536,6 @@ class Slot1PlacementSequencer:
 
     def _begin_pre_place_evidence(self, sample: PlacementInput) -> None:
         self._verify_started_s = sample.now_s
-        self._baseline_wrench = sample.wrench_norms
         self._baseline_gap_m = sample.predicted_box_bottom_gap_m
         self._baseline_gap_uncertainty_m = (
             sample.predicted_box_bottom_gap_uncertainty_m
@@ -776,14 +698,11 @@ class Slot1PlacementSequencer:
         if not sample.controller_target_ack:
             return "loaded_cartesian_hold_ack_missing"
         release_path_available = bool(
-            self.config.has_release_thresholds
-            or (
-                sample.allow_vision_geometry_release
-                and self._vision_input_is_fresh(sample)
-                and self._vision_seating_evidence_for(
-                    sample.predicted_box_bottom_gap_m,
-                    sample.predicted_box_bottom_gap_uncertainty_m,
-                )
+            sample.allow_vision_geometry_release
+            and self._vision_input_is_fresh(sample)
+            and self._vision_seating_evidence_for(
+                sample.predicted_box_bottom_gap_m,
+                sample.predicted_box_bottom_gap_uncertainty_m,
             )
         )
         if not release_path_available and not sample.allow_geometry_only_lowering:
@@ -814,31 +733,6 @@ class Slot1PlacementSequencer:
             return "feedback_timestamp_from_future"
         if feedback_age_s > self.config.feedback_stale_s:
             return "feedback_timestamp_stale"
-
-        wrench = sample.wrench_norms
-        if self.config.max_absolute_force_n is not None and max(
-            wrench.right_force_n,
-            wrench.left_force_n,
-        ) > self.config.max_absolute_force_n:
-            return "force_absolute_overload"
-        if self.config.max_absolute_torque_nm is not None and max(
-            wrench.right_torque_nm,
-            wrench.left_torque_nm,
-        ) > self.config.max_absolute_torque_nm:
-            return "torque_absolute_overload"
-        if self._previous_wrench is not None:
-            previous = self._previous_wrench
-            if self.config.max_force_jump_n is not None and max(
-                abs(wrench.right_force_n - previous.right_force_n),
-                abs(wrench.left_force_n - previous.left_force_n),
-            ) > self.config.max_force_jump_n:
-                return "force_jump_overload"
-            if self.config.max_torque_jump_nm is not None and max(
-                abs(wrench.right_torque_nm - previous.right_torque_nm),
-                abs(wrench.left_torque_nm - previous.left_torque_nm),
-            ) > self.config.max_torque_jump_nm:
-                return "torque_jump_overload"
-        self._previous_wrench = wrench
         return None
 
     def _lower_geometry_reached(self, sample: PlacementInput) -> bool:
@@ -931,25 +825,6 @@ class Slot1PlacementSequencer:
             current_separation_m - initial_separation_m >= minimum_increase_m
         )
 
-    def _load_transfer_evidence(self, sample: PlacementInput) -> bool:
-        if self._baseline_wrench is None:
-            return False
-        minimum = self.config.min_bilateral_load_transfer_n
-        asymmetry_limit = self.config.max_load_transfer_asymmetry_n
-        if minimum is None or asymmetry_limit is None:
-            return False
-        right_transfer = (
-            self._baseline_wrench.right_force_n - sample.wrench_norms.right_force_n
-        )
-        left_transfer = (
-            self._baseline_wrench.left_force_n - sample.wrench_norms.left_force_n
-        )
-        return bool(
-            right_transfer >= minimum
-            and left_transfer >= minimum
-            and abs(right_transfer - left_transfer) <= asymmetry_limit
-        )
-
     def _vision_seating_evidence(self, now_s: float) -> bool:
         if self._baseline_gap_timestamp_s is None:
             return False
@@ -980,14 +855,8 @@ class Slot1PlacementSequencer:
 
     def _seating_evidence(self, sample: PlacementInput) -> bool:
         return bool(
-            (
-                self.config.has_release_thresholds
-                and self._load_transfer_evidence(sample)
-            )
-            or (
-                sample.allow_vision_geometry_release
-                and self._vision_seating_evidence(sample.now_s)
-            )
+            sample.allow_vision_geometry_release
+            and self._vision_seating_evidence(sample.now_s)
         )
 
     def _state_elapsed(self, sample: PlacementInput) -> float:
@@ -1021,27 +890,15 @@ class Slot1PlacementSequencer:
         faulted: bool | None = None,
         release_authorized: bool = False,
     ) -> PlacementOutput:
-        baseline = self._baseline_wrench
         diagnostics: dict[str, object] = {
             "controller_arm_mode": sample.controller_arm_mode,
             "controller_target_ack": sample.controller_target_ack,
-            "force_right_n": sample.wrench_norms.right_force_n,
-            "force_left_n": sample.wrench_norms.left_force_n,
-            "torque_right_nm": sample.wrench_norms.right_torque_nm,
-            "torque_left_nm": sample.wrench_norms.left_torque_nm,
-            "baseline_force_right_n": (
-                None if baseline is None else baseline.right_force_n
-            ),
-            "baseline_force_left_n": (
-                None if baseline is None else baseline.left_force_n
-            ),
-            "load_transfer_evidence": self._load_transfer_evidence(sample),
             "vision_seating_evidence": self._vision_seating_evidence(sample.now_s),
             "predicted_box_bottom_gap_m": self._baseline_gap_m,
             "predicted_box_bottom_gap_uncertainty_m": (
                 self._baseline_gap_uncertainty_m
             ),
-            "release_thresholds_configured": self.config.has_release_thresholds,
+            "release_authority": "vision_geometry_only",
             "geometry_only_lowering": sample.allow_geometry_only_lowering,
             "vision_geometry_release": sample.allow_vision_geometry_release,
             "vision_gap_timestamp_s": self._baseline_gap_timestamp_s,
@@ -1078,6 +935,5 @@ __all__ = [
     "PlacementState",
     "RELEASE_MODE",
     "Slot1PlacementSequencer",
-    "WrenchNorms",
     "ZERO_MOBILITY_COMMAND",
 ]

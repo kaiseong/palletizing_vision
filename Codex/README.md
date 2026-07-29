@@ -380,20 +380,20 @@ python pallet.py live \
 
 `--allow-nominal-registration` explicitly accepts the nominal/unverified
 camera-to-base registration. `--allow-geometry-only-grip-check` is a
-commissioning-only substitute for unconfigured F/T plausibility thresholds: it
-uses measured ready-joint tracking, fresh dual-EEF FK, EEF separation stability,
-the configured fixed EEF-to-box offset, and the observed stack plane to compute
-a carried-box bottom clearance proxy. It does not prove grip force, contact
-loss, carton deformation, exact EEF-to-carton calibration, or absolute
-placement accuracy. This override is available only when both the CLI flag is
-present and the reviewed config sets
+commissioning acknowledgement for the actual demo interlock: measured
+ready-joint tracking, fresh dual-EEF FK, EEF separation stability, the configured
+fixed EEF-to-box offset, and the observed stack plane are used to compute a
+carried-box bottom clearance proxy. F/T is not used as a grip or motion gate, so
+this path does not prove grip force, contact loss, carton deformation, exact
+EEF-to-carton calibration, or absolute placement accuracy. The acknowledgement
+is accepted only when both the CLI flag is present and the reviewed config sets
 `grip_interlock.fixed_ready_geometry_only_commissioning_enabled=true`; configs
 without that explicit policy still fail closed.
 
 `--allow-vision-geometry-release` authorizes release only when fresh held-top
 and stack-plane geometry predicts that a 50 mm base-z lowering will seat the
-box. The shipped placement config sets all F/T thresholds to `null`, so F/T is
-logged as zero-fallback telemetry when unavailable and is not a placement gate.
+box. The placement path does not read F/T feedback; fresh bounded vision
+geometry is the only release authority.
 Use `--allow-geometry-only-lowering` only for supervised lower-and-hold tests:
 geometry-only lowering may reach `LOWERED_HOLD`, but it never authorizes hand
 spreading or release.
@@ -405,13 +405,10 @@ no more than `0.50 s`. This supports the measured approximately 12--13 Hz pallet
 pipeline without weakening the independent `0.15 s` current-frame actuation
 gate. Do not replace these checks with one enlarged global freshness timeout.
 
-An already-released `ReadyHoldHandoff` is also retained only as a data/test
-model. `GripHandoff` remains a typed design scaffold. Both ownership forms are
-still rejected for integrated box-pick-to-pallet takeover because the existing
-box-pick endpoint does not supply an atomic stream/epoch transfer with exact
-torso/head/control-mode, stream identity, stiffness, and torque provenance. The
-new standalone commissioning path avoids that gap by requiring the prior owner
-to be stopped and by making the pallet process the only live owner.
+The standalone commissioning path requires the prior box-pick owner to be
+stopped and makes the pallet process the only live owner. Uncommissioned
+box-pick-to-pallet handoff scaffolds are intentionally absent from the demo
+code; add an atomic stream/epoch transfer only when that integration is ready.
 
 A CLI boolean cannot replace exact target/stiffness/torque provenance, measured
 arm tracking, EEF separation, held-top/stack-plane geometry, fresh odometry, or
@@ -814,10 +811,10 @@ omit a Cartesian-impedance torque-limit override, so the RB-Y1 controller
 applies its per-joint model/runtime defaults instead of the former unsafe
 `[100] * 7 Nm` blanket request. Controller model/runtime parameters remain
 authoritative; the application does not assume one common limit for all seven
-joints. Its FT monitor is optional; the pallet placement path does not use F/T
-thresholds. Run the first physical trials supervised with an accessible
-emergency stop and tune the geometric/squeeze values independently before
-unattended operation.
+joints. The box-pick FT monitor is optional and independent; the pallet
+placement path does not read F/T. Run the first physical trials supervised with
+an accessible emergency stop and tune the geometric/squeeze values
+independently before unattended operation.
 
 ## Verification
 

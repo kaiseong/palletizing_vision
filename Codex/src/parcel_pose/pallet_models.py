@@ -1017,53 +1017,28 @@ def load_pallet_estimator_config(
     perception_raw = root.get("perception", pallet_raw.get("perception", {}))
     if not isinstance(perception_raw, Mapping):
         raise ValueError("perception configuration block must be an object")
-    if bool(perception_raw.get("strict_unknown_keys", False)):
-        allowed_perception_keys = {
-            "strict_unknown_keys",
-            "minimum_inner_rims",
-            "opening_dimension_tolerance_m",
-            "maximum_orthogonality_error_deg",
-            "maximum_plane_p95_residual_m",
-            "live_center_spread_m",
-            "live_yaw_spread_deg",
-            "maximum_initial_yaw_deg",
-            "maximum_measurement_jump_m",
-            "maximum_measurement_jump_age_s",
-            "min_depth_m",
-            "max_depth_m",
-            "plane_fit_tolerance_m",
-            "plane_ransac_tolerance_m",
-            "plane_slab_m",
-            "minimum_plane_points",
-            "workspace_x_m",
-            "workspace_y_m",
-            "workspace_z_m",
-            "workspace_u0_v0_u1_v1",
-            "stack_plane_z_m",
-            "z_histogram_bin_m",
-            "plane_seed_band_m",
-            "plane_fit_max_points",
-            "plane_ransac_iterations",
-            "grid_resolution_m",
-            "morphology_close_m",
-            "morphology_dilate_m",
-            "opening_component_min_m",
-            "opening_component_max_m",
-            "rim_outer_band_m",
-            "min_rim_support_ratio",
-            "held_plane_max_uncertainty_m",
-            "closer_plane_rejection_margin_m",
-            "stable_window_frames",
-            "replay_center_std_m",
-            "replay_yaw_std_deg",
-            "rough_front_axis_base",
-            "l_corner",
-        }
-        unknown = sorted(set(perception_raw) - allowed_perception_keys)
-        if unknown:
-            raise ValueError(
-                "unknown perception configuration key(s): " + ", ".join(unknown)
-            )
+    allowed_perception_keys = {
+        "minimum_inner_rims",
+        "opening_dimension_tolerance_m",
+        "maximum_orthogonality_error_deg",
+        "maximum_plane_p95_residual_m",
+        "live_center_spread_m",
+        "live_yaw_spread_deg",
+        "maximum_measurement_jump_age_s",
+        "min_depth_m",
+        "max_depth_m",
+        "minimum_plane_points",
+        "plane_fit_max_points",
+        "plane_ransac_tolerance_m",
+        "closer_plane_rejection_margin_m",
+        "stable_window_frames",
+        "l_corner",
+    }
+    unknown = sorted(set(perception_raw) - allowed_perception_keys)
+    if unknown:
+        raise ValueError(
+            "unknown perception configuration key(s): " + ", ".join(unknown)
+        )
     gates = PalletPerceptionGates(
         min_inner_rim_count=int(perception_raw.get("minimum_inner_rims", 3)),
         max_opening_size_error_m=float(
@@ -1079,23 +1054,17 @@ def load_pallet_estimator_config(
         max_yaw_spread_rad=math.radians(
             float(perception_raw.get("live_yaw_spread_deg", 2.0))
         ),
-        max_start_yaw_residual_rad=math.radians(
-            float(
-                perception_raw.get(
-                    "maximum_initial_yaw_deg",
-                    root.get("servo", {}).get("maximum_initial_yaw_deg", 15.0)
-                    if isinstance(root.get("servo", {}), Mapping)
-                    else 15.0,
-                )
+        max_start_yaw_residual_rad=float(
+            root.get("servo", {}).get(
+                "start_yaw_limit_rad", math.radians(15.0)
             )
+            if isinstance(root.get("servo", {}), Mapping)
+            else math.radians(15.0)
         ),
         max_consecutive_center_jump_m=float(
-            perception_raw.get(
-                "maximum_measurement_jump_m",
-                root.get("servo", {}).get("maximum_measurement_jump_m", 0.030)
-                if isinstance(root.get("servo", {}), Mapping)
-                else 0.030,
-            )
+            root.get("servo", {}).get("jump_threshold_m", 0.030)
+            if isinstance(root.get("servo", {}), Mapping)
+            else 0.030
         ),
         max_consecutive_center_jump_age_s=float(
             perception_raw.get("maximum_measurement_jump_age_s", 0.50)
@@ -1110,14 +1079,11 @@ def load_pallet_estimator_config(
         "max_depth_m": float(perception_raw.get("max_depth_m", defaults.max_depth_m)),
         "plane_fit_tolerance_m": float(
             perception_raw.get(
-                "plane_fit_tolerance_m",
-                perception_raw.get(
-                    "plane_ransac_tolerance_m", defaults.plane_fit_tolerance_m
-                ),
+                "plane_ransac_tolerance_m", defaults.plane_fit_tolerance_m
             )
         ),
-        "plane_slab_m": float(
-            perception_raw.get("plane_slab_m", defaults.plane_slab_m)
+        "plane_fit_max_points": int(
+            perception_raw.get("plane_fit_max_points", defaults.plane_fit_max_points)
         ),
         "min_plane_points": int(
             perception_raw.get("minimum_plane_points", defaults.min_plane_points)
@@ -1129,115 +1095,103 @@ def load_pallet_estimator_config(
             )
         ),
     }
-    for key in (
-        "workspace_x_m",
-        "workspace_y_m",
-        "workspace_z_m",
-        "stack_plane_z_m",
-        "z_histogram_bin_m",
-        "plane_seed_band_m",
-        "plane_fit_max_points",
-        "grid_resolution_m",
-        "morphology_close_m",
-        "morphology_dilate_m",
-        "opening_component_min_m",
-        "opening_component_max_m",
-        "rim_outer_band_m",
-        "min_rim_support_ratio",
-        "held_plane_max_uncertainty_m",
-        "rough_front_axis_base",
-    ):
-        if key in perception_raw:
-            kwargs[key] = perception_raw[key]
-    l_corner_raw = perception_raw.get("l_corner", root.get("l_corner", {}))
-    acquisition_raw = root.get("acquisition", {})
-    if (
-        not l_corner_raw
-        and isinstance(acquisition_raw, Mapping)
-        and isinstance(acquisition_raw.get("l_corner", {}), Mapping)
-    ):
-        l_corner_raw = acquisition_raw.get("l_corner", {})
+    l_corner_raw = perception_raw.get("l_corner", {})
     if not isinstance(l_corner_raw, Mapping):
         raise ValueError("l_corner configuration block must be an object")
-    l_corner_acquisition_value = l_corner_raw.get(
+    allowed_l_corner_keys = {
+        "edge_band_m",
+        "min_front_support_m",
+        "min_side_support_m",
+        "max_line_p95_residual_m",
+        "max_connection_gap_m",
+        "max_orthogonality_error_rad",
+        "max_axis_residual_rad",
+        "image_crop_margin_px",
+        "bev_crop_margin_m",
         "forward_acquisition",
-        l_corner_raw.get("acquisition", {}),
-    )
-    if l_corner_acquisition_value and not isinstance(
-        l_corner_acquisition_value,
-        Mapping,
-    ):
-        raise ValueError("l_corner acquisition configuration block must be an object")
-    l_corner_acquisition_raw = (
-        l_corner_acquisition_value
-        if isinstance(l_corner_acquisition_value, Mapping)
-        else {}
-    )
-    for key in (
-        "l_corner_edge_band_m",
-        "l_corner_min_front_support_m",
-        "l_corner_min_side_support_m",
-        "l_corner_max_line_p95_residual_m",
-        "l_corner_max_connection_gap_m",
-        "l_corner_max_orthogonality_error_rad",
-        "l_corner_max_axis_residual_rad",
-        "l_corner_acquisition_min_front_support_m",
-        "l_corner_acquisition_min_side_support_m",
-        "l_corner_acquisition_max_line_p95_residual_m",
-        "l_corner_acquisition_max_connection_gap_m",
-        "l_corner_acquisition_max_orthogonality_error_rad",
-        "l_corner_acquisition_max_axis_residual_rad",
-        "l_corner_image_crop_margin_px",
-        "l_corner_bev_crop_margin_m",
-    ):
-        short_key = key.removeprefix("l_corner_")
-        if key in perception_raw:
-            kwargs[key] = perception_raw[key]
-        elif key in l_corner_raw:
-            kwargs[key] = l_corner_raw[key]
-        elif short_key in l_corner_raw:
-            kwargs[key] = l_corner_raw[short_key]
-        elif key in l_corner_acquisition_raw:
-            kwargs[key] = l_corner_acquisition_raw[key]
-        elif short_key in l_corner_acquisition_raw:
-            kwargs[key] = l_corner_acquisition_raw[short_key]
-        elif short_key.startswith("acquisition_"):
-            acquisition_short_key = short_key.removeprefix("acquisition_")
-            if acquisition_short_key in l_corner_acquisition_raw:
-                kwargs[key] = l_corner_acquisition_raw[acquisition_short_key]
-    angle_aliases = {
-        "l_corner_max_orthogonality_error_rad": (
-            "l_corner_max_orthogonality_error_deg",
-            "max_orthogonality_error_deg",
-        ),
-        "l_corner_max_axis_residual_rad": (
-            "l_corner_max_axis_residual_deg",
-            "max_axis_residual_deg",
-        ),
-        "l_corner_acquisition_max_orthogonality_error_rad": (
-            "l_corner_acquisition_max_orthogonality_error_deg",
-            "acquisition_max_orthogonality_error_deg",
-            "forward_acquisition_max_orthogonality_error_deg",
-        ),
-        "l_corner_acquisition_max_axis_residual_rad": (
-            "l_corner_acquisition_max_axis_residual_deg",
-            "acquisition_max_axis_residual_deg",
-            "forward_acquisition_max_axis_residual_deg",
-        ),
     }
-    for key, aliases in angle_aliases.items():
-        if key in kwargs:
-            continue
-        for alias in aliases:
-            if alias in perception_raw:
-                kwargs[key] = math.radians(float(perception_raw[alias]))
-                break
-            if alias in l_corner_raw:
-                kwargs[key] = math.radians(float(l_corner_raw[alias]))
-                break
-            if alias in l_corner_acquisition_raw:
-                kwargs[key] = math.radians(float(l_corner_acquisition_raw[alias]))
-                break
+    unknown_l_corner = sorted(set(l_corner_raw) - allowed_l_corner_keys)
+    if unknown_l_corner:
+        raise ValueError(
+            "unknown l_corner configuration key(s): "
+            + ", ".join(unknown_l_corner)
+        )
+    l_corner_acquisition_raw = l_corner_raw.get("forward_acquisition", {})
+    if not isinstance(l_corner_acquisition_raw, Mapping):
+        raise ValueError("l_corner acquisition configuration block must be an object")
+    allowed_acquisition_keys = {
+        "min_front_support_m",
+        "min_side_support_m",
+        "max_line_p95_residual_m",
+        "max_connection_gap_m",
+        "max_orthogonality_error_rad",
+        "max_axis_residual_rad",
+    }
+    unknown_acquisition = sorted(
+        set(l_corner_acquisition_raw) - allowed_acquisition_keys
+    )
+    if unknown_acquisition:
+        raise ValueError(
+            "unknown l_corner.forward_acquisition configuration key(s): "
+            + ", ".join(unknown_acquisition)
+        )
+    kwargs.update(
+        {
+            "l_corner_edge_band_m": l_corner_raw.get(
+                "edge_band_m", defaults.l_corner_edge_band_m
+            ),
+            "l_corner_min_front_support_m": l_corner_raw.get(
+                "min_front_support_m", defaults.l_corner_min_front_support_m
+            ),
+            "l_corner_min_side_support_m": l_corner_raw.get(
+                "min_side_support_m", defaults.l_corner_min_side_support_m
+            ),
+            "l_corner_max_line_p95_residual_m": l_corner_raw.get(
+                "max_line_p95_residual_m",
+                defaults.l_corner_max_line_p95_residual_m,
+            ),
+            "l_corner_max_connection_gap_m": l_corner_raw.get(
+                "max_connection_gap_m", defaults.l_corner_max_connection_gap_m
+            ),
+            "l_corner_max_orthogonality_error_rad": l_corner_raw.get(
+                "max_orthogonality_error_rad",
+                defaults.l_corner_max_orthogonality_error_rad,
+            ),
+            "l_corner_max_axis_residual_rad": l_corner_raw.get(
+                "max_axis_residual_rad", defaults.l_corner_max_axis_residual_rad
+            ),
+            "l_corner_image_crop_margin_px": l_corner_raw.get(
+                "image_crop_margin_px", defaults.l_corner_image_crop_margin_px
+            ),
+            "l_corner_bev_crop_margin_m": l_corner_raw.get(
+                "bev_crop_margin_m", defaults.l_corner_bev_crop_margin_m
+            ),
+            "l_corner_acquisition_min_front_support_m": l_corner_acquisition_raw.get(
+                "min_front_support_m",
+                defaults.l_corner_acquisition_min_front_support_m,
+            ),
+            "l_corner_acquisition_min_side_support_m": l_corner_acquisition_raw.get(
+                "min_side_support_m",
+                defaults.l_corner_acquisition_min_side_support_m,
+            ),
+            "l_corner_acquisition_max_line_p95_residual_m": l_corner_acquisition_raw.get(
+                "max_line_p95_residual_m",
+                defaults.l_corner_acquisition_max_line_p95_residual_m,
+            ),
+            "l_corner_acquisition_max_connection_gap_m": l_corner_acquisition_raw.get(
+                "max_connection_gap_m",
+                defaults.l_corner_acquisition_max_connection_gap_m,
+            ),
+            "l_corner_acquisition_max_orthogonality_error_rad": l_corner_acquisition_raw.get(
+                "max_orthogonality_error_rad",
+                defaults.l_corner_acquisition_max_orthogonality_error_rad,
+            ),
+            "l_corner_acquisition_max_axis_residual_rad": l_corner_acquisition_raw.get(
+                "max_axis_residual_rad",
+                defaults.l_corner_acquisition_max_axis_residual_rad,
+            ),
+        }
+    )
     return PalletEstimatorConfig(**kwargs)
 
 

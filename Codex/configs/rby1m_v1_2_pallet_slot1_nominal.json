@@ -122,24 +122,19 @@
     "nominal_ready_proxy_usage": "replay_dry_run_and_explicit_fixed_ready_geometry_mvp"
   },
   "perception": {
-    "strict_unknown_keys": true,
     "min_depth_m": 0.20,
     "max_depth_m": 2.0,
-    "workspace_u0_v0_u1_v1": [20, 20, 620, 470],
     "minimum_inner_rims": 3,
     "opening_dimension_tolerance_m": 0.015,
     "maximum_orthogonality_error_deg": 5.0,
     "maximum_plane_p95_residual_m": 0.008,
     "minimum_plane_points": 600,
     "plane_fit_max_points": 12000,
-    "plane_ransac_iterations": 160,
     "plane_ransac_tolerance_m": 0.008,
     "closer_plane_rejection_margin_m": 0.08,
     "stable_window_frames": 5,
     "live_center_spread_m": 0.008,
     "live_yaw_spread_deg": 2.0,
-    "replay_center_std_m": 0.005,
-    "replay_yaw_std_deg": 1.5,
     "maximum_measurement_jump_age_s": 0.50,
     "l_corner": {
       "edge_band_m": 0.012,
@@ -162,27 +157,23 @@
     }
   },
   "servo": {
-    "strict_unknown_keys": true,
-    "control_rate_hz": 20.0,
-    "observation_stale_after_s": 0.30,
-    "maximum_measurement_jump_m": 0.030,
-    "maximum_initial_correction_m": 0.25,
-    "maximum_initial_yaw_deg": 15.0,
-    "arrival_inner_xy_m": 0.010,
-    "arrival_outer_xy_m": 0.015,
-    "arrival_inner_yaw_deg": 3.0,
-    "arrival_outer_yaw_deg": 5.0,
+    "position_gain_per_s": 0.7,
+    "yaw_gain_per_s": 0.8,
+    "max_linear_speed_mps": 0.05,
+    "max_angular_speed_radps": 0.08,
+    "jump_threshold_m": 0.030,
+    "max_correction_m": 0.25,
+    "start_yaw_limit_rad": 0.2617993877991494,
+    "stale_after_s": 0.30,
+    "arrival_inner_m": 0.010,
+    "arrival_outer_m": 0.015,
+    "arrival_yaw_inner_rad": 0.05235987755982989,
+    "arrival_yaw_outer_rad": 0.08726646259971647,
     "arrival_min_frames": 5,
     "arrival_min_duration_s": 0.35,
-    "kp_xy_per_s": [0.7, 0.7],
-    "kp_yaw_per_s": 0.8,
-    "maximum_linear_speed_mps": 0.05,
-    "maximum_angular_speed_radps": 0.08,
-    "absolute_linear_speed_limit_mps": 0.08,
-    "absolute_angular_speed_limit_radps": 0.10,
-    "wheel_stop_linear_mps": 0.01,
-    "wheel_stop_angular_radps": 0.02,
-    "wheel_stop_dwell_s": 0.35
+    "wheel_linear_stop_mps": 0.01,
+    "wheel_angular_stop_radps": 0.02,
+    "wheel_stop_duration_s": 0.35
   },
   "placement": {
     "strict_unknown_keys": true,
@@ -229,13 +220,7 @@
     "vision_evidence_fresh_after_s": 0.30,
     "vision_plan_valid_for_s": 5.0,
     "vision_gap_stability_tolerance_m": 0.008,
-    "vision_evidence_min_samples": 3,
-    "maximum_force_n": null,
-    "maximum_torque_nm": null,
-    "maximum_force_jump_n": null,
-    "maximum_torque_jump_nm": null,
-    "minimum_bilateral_load_transfer_n": null,
-    "maximum_load_transfer_asymmetry_n": null
+    "vision_evidence_min_samples": 3
   },
   "safety": {
     "actuation_commissioned": false,
@@ -257,12 +242,7 @@
     "maximum_eef_separation_peak_to_peak_m": 0.004,
     "maximum_eef_separation_axis_std_m": 0.002,
     "maximum_scene_evidence_span_s": 0.50,
-    "force_torque_feedback_required": true,
-    "maximum_force_n": null,
-    "maximum_torque_nm": null,
-    "maximum_force_jump_n": null,
-    "fixed_ready_geometry_only_commissioning_enabled": true,
-    "unconfigured_force_torque_policy": "nonzero_mobility_fail_closed"
+    "fixed_ready_geometry_only_commissioning_enabled": true
   },
   "mobility_frame": {
     "T_mobility_from_base": [

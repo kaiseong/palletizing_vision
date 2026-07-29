@@ -26,6 +26,13 @@ import warnings
 
 import numpy as np
 
+from .pallet_control_feedback import (
+    ComponentFeedbackAck,
+    parse_component_feedback,
+    raise_for_terminal_feedback,
+)
+from .pallet_servo import PalletServoConfig
+
 
 EXPECTED_ROBOT_MODEL = "M"
 EXPECTED_ROBOT_VERSION = "1.2"
@@ -134,24 +141,6 @@ def _readonly_se2_matrix(value: Any, name: str) -> np.ndarray:
     return result
 
 
-def _optional_transform(value: Any | None, name: str) -> np.ndarray | None:
-    return None if value is None else _readonly_matrix(value, name)
-
-
-def _wire_enum_code(value: Any, field_name: str) -> int:
-    raw = getattr(value, "value", value)
-    try:
-        return int(raw)
-    except (TypeError, ValueError) as exc:
-        raise CombinedStreamError(
-            f"invalid RB-Y1 feedback {field_name}: {value!r}"
-        ) from exc
-
-
-def _node_is_valid(node: Any) -> bool:
-    return node is not None and bool(getattr(node, "valid", False))
-
-
 def _read_field(item: Any, name: str, default: Any = None) -> Any:
     if isinstance(item, Mapping):
         return item.get(name, default)
@@ -224,11 +213,6 @@ class PalletControlConfig:
     clearance_scene_max_span_s: float = 0.50
     maximum_box_height_m: float = 0.164
     minimum_clearance_m: float = 0.050
-    ft_max_force_n: float | None = None
-    ft_max_torque_nm: float | None = None
-    ft_max_force_jump_n: float | None = None
-    force_torque_feedback_required: bool = True
-    unconfigured_force_torque_policy: str = "nonzero_mobility_fail_closed"
     fixed_ready_geometry_only_commissioning_enabled: bool = False
     # A streamed Cartesian packet must not restart a multi-second trajectory on
     # every 20 Hz update.  Smoothness comes from the explicit velocity and
@@ -271,13 +255,29 @@ class PalletControlConfig:
             return value
 
         robot = section("robot")
-        servo = section("servo")
+        servo_config = PalletServoConfig.from_root_config(root)
         safety = section("safety")
         held_box = section("held_box")
         camera = section("camera")
         stream = section("control_stream")
         grip_interlock = section("grip_interlock")
         placement = section("placement")
+
+        grip_interlock_keys = {
+            "minimum_dwell_s",
+            "minimum_samples",
+            "maximum_arm_tracking_error_deg",
+            "maximum_eef_separation_peak_to_peak_m",
+            "maximum_eef_separation_axis_std_m",
+            "maximum_scene_evidence_span_s",
+            "fixed_ready_geometry_only_commissioning_enabled",
+        }
+        unknown_grip_keys = sorted(set(grip_interlock) - grip_interlock_keys)
+        if unknown_grip_keys:
+            raise ValueError(
+                "unknown grip_interlock configuration key(s): "
+                + ", ".join(unknown_grip_keys)
+            )
 
         placement_keys = {
             "strict_unknown_keys",
@@ -317,12 +317,6 @@ class PalletControlConfig:
             "vision_plan_valid_for_s",
             "vision_gap_stability_tolerance_m",
             "vision_evidence_min_samples",
-            "maximum_force_n",
-            "maximum_torque_nm",
-            "maximum_force_jump_n",
-            "maximum_torque_jump_nm",
-            "minimum_bilateral_load_transfer_n",
-            "maximum_load_transfer_asymmetry_n",
         }
         if bool(placement.get("strict_unknown_keys", False)):
             unknown = sorted(set(placement) - placement_keys)
@@ -376,16 +370,6 @@ class PalletControlConfig:
         if not address:
             raise ValueError("root config robot.default_address must not be empty")
 
-        def optional_float(mapping: Mapping[str, Any], key: str) -> float | None:
-            value = mapping.get(key)
-            return None if value is None else float(value)
-
-        ft_required = grip_interlock.get(
-            "force_torque_feedback_required",
-            defaults.force_torque_feedback_required,
-        )
-        if not isinstance(ft_required, bool):
-            raise ValueError("force_torque_feedback_required must be a boolean")
         geometry_only_enabled = grip_interlock.get(
             "fixed_ready_geometry_only_commissioning_enabled",
             defaults.fixed_ready_geometry_only_commissioning_enabled,
@@ -394,20 +378,6 @@ class PalletControlConfig:
             raise ValueError(
                 "fixed_ready_geometry_only_commissioning_enabled must be a boolean"
             )
-
-        absolute_linear = float(
-            servo.get("absolute_linear_speed_limit_mps", HARD_MAX_LINEAR_SPEED_MPS)
-        )
-        absolute_angular = float(
-            servo.get(
-                "absolute_angular_speed_limit_radps",
-                HARD_MAX_ANGULAR_SPEED_RADPS,
-            )
-        )
-        if absolute_linear > HARD_MAX_LINEAR_SPEED_MPS:
-            raise ValueError("root config absolute linear speed exceeds 0.08 m/s")
-        if absolute_angular > HARD_MAX_ANGULAR_SPEED_RADPS:
-            raise ValueError("root config absolute angular speed exceeds 0.10 rad/s")
 
         return cls(
             address=address,
@@ -446,40 +416,11 @@ class PalletControlConfig:
             shutdown_timeout_ms=int(
                 stream.get("shutdown_timeout_ms", defaults.shutdown_timeout_ms)
             ),
-            maximum_linear_speed_mps=float(
-                min(
-                    float(
-                        servo.get(
-                            "maximum_linear_speed_mps",
-                            defaults.maximum_linear_speed_mps,
-                        )
-                    ),
-                    absolute_linear,
-                )
-            ),
-            maximum_angular_speed_radps=float(
-                min(
-                    float(
-                        servo.get(
-                            "maximum_angular_speed_radps",
-                            defaults.maximum_angular_speed_radps,
-                        )
-                    ),
-                    absolute_angular,
-                )
-            ),
-            wheel_stop_linear_mps=float(
-                servo.get("wheel_stop_linear_mps", defaults.wheel_stop_linear_mps)
-            ),
-            wheel_stop_angular_radps=float(
-                servo.get(
-                    "wheel_stop_angular_radps",
-                    defaults.wheel_stop_angular_radps,
-                )
-            ),
-            wheel_stop_dwell_s=float(
-                servo.get("wheel_stop_dwell_s", defaults.wheel_stop_dwell_s)
-            ),
+            maximum_linear_speed_mps=servo_config.max_linear_speed_mps,
+            maximum_angular_speed_radps=servo_config.max_angular_speed_radps,
+            wheel_stop_linear_mps=servo_config.wheel_linear_stop_mps,
+            wheel_stop_angular_radps=servo_config.wheel_angular_stop_radps,
+            wheel_stop_dwell_s=servo_config.wheel_stop_duration_s,
             grip_dwell_s=float(
                 grip_interlock.get(
                     "minimum_dwell_s",
@@ -548,19 +489,6 @@ class PalletControlConfig:
             minimum_clearance_m=float(
                 safety.get("minimum_clearance_m", defaults.minimum_clearance_m)
             ),
-            ft_max_force_n=optional_float(grip_interlock, "maximum_force_n"),
-            ft_max_torque_nm=optional_float(grip_interlock, "maximum_torque_nm"),
-            ft_max_force_jump_n=optional_float(
-                grip_interlock,
-                "maximum_force_jump_n",
-            ),
-            force_torque_feedback_required=ft_required,
-            unconfigured_force_torque_policy=str(
-                grip_interlock.get(
-                    "unconfigured_force_torque_policy",
-                    defaults.unconfigured_force_torque_policy,
-                )
-            ).strip(),
             fixed_ready_geometry_only_commissioning_enabled=(
                 geometry_only_enabled
             ),
@@ -807,21 +735,6 @@ class PalletControlConfig:
             raise ValueError("wheel-stop angular threshold cannot exceed 0.02 rad/s")
         if self.wheel_stop_dwell_s < 0.35:
             raise ValueError("wheel-stop dwell must be at least 0.35 seconds")
-        if self.force_torque_feedback_required is not True:
-            raise ValueError(
-                "force/torque feedback cannot be disabled for live mobility"
-            )
-        if self.unconfigured_force_torque_policy != "nonzero_mobility_fail_closed":
-            raise ValueError(
-                "unconfigured force/torque policy must remain "
-                "'nonzero_mobility_fail_closed'"
-            )
-        for name in ("ft_max_force_n", "ft_max_torque_nm", "ft_max_force_jump_n"):
-            value = getattr(self, name)
-            if value is not None:
-                object.__setattr__(self, name, _positive(value, name))
-
-
 @dataclass(frozen=True, slots=True)
 class MobilityCommand:
     vx_mps: float
@@ -960,158 +873,6 @@ class CommandId:
 
 
 @dataclass(frozen=True, slots=True)
-class GripHandoff:
-    owner_epoch: str
-    source_phase: str
-    state_sequence: int
-    timestamp_s: float
-    right_arm_target_rad: tuple[float, ...]
-    left_arm_target_rad: tuple[float, ...]
-    right_stiffness: tuple[float, ...]
-    left_stiffness: tuple[float, ...]
-    torque_policy: str
-    T_right_eef_box: np.ndarray | None = None
-    T_left_eef_box: np.ndarray | None = None
-    source_feedback_sequence: int = 0
-    source_robot_state_timestamp_s: float = 0.0
-
-    def __post_init__(self) -> None:
-        if not str(self.owner_epoch).strip() or not str(self.source_phase).strip():
-            raise ValueError("grip handoff owner_epoch/source_phase must not be empty")
-        if self.state_sequence < 1 or self.source_feedback_sequence < 1:
-            raise ValueError("grip handoff sequences must be positive")
-        if not math.isfinite(float(self.timestamp_s)) or self.timestamp_s <= 0.0:
-            raise ValueError("grip handoff timestamp must be finite and positive")
-        if (
-            not math.isfinite(float(self.source_robot_state_timestamp_s))
-            or self.source_robot_state_timestamp_s <= 0.0
-        ):
-            raise ValueError("source robot-state timestamp must be finite and positive")
-        object.__setattr__(
-            self,
-            "right_arm_target_rad",
-            _finite_vector(self.right_arm_target_rad, 7, "right_arm_target_rad"),
-        )
-        object.__setattr__(
-            self,
-            "left_arm_target_rad",
-            _finite_vector(self.left_arm_target_rad, 7, "left_arm_target_rad"),
-        )
-        object.__setattr__(
-            self,
-            "right_stiffness",
-            _finite_vector(self.right_stiffness, 7, "right_stiffness"),
-        )
-        object.__setattr__(
-            self,
-            "left_stiffness",
-            _finite_vector(self.left_stiffness, 7, "left_stiffness"),
-        )
-        object.__setattr__(
-            self,
-            "T_right_eef_box",
-            _optional_transform(self.T_right_eef_box, "T_right_eef_box"),
-        )
-        object.__setattr__(
-            self,
-            "T_left_eef_box",
-            _optional_transform(self.T_left_eef_box, "T_left_eef_box"),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ReadyHoldHandoff:
-    """Proof that the upstream owner completed and released the ready hold.
-
-    The targets are command provenance.  Fresh measured joints are checked
-    separately and are never copied back into the impedance command.
-    """
-
-    owner_epoch: str
-    source_phase: str
-    state_sequence: int
-    source_feedback_sequence: int
-    source_robot_state_timestamp_s: float
-    completed_monotonic_s: float
-    released_monotonic_s: float
-    source_command_terminal: bool
-    source_command_succeeded: bool
-    source_stream_released: bool
-    torso_target_rad: tuple[float, ...]
-    right_arm_target_rad: tuple[float, ...]
-    left_arm_target_rad: tuple[float, ...]
-    head_target_rad: tuple[float, ...]
-    right_stiffness: tuple[float, ...]
-    left_stiffness: tuple[float, ...]
-    torque_policy: str
-    T_right_eef_box: np.ndarray | None = None
-    T_left_eef_box: np.ndarray | None = None
-
-    def __post_init__(self) -> None:
-        if not str(self.owner_epoch).strip() or not str(self.source_phase).strip():
-            raise ValueError("ready handoff owner_epoch/source_phase must not be empty")
-        if self.state_sequence < 1 or self.source_feedback_sequence < 1:
-            raise ValueError("ready handoff sequences must be positive")
-        for name in (
-            "source_robot_state_timestamp_s",
-            "completed_monotonic_s",
-            "released_monotonic_s",
-        ):
-            value = float(getattr(self, name))
-            if not math.isfinite(value) or value <= 0.0:
-                raise ValueError(f"{name} must be finite and positive")
-        if self.released_monotonic_s < self.completed_monotonic_s:
-            raise ValueError("ready hold cannot be released before command completion")
-        for name in (
-            "source_command_terminal",
-            "source_command_succeeded",
-            "source_stream_released",
-        ):
-            if not isinstance(getattr(self, name), bool):
-                raise ValueError(f"{name} must be a boolean")
-        object.__setattr__(
-            self,
-            "torso_target_rad",
-            _finite_vector(self.torso_target_rad, 6, "torso_target_rad"),
-        )
-        object.__setattr__(
-            self,
-            "right_arm_target_rad",
-            _finite_vector(self.right_arm_target_rad, 7, "right_arm_target_rad"),
-        )
-        object.__setattr__(
-            self,
-            "left_arm_target_rad",
-            _finite_vector(self.left_arm_target_rad, 7, "left_arm_target_rad"),
-        )
-        object.__setattr__(
-            self,
-            "head_target_rad",
-            _finite_vector(self.head_target_rad, 2, "head_target_rad"),
-        )
-        object.__setattr__(
-            self,
-            "right_stiffness",
-            _finite_vector(self.right_stiffness, 7, "right_stiffness"),
-        )
-        object.__setattr__(
-            self,
-            "left_stiffness",
-            _finite_vector(self.left_stiffness, 7, "left_stiffness"),
-        )
-        object.__setattr__(
-            self,
-            "T_right_eef_box",
-            _optional_transform(self.T_right_eef_box, "T_right_eef_box"),
-        )
-        object.__setattr__(
-            self,
-            "T_left_eef_box",
-            _optional_transform(self.T_left_eef_box, "T_left_eef_box"),
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class LoadedSlot1ReadyBootstrap:
     """Same-session proof for an already-held box at the slot-1 ready pose.
 
@@ -1189,37 +950,6 @@ class LoadedSlot1ReadyBootstrap:
 
 
 @dataclass(frozen=True, slots=True)
-class ComponentFeedbackAck:
-    root: bool
-    component: bool
-    mobility: bool
-    torso: bool
-    head: bool
-    right_arm: bool
-    left_arm: bool
-    status_code: int | None
-    finish_code: int | None
-
-    @property
-    def all_components(self) -> bool:
-        return all(
-            (
-                self.root,
-                self.component,
-                self.mobility,
-                self.torso,
-                self.head,
-                self.right_arm,
-                self.left_arm,
-            )
-        )
-
-    @property
-    def running(self) -> bool:
-        return self.all_components and self.status_code == 2 and self.finish_code == 0
-
-
-@dataclass(frozen=True, slots=True)
 class ReadyTransitionAck:
     command_id: CommandId
     feedback: ComponentFeedbackAck
@@ -1273,10 +1003,6 @@ class MeasuredRobotState:
     T_odom_base: np.ndarray | None
     base_twist_w_vx_vy: tuple[float, float, float] | None
     wheel_max_abs_radps: float | None
-    right_force_n: tuple[float, float, float] | None
-    right_torque_nm: tuple[float, float, float] | None
-    left_force_n: tuple[float, float, float] | None
-    left_torque_nm: tuple[float, float, float] | None
     T_base_torso: np.ndarray | None = None
     kinematics_error: str | None = None
     odometry_error: str | None = None
@@ -1313,7 +1039,6 @@ class GripContinuityResult:
     scene_evidence_span_s: float | None = None
     scene_latest_age_s: float | None = None
     scene_max_capture_age_at_acceptance_s: float | None = None
-    force_torque_verified: bool = False
     clearance_source: str = "unavailable"
     fixed_ready_geometry_only_authorized: bool = False
 
@@ -1399,7 +1124,7 @@ class RBY1PalletController:
         self._clock = clock
         self._fk_provider = fk_provider
         self._owner_epoch = owner_epoch or f"pallet-{uuid.uuid4()}"
-        self._source_handoff: GripHandoff | LoadedSlot1ReadyBootstrap | None = None
+        self._source_handoff: LoadedSlot1ReadyBootstrap | None = None
         self._active_right_arm_target_rad = self.config.ready_pose.right_arm_rad
         self._active_left_arm_target_rad = self.config.ready_pose.left_arm_rad
         self._arm_stream_mode = ArmStreamMode.JOINT_READY_HOLD
@@ -1535,55 +1260,6 @@ class RBY1PalletController:
             self._phase = ControllerPhase.CONNECTED
             self._condition.notify_all()
 
-    def accept_grip_handoff(
-        self,
-        handoff: GripHandoff,
-        *,
-        source_witness: Any,
-    ) -> None:
-        """Reject the uncommissioned active source-to-ready takeover.
-
-        The current box-pick owner ends in a different control mode and does not
-        provide a single-stream epoch transfer carrying exact torso/head targets.
-        Reject before stream creation instead of issuing an assumed ready pose.
-        """
-
-        del handoff, source_witness
-        raise CommandOwnershipError(
-            "active GripHandoff takeover is not commissioned: the current "
-            "box-pick owner does not provide an atomic ready-hold ownership "
-            "bridge with exact torso/head/control-mode provenance"
-        )
-
-    def accept_ready_hold_handoff(
-        self,
-        handoff: ReadyHoldHandoff,
-        *,
-        source_witness: Any,
-    ) -> None:
-        """Reject a released-source adoption until atomic transfer exists.
-
-        Closing the source lease before the destination publishes its first
-        acknowledged body-hold packet creates an unbounded carried-load support
-        gap.  This public actuator surface remains unreachable until the
-        upstream owner supplies a reviewed atomic/two-phase transfer protocol.
-        """
-
-        del handoff, source_witness
-        raise CommandOwnershipError(
-            "released ReadyHoldHandoff adoption is not commissioned; an atomic "
-            "box-pick-to-pallet stream/epoch transfer must be implemented before "
-            "either ownership boundary can command the robot"
-        )
-
-    def adopt_ready_hold_once(self) -> CommandId:
-        """Reject post-release stream opening until atomic transfer is integrated."""
-
-        raise CommandOwnershipError(
-            "released ready-hold stream adoption is disabled because no atomic "
-            "source-to-destination lease transfer is available"
-        )
-
     def bootstrap_loaded_slot1_ready(
         self,
         *,
@@ -1718,8 +1394,7 @@ class RBY1PalletController:
                 )
             if self._source_handoff is None:
                 raise ReadyTransitionError(
-                    "ready transition requires same-process loaded-ready or "
-                    "GripHandoff provenance"
+                    "ready transition requires same-process loaded-ready provenance"
                 )
             self._command_sequence += 1
             command_id = CommandId(self._owner_epoch, self._command_sequence)
@@ -1786,7 +1461,11 @@ class RBY1PalletController:
                     ) from exc
 
             latest_ack = self._make_ready_ack(command_id, feedback)
-            self._raise_for_terminal_feedback(latest_ack.feedback, "ready transition")
+            raise_for_terminal_feedback(
+                latest_ack.feedback,
+                "ready transition",
+                error_type=CombinedStreamError,
+            )
             if latest_ack.ready_within(self.config.ready_tolerance_rad):
                 with self._condition:
                     self._ready_ack = latest_ack
@@ -1901,7 +1580,7 @@ class RBY1PalletController:
             if self._source_handoff is None:
                 raise CombinedStreamError(
                     "cannot establish a carried-load hold without same-process "
-                    "loaded-ready or GripHandoff provenance"
+                    "loaded-ready provenance"
                 )
             if self._stream is None:
                 raise CombinedStreamError(
@@ -2425,11 +2104,10 @@ class RBY1PalletController:
     ) -> GripContinuityResult:
         """Evaluate loaded hold continuity and conservative vertical clearance.
 
-        The default path requires configured F/T plausibility bounds and a
-        directly observed held top plane.  The explicit commissioning path may
-        instead use the freshly measured fixed-ready EEF box-bottom model; all
-        joint tracking, EEF stability, frame freshness, stack-plane, clearance,
-        and command-ownership gates remain active.
+        The loaded demo uses the freshly measured fixed-ready EEF box-bottom
+        model.  Joint tracking, EEF stability, frame freshness, stack-plane,
+        clearance, and command-ownership gates remain active.  F/T feedback is
+        not used as a grip or motion gate.
 
         This is intentionally a rolling fresh motion interlock, not a
         stationary perception gate.  Step authorization, post-stop
@@ -2441,10 +2119,12 @@ class RBY1PalletController:
 
         if not isinstance(allow_fixed_ready_geometry_only, bool):
             raise TypeError("allow_fixed_ready_geometry_only must be a boolean")
-        if (
-            allow_fixed_ready_geometry_only
-            and not self.config.fixed_ready_geometry_only_commissioning_enabled
-        ):
+        if not allow_fixed_ready_geometry_only:
+            raise CommandOwnershipError(
+                "loaded demo requires explicit fixed-ready geometry-only grip "
+                "checking"
+            )
+        if not self.config.fixed_ready_geometry_only_commissioning_enabled:
             raise CommandOwnershipError(
                 "fixed-ready geometry-only grip checking is not enabled by the "
                 "reviewed grip-interlock configuration"
@@ -2472,9 +2152,6 @@ class RBY1PalletController:
 
         arm_error_max: float | None = None
         separations: list[np.ndarray] = []
-        right_force_norms: list[float] = []
-        left_force_norms: list[float] = []
-        ft_complete = True
         for state in states:
             errors, all_ready = self._ready_joint_errors(state)
             arm_indices = np.r_[
@@ -2496,11 +2173,6 @@ class RBY1PalletController:
                 separations.append(
                     state.T_base_right_eef[:3, 3] - state.T_base_left_eef[:3, 3]
                 )
-            if state.right_force_n is None or state.left_force_n is None:
-                ft_complete = False
-            else:
-                right_force_norms.append(float(np.linalg.norm(state.right_force_n)))
-                left_force_norms.append(float(np.linalg.norm(state.left_force_n)))
 
         if (
             arm_error_max is None
@@ -2522,41 +2194,6 @@ class RBY1PalletController:
         else:
             reasons.append("insufficient_eef_separation_samples")
 
-        force_torque_verified = False
-        if not ft_complete and not allow_fixed_ready_geometry_only:
-            reasons.append("force_torque_feedback_unavailable")
-        if self.config.ft_max_force_n is None or self.config.ft_max_torque_nm is None:
-            if not allow_fixed_ready_geometry_only:
-                reasons.append("force_torque_plausibility_range_unconfigured")
-        elif ft_complete and right_force_norms and left_force_norms:
-            force_torque_verified = True
-            if max(right_force_norms + left_force_norms) > self.config.ft_max_force_n:
-                reasons.append("force_feedback_out_of_range")
-            torque_vectors = [
-                vector
-                for state in states
-                for vector in (state.right_torque_nm, state.left_torque_nm)
-                if vector is not None
-            ]
-            if (
-                not torque_vectors
-                or max(map(np.linalg.norm, torque_vectors))
-                > self.config.ft_max_torque_nm
-            ):
-                reasons.append("torque_feedback_out_of_range")
-            if self.config.ft_max_force_jump_n is None:
-                if not allow_fixed_ready_geometry_only:
-                    reasons.append("force_contact_loss_jump_unconfigured")
-                force_torque_verified = False
-            else:
-                force_series = np.c_[right_force_norms, left_force_norms]
-                if (
-                    len(force_series) >= 2
-                    and float(np.max(np.abs(np.diff(force_series, axis=0))))
-                    > self.config.ft_max_force_jump_n
-                ):
-                    reasons.append("abrupt_force_change")
-
         direct_plane_run: list[_ClearanceSceneSample] = []
         previous_frame_id: int | None = None
         previous_observation_sequence: int | None = None
@@ -2565,30 +2202,18 @@ class RBY1PalletController:
         previous_stack_source: str | None = None
         continuity_rejection: str | None = None
         for accepted_window_index, scene in enumerate(scene_window, start=1):
-            if allow_fixed_ready_geometry_only:
-                pose_source = str(_read_field(scene, "held_box_pose_source", ""))
-                distinct = pose_source == (
-                    "fresh_dual_eef_fixed_ready_nominal_box_offset"
-                )
-                held = _read_field(scene, "held_box_bottom_z_base_m")
-                held_uncertainty_field = "held_box_bottom_uncertainty_m"
-                invalid_reason = "fixed_ready_box_bottom_geometry_invalid"
-                stack_source = str(_read_field(scene, "stack_top_source", ""))
-                stack_source_valid = stack_source in {
-                    "complete_stack_plane",
-                    "metric_stack_plane_candidate",
-                    "metric_coarse_l_corner_plane",
-                    "metric_forward_edge_pair_plane",
-                }
-            else:
-                distinct = bool(
-                    _read_field(scene, "held_top_distinct_from_stack", False)
-                )
-                held = _read_field(scene, "held_top_z_base_m")
-                held_uncertainty_field = "held_top_uncertainty_m"
-                invalid_reason = "held_top_direct_plane_invalid"
-                stack_source = "legacy_direct_stack_plane"
-                stack_source_valid = True
+            pose_source = str(_read_field(scene, "held_box_pose_source", ""))
+            distinct = pose_source == "fresh_dual_eef_fixed_ready_nominal_box_offset"
+            held = _read_field(scene, "held_box_bottom_z_base_m")
+            held_uncertainty_field = "held_box_bottom_uncertainty_m"
+            invalid_reason = "fixed_ready_box_bottom_geometry_invalid"
+            stack_source = str(_read_field(scene, "stack_top_source", ""))
+            stack_source_valid = stack_source in {
+                "complete_stack_plane",
+                "metric_stack_plane_candidate",
+                "metric_coarse_l_corner_plane",
+                "metric_forward_edge_pair_plane",
+            }
             stack = _read_field(scene, "stack_top_z_base_m")
             frame_id_raw = _read_field(scene, "frame_id")
             observation_sequence_raw = _read_field(
@@ -2735,11 +2360,7 @@ class RBY1PalletController:
         evidence_span_s: float | None = None
         latest_age_s: float | None = None
         max_capture_age_at_acceptance_s: float | None = None
-        clearance_source = (
-            "fixed_ready_dual_eef_box_bottom_to_stack_plane"
-            if allow_fixed_ready_geometry_only
-            else "direct_held_top_minus_box_height_to_stack_plane"
-        )
+        clearance_source = "fixed_ready_dual_eef_box_bottom_to_stack_plane"
         if len(held_top_z) < required_direct_frames:
             reasons.append(
                 continuity_rejection or "insufficient_contiguous_held_top_frames"
@@ -2781,8 +2402,6 @@ class RBY1PalletController:
                 )
             )
             clearance = held_lower - stack_upper
-            if not allow_fixed_ready_geometry_only:
-                clearance -= self.config.maximum_box_height_m
             if clearance < self.config.minimum_clearance_m:
                 reasons.append("insufficient_vertical_clearance")
 
@@ -2804,11 +2423,8 @@ class RBY1PalletController:
             scene_max_capture_age_at_acceptance_s=(
                 max_capture_age_at_acceptance_s
             ),
-            force_torque_verified=force_torque_verified,
             clearance_source=clearance_source,
-            fixed_ready_geometry_only_authorized=(
-                allow_fixed_ready_geometry_only
-            ),
+            fixed_ready_geometry_only_authorized=True,
         )
         with self._condition:
             self._grip_result = result
@@ -3036,8 +2652,6 @@ class RBY1PalletController:
             if mobility_indices.size == 0
             else float(np.max(np.abs(velocity[mobility_indices])))
         )
-        right_force, right_torque = self._extract_ft(robot_state, "ft_sensor_right")
-        left_force, left_torque = self._extract_ft(robot_state, "ft_sensor_left")
         robot_timestamp_s = self._robot_timestamp_s(robot_state)
         T_odom_base: np.ndarray | None = None
         odometry_error: str | None = None
@@ -3072,10 +2686,6 @@ class RBY1PalletController:
                 T_odom_base=T_odom_base,
                 base_twist_w_vx_vy=base_twist,
                 wheel_max_abs_radps=wheel_max,
-                right_force_n=right_force,
-                right_torque_nm=right_torque,
-                left_force_n=left_force,
-                left_torque_nm=left_torque,
                 kinematics_error=kinematics_error,
                 odometry_error=odometry_error,
             )
@@ -3251,7 +2861,7 @@ class RBY1PalletController:
         command_id: CommandId,
         feedback: Any,
     ) -> ReadyTransitionAck:
-        component_ack = self._parse_component_feedback(feedback)
+        component_ack = parse_component_feedback(feedback)
         now_s = self._clock()
         try:
             state = self.get_measured_state()
@@ -3279,85 +2889,6 @@ class RBY1PalletController:
             all_target_joints_ready=all_ready,
             received_monotonic_s=now_s,
         )
-
-    def _parse_component_feedback(self, feedback: Any) -> ComponentFeedbackAck:
-        if not _node_is_valid(feedback):
-            return ComponentFeedbackAck(
-                False, False, False, False, False, False, False, None, None
-            )
-        try:
-            status = _wire_enum_code(feedback.status, "status")
-            finish = _wire_enum_code(feedback.finish_code, "finish_code")
-        except CombinedStreamError:
-            status = None
-            finish = None
-
-        component = getattr(feedback, "component_based_command", None)
-        mobility = getattr(component, "mobility_command", None)
-        se2 = getattr(mobility, "se2_velocity_command", None)
-        body = getattr(component, "body_command", None)
-        body_components = getattr(body, "body_component_based_command", None)
-        torso = getattr(body_components, "torso_command", None)
-        torso_position = getattr(torso, "joint_position_command", None)
-        right = getattr(body_components, "right_arm_command", None)
-        right_impedance = getattr(right, "joint_impedance_control_command", None)
-        right_cartesian = getattr(
-            right,
-            "cartesian_impedance_control_command",
-            None,
-        )
-        left = getattr(body_components, "left_arm_command", None)
-        left_impedance = getattr(left, "joint_impedance_control_command", None)
-        left_cartesian = getattr(
-            left,
-            "cartesian_impedance_control_command",
-            None,
-        )
-        head = getattr(component, "head_command", None)
-        head_position = getattr(head, "joint_position_command", None)
-
-        return ComponentFeedbackAck(
-            root=True,
-            component=_node_is_valid(component),
-            mobility=all(_node_is_valid(node) for node in (mobility, se2)),
-            torso=all(
-                _node_is_valid(node)
-                for node in (body, body_components, torso, torso_position)
-            ),
-            head=all(_node_is_valid(node) for node in (head, head_position)),
-            right_arm=all(
-                _node_is_valid(node) for node in (body, body_components, right)
-            )
-            and (
-                _node_is_valid(right_impedance) or _node_is_valid(right_cartesian)
-            ),
-            left_arm=all(
-                _node_is_valid(node) for node in (body, body_components, left)
-            )
-            and (
-                _node_is_valid(left_impedance) or _node_is_valid(left_cartesian)
-            ),
-            status_code=status,
-            finish_code=finish,
-        )
-
-    @staticmethod
-    def _raise_for_terminal_feedback(
-        feedback: ComponentFeedbackAck,
-        operation: str,
-    ) -> None:
-        if feedback.status_code == 3:
-            if feedback.finish_code == 1:
-                return
-            raise CombinedStreamError(
-                f"{operation} terminated: finish_code={feedback.finish_code}"
-            )
-        if feedback.status_code == 0:
-            raise CombinedStreamError(f"{operation} was not activated")
-        if feedback.status_code not in (1, 2, 3):
-            raise CombinedStreamError(
-                f"{operation} returned unexpected status={feedback.status_code}"
-            )
 
     def _run_steady_pump(self) -> None:
         period_s = 1.0 / self.config.send_rate_hz
@@ -3391,7 +2922,7 @@ class RBY1PalletController:
                         command,
                         timeout_ms=self.config.send_timeout_ms,
                     )
-                ack = self._parse_component_feedback(feedback)
+                ack = parse_component_feedback(feedback)
                 completed_s = self._clock()
                 with self._condition:
                     if self._last_send_s is not None:
@@ -3883,8 +3414,7 @@ class RBY1PalletController:
             grip_result = self._grip_result
         if handoff is None:
             raise CommandOwnershipError(
-                "nonzero mobility requires same-process loaded-ready or "
-                "GripHandoff provenance"
+                "nonzero mobility requires same-process loaded-ready provenance"
             )
         if grip_result is None or not grip_result.passed:
             reasons = () if grip_result is None else grip_result.reasons
@@ -3949,21 +3479,6 @@ class RBY1PalletController:
                 self._wheel_stopped_since_s = state.received_monotonic_s
         else:
             self._wheel_stopped_since_s = None
-
-    @staticmethod
-    def _extract_ft(
-        robot_state: Any,
-        attribute: str,
-    ) -> tuple[tuple[float, float, float] | None, tuple[float, float, float] | None]:
-        sensor = getattr(robot_state, attribute, None)
-        if sensor is None:
-            return None, None
-        try:
-            force = _finite_vector(sensor.force, 3, f"{attribute}.force")
-            torque = _finite_vector(sensor.torque, 3, f"{attribute}.torque")
-        except (AttributeError, ValueError):
-            return None, None
-        return force, torque
 
     @staticmethod
     def _robot_timestamp_s(robot_state: Any) -> float | None:
@@ -4091,7 +3606,6 @@ __all__ = [
     "EXPECTED_ROBOT_MODEL",
     "EXPECTED_ROBOT_VERSION",
     "GripContinuityResult",
-    "GripHandoff",
     "HandoffAck",
     "HandoffPendingError",
     "HARD_MAX_ANGULAR_SPEED_RADPS",
@@ -4105,7 +3619,6 @@ __all__ = [
     "PlacementTelemetry",
     "RBY1PalletController",
     "ReadyPose",
-    "ReadyHoldHandoff",
     "ReadyTransitionAck",
     "ReadyTransitionError",
     "RobotIdentityError",
