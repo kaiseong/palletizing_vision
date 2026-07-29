@@ -450,14 +450,15 @@ Record an empty-table session first, then full/cropped box sessions. Raw streams
 are authoritative; aligned color-on-depth is optional debug evidence.
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli record \
-  --output ../recordings/codex_640x480 \
+python record.py \
   --session-name empty_table \
   --duration-sec 10
 ```
 
-The config fixes raw Depth/RGB at `640x480 @ 30 FPS`; `--output` selects the
-session root.
+By default, sessions are saved under
+`../recordings/codex_640x480/<session-name>`. Use `--output PATH` only when a
+different recording root is required. The config fixes raw Depth/RGB at
+`640x480 @ 30 FPS`.
 
 Recommended capture set:
 
