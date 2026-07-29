@@ -2210,7 +2210,10 @@ class RBY1PalletController:
         The loaded demo uses the freshly measured fixed-ready EEF box-bottom
         model.  Joint tracking, EEF stability, frame freshness, stack-plane,
         clearance, and command-ownership gates remain active.  F/T feedback is
-        not used as a grip or motion gate.
+        not used as a grip or motion gate.  Joint tracking is intentionally
+        skipped while a Cartesian arm stream is active because loaded hold,
+        lowering, and release deliberately command offsets from the unsqueezed
+        ready joints.
 
         This is intentionally a rolling fresh motion interlock, not a
         stationary perception gate.  Step authorization, post-stop
@@ -2236,7 +2239,8 @@ class RBY1PalletController:
         now_s = self._clock()
         sample_margin_s = 2.0 / self.config.state_update_rate_hz
         with self._condition:
-            placement_arm_motion = self._arm_stream_mode in (
+            cartesian_arm_motion = self._arm_stream_mode in (
+                ArmStreamMode.CARTESIAN_LOADED_HOLD,
                 ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING,
                 ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE,
             )
@@ -2260,7 +2264,7 @@ class RBY1PalletController:
         arm_error_max: float | None = None
         separations: list[np.ndarray] = []
         for state in states:
-            if not placement_arm_motion:
+            if not cartesian_arm_motion:
                 errors, all_ready = self._ready_joint_errors(state)
                 arm_indices = np.r_[
                     np.arange(6, 13, dtype=np.int64),
@@ -2282,7 +2286,7 @@ class RBY1PalletController:
                     state.T_base_right_eef[:3, 3] - state.T_base_left_eef[:3, 3]
                 )
 
-        if not placement_arm_motion and (
+        if not cartesian_arm_motion and (
             arm_error_max is None
             or arm_error_max > self.config.arm_tracking_tolerance_rad
         ):
