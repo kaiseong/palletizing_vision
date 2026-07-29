@@ -158,9 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-place-slot1",
         action="store_true",
         help=(
-            "after slot-1 ARRIVED_HOLD, run the gated 50 mm Cartesian lowering "
-            "and optional release sequence; requires --auto-palletize-slot1 and "
-            "placement.enabled=true in the config"
+            "after slot-1 ARRIVED_HOLD, freeze a metric descent plan, lower both "
+            "Cartesian EEFs, and run the optional release sequence; requires "
+            "--auto-palletize-slot1 and placement.enabled=true in the config"
         ),
     )
     live.add_argument(
@@ -182,9 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-vision-geometry-release",
         action="store_true",
         help=(
-            "commissioning-only: allow release when held-top/stack-plane geometry "
-            "predicts that the 50 mm lowering will seat the box; placement does "
-            "not read F/T"
+            "commissioning-only: allow release when bilateral EEF/FK box-bottom "
+            "and metric stack-plane bounds produce a valid frozen descent plan; "
+            "placement does not read F/T"
         ),
     )
     live.add_argument(
@@ -289,6 +289,11 @@ def _run_live(args: argparse.Namespace) -> int:
     if args.allow_vision_geometry_release and not args.auto_place_slot1:
         raise ValueError(
             "--allow-vision-geometry-release requires --auto-place-slot1"
+        )
+    if args.auto_place_slot1 and not args.allow_vision_geometry_release:
+        raise ValueError(
+            "--auto-place-slot1 requires --allow-vision-geometry-release; "
+            "omit --auto-place-slot1 for alignment-only commissioning"
         )
     if args.ensure_slot1_ready and not args.auto_palletize_slot1:
         print(

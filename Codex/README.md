@@ -178,18 +178,22 @@ remain `nominal_unverified`; they are never relabelled as absolute/validated.
 ## Pallet slot-1 continuous acquisition and vision-gated place
 
 `pallet.py` estimates the two-layer stack frame from the metric top plane and
-the measured `148 x 149 mm` centre opening. It does not use an image bounding
-box as the primary measurement. The measured `660 x 658 mm` outer boundary is
-optional consistency evidence, because the carried carton can crop it.
+the calibrated fixed approach axis. The measured `660 x 658 mm` outer boundary
+and a visible outer L-corner can recover a valid metric SE(2) stack frame even
+when the `148 x 149 mm` centre opening is not visible. The opening is stronger
+cross-check/refinement evidence, not the only authority.
 
 The first third-layer slot is fixed in the recovered stack frame:
 
 ```text
-p_slot1 = p_opening + 0.12800 * u_right + 0.20175 * v_far
+p_slot1 = p_opening_proxy + 0.12800 * u_right + 0.20175 * v_far
 ```
 
-`u_right` is branch-locked to the stack axis projecting toward image right;
-the slot carton long axis is parallel to it. The ready posture is configured in
+`u_right` comes from D435 depth-optical `+X` projected onto the fitted stack
+plane. After orienting the stack-plane normal, `v_far = n_stack x u_right` must
+align positively with calibrated RB-Y1 base `+X` for this slot-1 approach; its
+provenance is stored in `fixed_approach_axis_source`. The slot carton long axis
+is parallel to `u_right`. The ready posture is configured in
 `configs/rby1m_v1_2_pallet_slot1_nominal.json`. The standalone pallet stream
 keeps torso/head Position and switches the loaded arms into Cartesian
 impedance hold with `[150] * 7` joint stiffness, nullspace joint targets, and
@@ -199,8 +203,8 @@ for torso, both arms, and head.
 
 The raw EEF midpoint is retained for carried-box exclusion and conservative
 clearance checks, but it is not the fine-alignment target. The fine controller
-now reproduces the complete-hole observation recorded at the operator-selected
-`pallet_slot1` destination: base-frame hole centre
+reproduces the demonstrated slot-1 stack feature recorded at the
+operator-selected `pallet_slot1` destination: base-frame opening/proxy centre
 `[0.865000, 0.139523] m` and line yaw `-90 deg`. These are stable recording
 medians, not independent ground truth, and are valid only for this fixed
 ready/grasp/camera family.
@@ -228,9 +232,9 @@ sends the first combined packet with exact zero mobility, then keeps streaming a
 single RB-Y1 component command containing torso/head Position, bilateral arm
 commands, and SE(2) mobility. Nonzero base packets still require all motion
 gates and a reviewed positive acquisition budget. With `--auto-place-slot1`,
-the same stream remains open after `ARRIVED_HOLD` and runs the gated 50 mm
-Cartesian lowering plus vision-gated hand spread. The path does not command a
-slide, a separate gripper command, or power-off.
+the same stream remains open after `ARRIVED_HOLD` and runs the gated dynamic
+Cartesian lowering plan plus vision-gated hand spread. The path does not command
+a slide, a separate gripper command, or power-off.
 
 The runtime still uses the deliberately weaker metric observation first when
 the complete opening is not visible:
@@ -238,14 +242,16 @@ the complete opening is not visible:
 ```text
 loaded ready/body hold with exact zero mobility
   -> five stationary strict metric L-corner observations when available
-  -> fixed 660 x 658 mm outer geometry recovers a centred-opening proxy
+  -> fixed approach axis + 660 x 658 mm outer geometry recovers a
+     centred-opening proxy
   -> zero-verified one-way handoff to coupled x/y/yaw fine servo
-  -> complete-hole geometry replaces the proxy whenever it becomes valid
+  -> complete-hole geometry cross-checks/refines the proxy whenever valid
   -> otherwise, relaxed edge evidence permits only a bounded 0.030 m/s
      forward acquisition until strict proxy or complete-hole geometry appears
   -> ARRIVED_HOLD
   -> exact-zero mobile lock
-  -> 50 mm base-z Cartesian lowering
+  -> freeze a typed PlacementDescentPlan from FK box-bottom and stack plane
+  -> planned base-z Cartesian lowering
   -> vision-gated 80 mm-per-arm spread release
 ```
 
@@ -261,14 +267,23 @@ underconstrained. That separately qualified relaxed edge pair can authorize
 only bounded forward acquisition; it cannot command lateral motion, yaw,
 reverse, descent, or fine placement. For the fixed-ready
 clearance proxy, the stack top may come from either complete-hole geometry or
-the metric partial-stack plane. Forward acquisition remains a separate decision
-and independently requires the stationary five-frame edge gate.
+the metric partial-stack plane. The clearance lower bound is the bilateral
+EEF/FK box-bottom lower bound minus the stack-plane upper bound, and it must
+stay at or above the hard `0.050 m` floor. Forward acquisition remains a
+separate decision and independently requires the stationary five-frame edge
+gate.
 
 RealSense hardware frame counters need only increase; they do not need to be
 numerically adjacent. Grip/clearance dwell continuity is based on consecutive
 accepted fresh control observations while retaining the hardware counter for
 duplicate/reversal diagnostics. This prevents ordinary dropped sensor frames
 from permanently forcing `motion_interlock_selected_zero`.
+
+The fine-servo visual dropout bridge can propagate only one previously accepted
+metric observation through fresh odometry, and only for `0.30 s`. Predicted
+samples never refresh the bridge; when the TTL expires, odometry is stale, or a
+conflicting metric observation appears, the controller selects exact-zero
+mobility.
 
 The shipped standalone commissioning config uses the release-capped `0.15 m`
 forward acquisition budget. The absolute design ceiling remains an unreachable
@@ -368,8 +383,8 @@ with `--max-frames`: loaded execution rejects bounded normal exits because the
 non-daemon carried-load owner must end only through a successor handoff or
 explicit forced cancellation.
 
-To run the current slot-1 alignment plus 50 mm lower and vision-gated release
-path from SSH, use `--headless` with the complete explicit flag set:
+To run the current slot-1 alignment plus dynamic planned lower and vision-gated
+release path from SSH, use `--headless` with the complete explicit flag set:
 
 ```bash
 python pallet.py live \
@@ -396,10 +411,10 @@ is accepted only when both the CLI flag is present and the reviewed config sets
 `grip_interlock.fixed_ready_geometry_only_commissioning_enabled=true`; configs
 without that explicit policy still fail closed.
 
-`--allow-vision-geometry-release` authorizes release only when fresh held-top
-and stack-plane geometry predicts that a 50 mm base-z lowering will seat the
-box. The placement path does not read F/T feedback; fresh bounded vision
-geometry is the only release authority.
+`--allow-vision-geometry-release` authorizes release only when fresh FK
+box-bottom and stack-plane geometry can freeze a bounded
+`PlacementDescentPlan`. The placement path does not read F/T feedback; fresh
+bounded vision/FK geometry is the only release authority.
 
 The clearance dwell deliberately uses three separate time checks. Every depth
 sample must have been accepted within `0.20 s` of capture, the newest accepted
@@ -426,10 +441,10 @@ box-pick-to-pallet handoff scaffolds are intentionally absent from the demo
 code; add an atomic stream/epoch transfer only when that integration is ready.
 
 A CLI boolean cannot replace exact target/stiffness/torque provenance, measured
-arm tracking, EEF separation, held-top/stack-plane geometry, fresh odometry, or
-wheel stop. Exactly one controller owns mobility per cycle; after either a
-strict metric proxy or complete-hole zero-speed handoff, the forward-only
-controller is permanently revoked for that session.
+arm tracking, EEF separation, FK box-bottom/stack-plane geometry, fresh
+odometry, or wheel stop. Exactly one controller owns mobility per cycle; after
+either a strict metric proxy or complete-hole zero-speed handoff, the
+forward-only controller is permanently revoked for that session.
 
 Live frames are accepted only when RGB and Depth timestamps share the
 RealSense `GLOBAL_TIME` or `SYSTEM_TIME` clock domain. Both the sensor timestamp
@@ -440,21 +455,21 @@ capture.
 The pure controller's intended terminal state is `ARRIVED_HOLD`: torso/head and
 both arms remain supported by one combined body+mobility stream while mobility
 stays zero. With `--auto-place-slot1`, the same stream then freezes mobile
-velocity at exact zero, lowers both Cartesian EEF targets by `50 mm` in RB-Y1
-base z, and spreads both hands by `80 mm` per arm from the planned lowered
-geometry. It does not command slide, power-off, or a separate gripper command.
+velocity at exact zero, freezes a `PlacementDescentPlan`, lowers both Cartesian
+EEF targets by that plan's base-z distance, and spreads both hands by `80 mm`
+per arm from the planned lowered geometry. It does not command slide,
+power-off, or a separate gripper command.
 The current camera registration still includes the empirical base-y `+0.050 m`
 correction and no external ground truth, so replay and live telemetry prove
 repeatability and observability, not absolute placement accuracy.
 
-The direct held-top replay evidence remains discrepant at this close range: it
-reported about `0.032 m`, while the fixed-ready dual-EEF box-bottom audit is
-about `0.179 m` against the same `0.050 m` clearance floor. The runtime uses the
-fixed-ready FK proxy for the rolling carried-load clearance interlock. It uses
-direct held-top depth only for the narrower pre-lowering gap plan, and only
-after three fresh stable samples and the uncertainty/residual bounds in the
-table below pass. Failure of that narrow vision gate blocks release; it is not
-treated as contact proof or absolute placement validation.
+The previous fixed-distance lowering is intentionally gone. `0.050 m` is now
+only the pre-motion clearance floor. At placement entry, the runtime computes
+the actual descent from the FK box-bottom estimate and current stack plane,
+stores the result in a frozen typed plan, and rejects release if the plan is
+stale, inconsistent, too uncertain, below the clearance floor, or above the
+configured maximum descent. This is not contact proof or absolute placement
+validation.
 
 ### Slot-1 stage and tolerance summary
 
@@ -470,10 +485,10 @@ torque limits remain default.
 | Ready restore | Joint Position one-shot | All torso, arm, and head joints ready and within `1 deg`, or one `5 s` all-joint Position command followed by SDK `Ok` and the same posture check. |
 | Coarse fallback | `+x` only | Used only while centre translation is underconstrained: five stationary relaxed edge-pair frames, `0.030 m/s` cruise, `0.150 m` session budget, `0.006 m` braking allowance, `0.015 m` lateral drift limit, `3 deg` yaw drift limit. |
 | Metric handoff | zero | Five stopped strict L-corner proxy frames stable within `0.008 m`, or a dwell-complete hole; exact-zero acknowledgement and measured wheel stop precede the one-way owner transfer. A raw strict proxy/hole appearing during fallback cruise first commands braking. |
-| Fine align | `x/y/yaw` | Fixed-outer L-corner proxy initially, complete-hole measurement when valid, both against the same demonstrated reference `[0.865000, 0.139523] m`, `-90 deg`; the existing jump gate guards source transitions. Arrival requires five frames and `0.35 s` inside `0.015 m` / `5 deg`, with inner threshold `0.010 m` / `3 deg`. |
+| Fine align | `x/y/yaw` | Fixed-outer L-corner proxy initially, complete-hole measurement as cross-check/refinement when valid, both against the same demonstrated reference `[0.865000, 0.139523] m`, `-90 deg`; the existing jump gate guards source transitions. Arrival requires five frames and `0.35 s` inside `0.015 m` / `5 deg`, with inner threshold `0.010 m` / `3 deg`. |
 | Placement entry | zero only | `ARRIVED_HOLD`, exact-zero command acknowledgement, fresh stopped-wheel dwell `0.35 s`, loaded Cartesian-hold mode, stream Running feedback, and fresh measured FK. |
-| Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=5.0 s`, predicted post-lower residual within `[-0.020, +0.010] m`, uncertainty `<=0.015 m`. |
-| Lower | arm Cartesian only | The acknowledged loaded-hold target is copied, preserving orientation, squeeze, and nullspace targets, then shifted `50 mm` in base-z. Timeout `4.0 s`; measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
+| Vision seat plan | zero only | At least three fresh gap samples, gap stability within `0.008 m`, evidence age `<=0.30 s`, plan age `<=15.0 s`, FK box-bottom lower bound minus stack-plane upper bound `>=0.050 m`, uncertainty `<=0.025 m`, descent `<=0.250 m`; the accepted sample freezes a typed `PlacementDescentPlan`. |
+| Lower | arm Cartesian only | The acknowledged loaded-hold target is copied, preserving orientation, squeeze, and nullspace targets, then shifted by the frozen plan's base-z distance. Timeout `12.0 s`; measured EEF z within `0.008 m`, midpoint XY drift `<=0.015 m`, rotation error `<=3 deg`, target acknowledgement required. |
 | Release | arm Cartesian only | Vision seating evidence held for `0.35 s`, spread `0.080 m` per arm, timeout `4.5 s`, each EEF within `0.012 m` / `4 deg` of target, measured inter-EEF separation increase at least `0.136 m`, then `0.35 s` release-target dwell. |
 
 ### Current commissioning boundary
@@ -492,12 +507,13 @@ following must be true in one process:
 - the operator has verified the box is already held at the configured
   slot-1-ready posture before the pallet process starts;
 - the fixed-ready clearance audit and any site changes are reviewed against the
-  50 mm lower bound, while the separate close-range held-top gap plan passes
-  its freshness, stability, uncertainty, and residual gates before release;
+  `0.050 m` clearance floor, while the dynamic FK box-bottom/stack-plane plan
+  passes its freshness, stability, uncertainty, and descent-limit gates before
+  release;
 - the destination combined stream proves all-component Running feedback at
-  exact zero, then revalidates grip, held-top/stack-plane geometry, wheel-stop,
-  odometry, and perception dwell before any nonzero mobility or placement
-  command;
+  exact zero, then revalidates grip, FK box-bottom/stack-plane geometry,
+  wheel-stop, odometry, and perception dwell before any nonzero mobility or
+  placement command;
 - a reviewed config gives acquisition a positive budget no greater than
   0.15 m.
 

@@ -413,14 +413,16 @@ def _session_acceptance(
     maximum_orthogonality_rad: float | None,
     config: PalletEstimatorConfig,
 ) -> dict[str, Any]:
+    opening_error_within_gate = (
+        True
+        if maximum_opening_error_m is None
+        else maximum_opening_error_m <= config.gates.max_opening_size_error_m
+    )
     checks: dict[str, bool] = {
         "decodable_frame_ratio_ge_0_90": processed_ratio >= 0.90,
         "rejected_frames_have_reason": rejected_without_reason == 0,
         "axis_branch_flip_count_zero": branch_flips == 0,
-        "accepted_opening_error_within_gate": (
-            maximum_opening_error_m is not None
-            and maximum_opening_error_m <= config.gates.max_opening_size_error_m
-        ),
+        "accepted_opening_error_within_gate": opening_error_within_gate,
         "accepted_plane_p95_within_gate": (
             maximum_plane_p95_m is not None
             and maximum_plane_p95_m <= config.gates.max_plane_p95_residual_m
@@ -460,12 +462,74 @@ def _session_acceptance(
                 "valid_ratio_ge_0_50": valid_ratio >= 0.50,
                 "best_one_second_valid_ratio_ge_0_80": best_one_second_ratio >= 0.80,
                 "all_accepted_openings_within_gate": (
-                    maximum_opening_error_m is not None
-                    and maximum_opening_error_m <= config.gates.max_opening_size_error_m
+                    opening_error_within_gate
                 ),
             }
         )
     return {"passed": bool(all(checks.values())), "checks": checks}
+
+
+def _finite_quality_value(
+    quality: Mapping[str, float],
+    key: str,
+) -> float | None:
+    value = quality.get(key)
+    if value is None:
+        return None
+    result = float(value)
+    return result if math.isfinite(result) else None
+
+
+def _opening_error_m(item: Any) -> float | None:
+    if item.opening_size_m is None:
+        return None
+    u_error = _finite_quality_value(item.quality, "opening_u_error_m")
+    v_error = _finite_quality_value(item.quality, "opening_v_error_m")
+    if u_error is None or v_error is None:
+        return None
+    return max(u_error, v_error)
+
+
+def _consecutive_center_jump_metrics(
+    observations: Sequence[PalletSceneObservation],
+    *,
+    max_age_s: float,
+) -> dict[str, Any]:
+    values: list[float] = []
+    skipped_for_age_or_timestamp = 0
+    candidate_valid_pair_count = 0
+    previous_valid: PalletSceneObservation | None = None
+    for current in observations:
+        if not current.valid:
+            continue
+        if previous_valid is None:
+            previous_valid = current
+            continue
+        candidate_valid_pair_count += 1
+        delta_s = float(current.stack.timestamp_s) - float(
+            previous_valid.stack.timestamp_s
+        )
+        if not math.isfinite(delta_s) or delta_s < 0.0 or delta_s > max_age_s:
+            skipped_for_age_or_timestamp += 1
+            previous_valid = current
+            continue
+        values.append(
+            float(
+                np.linalg.norm(
+                    current.stack.center_base[:2]
+                    - previous_valid.stack.center_base[:2]
+                )
+            )
+        )
+        previous_valid = current
+    jumps = np.asarray(values, dtype=np.float64)
+    return {
+        "values": values,
+        "maximum_m": float(np.max(jumps)) if jumps.size else None,
+        "evaluated_pair_count": len(values),
+        "candidate_valid_pair_count": candidate_valid_pair_count,
+        "skipped_for_age_or_timestamp_count": skipped_for_age_or_timestamp,
+    }
 
 
 def evaluate_pallet_session(
@@ -725,23 +789,16 @@ def evaluate_pallet_session(
         if branches
         else 0.0
     )
-    consecutive_jump_values = [
-        float(
-            np.linalg.norm(
-                current.stack.center_base[:2] - previous.stack.center_base[:2]
-            )
-        )
-        for previous, current in zip(observations, observations[1:])
-        if previous.valid and current.valid
-    ]
-    jumps = np.asarray(consecutive_jump_values, dtype=np.float64)
+    center_jump_metrics = _consecutive_center_jump_metrics(
+        observations,
+        max_age_s=estimator_config.gates.max_consecutive_center_jump_age_s,
+    )
     opening_errors = [
-        max(
-            item.quality.get("opening_u_error_m", math.inf),
-            item.quality.get("opening_v_error_m", math.inf),
-        )
-        for item in accepted
+        error for item in accepted if (error := _opening_error_m(item)) is not None
     ]
+    opening_crosscheck_unavailable_count = sum(
+        1 for item in accepted if item.opening_size_m is None
+    )
     plane_residuals = [
         item.quality.get("stack_plane_p95_residual_m", math.inf) for item in accepted
     ]
@@ -759,7 +816,7 @@ def evaluate_pallet_session(
     best_one_second_ratio = _best_one_second_valid_ratio(timestamps, validity)
     center_std = np.std(centers, axis=0).tolist() if accepted else None
     yaw_std = _angle_std_rad(yaws)
-    maximum_jump = float(np.max(jumps)) if jumps.size else None
+    maximum_jump = center_jump_metrics["maximum_m"]
     maximum_opening_error = max(opening_errors) if opening_errors else None
     maximum_plane_p95 = max(plane_residuals) if plane_residuals else None
     maximum_orthogonality = max(orthogonality) if orthogonality else None
@@ -1052,7 +1109,20 @@ def evaluate_pallet_session(
         "stable_five_frame_window": stable_window,
         "best_one_second_valid_ratio": best_one_second_ratio,
         "maximum_consecutive_accepted_center_jump_m": maximum_jump,
+        "consecutive_center_jump_evaluated_pair_count": center_jump_metrics[
+            "evaluated_pair_count"
+        ],
+        "consecutive_center_jump_candidate_valid_pair_count": center_jump_metrics[
+            "candidate_valid_pair_count"
+        ],
+        "consecutive_center_jump_skipped_for_age_or_timestamp_count": (
+            center_jump_metrics["skipped_for_age_or_timestamp_count"]
+        ),
         "maximum_accepted_opening_error_m": maximum_opening_error,
+        "accepted_opening_evidence_frame_count": len(opening_errors),
+        "accepted_opening_crosscheck_unavailable_count": (
+            opening_crosscheck_unavailable_count
+        ),
         "maximum_accepted_plane_p95_residual_m": maximum_plane_p95,
         "maximum_accepted_orthogonality_error_deg": (
             None

@@ -26,6 +26,7 @@ from typing import Any, Callable, Mapping, Protocol, TextIO
 
 import numpy as np
 
+from .angles import normalize_line_angle_rad
 from .models import CameraIntrinsics
 from .mobile_servo import VelocityCommand
 from .output import to_jsonable
@@ -53,6 +54,7 @@ from .pallet_models import (
 from .pallet_control import MobilityCommand
 from .pallet_place import (
     PlacementConfig,
+    PlacementDescentPlan,
     PlacementInput,
     PlacementOutput,
     PlacementRequest,
@@ -73,6 +75,7 @@ from .visualization import project_points_to_pixels
 
 
 _MAX_LIVE_CONTROL_RESULT_AGE_S = 0.15
+_MAX_ODOMETRY_PREDICTION_AGE_S = 0.30
 
 
 class _ControllerLike(Protocol):
@@ -113,13 +116,19 @@ class _ControllerLike(Protocol):
     def start_cartesian_lowering_hold(
         self,
         *,
-        squeeze_offset_m: float | None = None,
+        descent_plan: PlacementDescentPlan,
     ) -> Any: ...
 
     def start_cartesian_release_hold(
         self,
         *,
         release_spread_m: float | None = None,
+    ) -> Any: ...
+
+    def fail_closed_cartesian_placement_hold(
+        self,
+        *,
+        reason: str,
     ) -> Any: ...
 
     def get_measured_odometry(self) -> tuple[np.ndarray, int, float]: ...
@@ -164,6 +173,220 @@ class HeldPoseProxy:
     center_base_xyz_m: tuple[float, float, float]
     yaw_base_rad: float
     source: str
+
+
+@dataclass(slots=True)
+class ServoObservationBridge:
+    """Propagate one locked metric observation through a short visual dropout.
+
+    The visual anchor is never advanced by predicted samples, so repeated
+    odometry updates cannot extend the 0.30 s authority window.  Fresh visual
+    geometry must be accepted by the fine controller before it can seed or
+    refresh the bridge.
+    """
+
+    maximum_prediction_age_s: float = _MAX_ODOMETRY_PREDICTION_AGE_S
+    odometry_freshness_s: float = 0.20
+    _locked: bool = False
+    _observation: PalletServoObservation | None = None
+    _odometry: OdometrySample | None = None
+    _visual_timestamp_s: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("maximum_prediction_age_s", "odometry_freshness_s"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+            setattr(self, name, value)
+        if self.maximum_prediction_age_s > _MAX_ODOMETRY_PREDICTION_AGE_S + 1e-12:
+            raise ValueError("visual dropout prediction cannot exceed 0.30 s")
+
+    def resolve(
+        self,
+        observation: PalletServoObservation,
+        odometry: OdometrySample | None,
+        *,
+        now_s: float,
+    ) -> tuple[PalletServoObservation, dict[str, Any]]:
+        """Return fresh geometry or a bounded odometry-propagated observation."""
+
+        now = float(now_s)
+        diagnostics: dict[str, Any] = {
+            "odometry_prediction_used": False,
+            "dropout_age_s": None,
+            "prediction_ttl_s": self.maximum_prediction_age_s,
+            "prediction_reason": "fresh_visual_observation",
+            "visual_anchor_timestamp_s": self._visual_timestamp_s,
+            "odometry_timestamp_s": None if odometry is None else odometry.timestamp_s,
+            "odometry_sequence": (
+                None if odometry is None else getattr(odometry, "sequence", None)
+            ),
+        }
+        if observation.valid:
+            return observation, diagnostics
+
+        if not self._locked or self._observation is None or self._odometry is None:
+            diagnostics["prediction_reason"] = "initial_metric_lock_missing"
+            return observation, diagnostics
+        if self._visual_timestamp_s is None:
+            diagnostics["prediction_reason"] = "visual_anchor_timestamp_missing"
+            return observation, diagnostics
+
+        dropout_age_s = now - self._visual_timestamp_s
+        diagnostics["dropout_age_s"] = dropout_age_s
+        if (
+            not math.isfinite(dropout_age_s)
+            or dropout_age_s < 0.0
+            or dropout_age_s > self.maximum_prediction_age_s + 1e-12
+        ):
+            diagnostics["prediction_reason"] = "visual_dropout_ttl_expired"
+            return PalletServoObservation.invalid(
+                observation.timestamp_s,
+                "visual_dropout_ttl_expired",
+                reference_source=observation.reference_source,
+            ), diagnostics
+        if self._conflicting_invalid_reasons(observation.rejection_reasons):
+            diagnostics["prediction_reason"] = "conflicting_metric_geometry"
+            return observation, diagnostics
+        if not self._odometry_is_fresh(odometry, now):
+            diagnostics["prediction_reason"] = "odometry_stale_or_invalid"
+            return PalletServoObservation.invalid(
+                observation.timestamp_s,
+                "odometry_stale_or_invalid",
+                reference_source=observation.reference_source,
+            ), diagnostics
+
+        assert odometry is not None
+        anchor = self._observation
+        assert anchor.current_observed_feature_center_base is not None
+        assert anchor.current_observed_feature_yaw_base_rad is not None
+        assert anchor.demonstrated_body_reference_center_base is not None
+        assert anchor.demonstrated_body_reference_yaw_base_rad is not None
+        assert anchor.axis_branch is not None
+
+        anchor_xy = np.asarray(
+            anchor.current_observed_feature_center_base,
+            dtype=np.float64,
+        )
+        c0 = math.cos(self._odometry.yaw_rad)
+        s0 = math.sin(self._odometry.yaw_rad)
+        R_odom_from_anchor = np.asarray(((c0, -s0), (s0, c0)))
+        point_odom = (
+            R_odom_from_anchor @ anchor_xy
+            + np.asarray((self._odometry.x_m, self._odometry.y_m))
+        )
+        c1 = math.cos(odometry.yaw_rad)
+        s1 = math.sin(odometry.yaw_rad)
+        R_odom_from_current = np.asarray(((c1, -s1), (s1, c1)))
+        point_current = R_odom_from_current.T @ (
+            point_odom - np.asarray((odometry.x_m, odometry.y_m))
+        )
+        yaw_current = normalize_line_angle_rad(
+            anchor.current_observed_feature_yaw_base_rad
+            + self._odometry.yaw_rad
+            - odometry.yaw_rad
+        )
+        propagated = PalletServoObservation(
+            timestamp_s=float(odometry.timestamp_s),
+            current_observed_feature_center_base=(
+                float(point_current[0]),
+                float(point_current[1]),
+            ),
+            current_observed_feature_yaw_base_rad=yaw_current,
+            demonstrated_body_reference_center_base=(
+                float(anchor.demonstrated_body_reference_center_base[0]),
+                float(anchor.demonstrated_body_reference_center_base[1]),
+            ),
+            demonstrated_body_reference_yaw_base_rad=float(
+                anchor.demonstrated_body_reference_yaw_base_rad
+            ),
+            axis_branch=anchor.axis_branch,
+            reference_source=anchor.reference_source,
+            odometry_propagated=True,
+            propagation_age_s=dropout_age_s,
+        )
+        diagnostics.update(
+            {
+                "odometry_prediction_used": True,
+                "prediction_reason": "bounded_odometry_prediction",
+                "visual_anchor_timestamp_s": self._visual_timestamp_s,
+            }
+        )
+        return propagated, diagnostics
+
+    def commit(
+        self,
+        observation: PalletServoObservation,
+        odometry: OdometrySample | None,
+        output: PalletServoOutput,
+        *,
+        now_s: float,
+    ) -> None:
+        """Refresh the bridge only from a fresh controller-accepted sample."""
+
+        if (
+            not observation.valid
+            or not output.measurement_accepted
+            or output.state
+            not in {
+                PalletServoState.TRACKING,
+                PalletServoState.ARRIVAL_EVIDENCE,
+                PalletServoState.ARRIVAL_WHEEL_STOP,
+                PalletServoState.ARRIVED_HOLD,
+            }
+            or not self._odometry_is_fresh(odometry, now_s)
+        ):
+            return
+        assert odometry is not None
+        self._observation = observation
+        self._odometry = odometry
+        self._visual_timestamp_s = float(observation.timestamp_s)
+        self._locked = True
+
+    def clear(self) -> None:
+        self._locked = False
+        self._observation = None
+        self._odometry = None
+        self._visual_timestamp_s = None
+
+    def _odometry_is_fresh(
+        self,
+        odometry: OdometrySample | None,
+        now_s: float,
+    ) -> bool:
+        if odometry is None:
+            return False
+        values = (
+            odometry.timestamp_s,
+            odometry.x_m,
+            odometry.y_m,
+            odometry.yaw_rad,
+        )
+        age_s = float(now_s) - float(odometry.timestamp_s)
+        return bool(
+            all(math.isfinite(float(value)) for value in values)
+            and -1e-9 <= age_s <= self.odometry_freshness_s + 1e-12
+        )
+
+    @staticmethod
+    def _conflicting_invalid_reasons(reasons: tuple[str, ...]) -> bool:
+        conflict_tokens = (
+            "axis",
+            "branch",
+            "reflected",
+            "opposite",
+            "mismatch",
+            "jump",
+            "transform",
+            "calibration",
+            "nonhorizontal",
+            "normal",
+        )
+        return any(
+            token in str(reason).lower()
+            for reason in reasons
+            for token in conflict_tokens
+        )
 
 
 @dataclass(slots=True)
@@ -774,7 +997,7 @@ def _servo_measurement_source(
     geometry: PalletGeometry,
 ) -> str:
     if scene.stack.valid:
-        return "complete_hole"
+        return scene.stack.stack_se2_source or "metric_stack_se2"
     coarse = scene.coarse
     if coarse is not None and coarse.fixed_outer_center_base(
         geometry.outer_size_m
@@ -801,11 +1024,10 @@ def _controller_scene_sample(
     stack_top_uncertainty = stack.quality.get(
         "stack_plane_p95_residual_m", math.nan
     )
-    stack_top_source = (
-        "complete_stack_plane"
-        if stack.valid
-        else "metric_stack_plane_candidate"
-    )
+    stack_top_source = {
+        "fixed_outer_l_corner": "metric_fixed_outer_l_corner_plane",
+        "inner_opening": "metric_inner_opening_plane",
+    }.get(stack.stack_se2_source, "metric_stack_plane_candidate")
     if (
         stack_top_z is None
         and coarse is not None
@@ -868,10 +1090,8 @@ def _update_scene_window(
     five-frame acquisition delay.
     """
 
-    if not frame_result_fresh:
+    if not frame_result_fresh or fresh_sample is None:
         return False
-    if fresh_sample is None:
-        raise ValueError("a fresh scene sample is required for a fresh result")
     scene_window.append(fresh_sample)
     return True
 
@@ -901,41 +1121,23 @@ def _held_box_height_bounds(root: Mapping[str, Any]) -> tuple[float, float, floa
 def _predict_box_bottom_gap(
     root: Mapping[str, Any],
     scene: PalletSceneObservation,
+    held_proxy: HeldPoseProxy | None = None,
 ) -> tuple[float | None, float | None, dict[str, Any]]:
-    """Predict held box bottom clearance above the stack top plane.
-
-    This intentionally uses direct held-top depth evidence rather than the FK
-    box-center proxy.  If either complete-hole stack geometry or held-top
-    evidence is invalid, the sequencer receives ``None`` and stays fail-closed
-    unless geometry-only lowering is explicitly requested.
-    """
+    """Compute metric box-bottom clearance from bilateral EEF FK and stack plane."""
 
     minimum_height, nominal_height, maximum_height = _held_box_height_bounds(root)
     height_half_range_m = 0.5 * (maximum_height - minimum_height)
-    held = scene.held_top
     stack = scene.stack
     diagnostics: dict[str, Any] = {
-        "source": "held_top_minus_nominal_height_minus_valid_stack_plane",
+        "source": "bilateral_eef_fk_box_bottom_minus_stack_plane",
         "minimum_box_height_m": minimum_height,
         "nominal_box_height_m": nominal_height,
         "maximum_box_height_m": maximum_height,
         "height_half_range_m": height_half_range_m,
         "valid": False,
     }
-    if held is None or not held.valid:
-        diagnostics["reason"] = (
-            "held_top_invalid"
-            if held is None
-            else ";".join(held.rejection_reasons)
-        )
-        return None, None, diagnostics
-    if (
-        held.top_plane_z_base_m is None
-        or held.top_plane_z_uncertainty_m is None
-        or not math.isfinite(float(held.top_plane_z_base_m))
-        or not math.isfinite(float(held.top_plane_z_uncertainty_m))
-    ):
-        diagnostics["reason"] = "held_top_z_unavailable"
+    if held_proxy is None:
+        diagnostics["reason"] = "bilateral_eef_fk_box_pose_unavailable"
         return None, None, diagnostics
     if not stack.valid or stack.plane_height_base_m is None:
         diagnostics["reason"] = (
@@ -949,19 +1151,46 @@ def _predict_box_bottom_gap(
         diagnostics["reason"] = "stack_plane_residual_unavailable"
         return None, None, diagnostics
 
-    held_top_z = float(held.top_plane_z_base_m)
+    center_z = float(held_proxy.center_base_xyz_m[2])
+    fixed_ready_uncertainty_m = float(
+        _section(root, "held_box").get(
+            "fixed_ready_box_bottom_uncertainty_m",
+            0.015,
+        )
+    )
+    if (
+        not math.isfinite(center_z)
+        or not math.isfinite(fixed_ready_uncertainty_m)
+        or fixed_ready_uncertainty_m < 0.0
+    ):
+        diagnostics["reason"] = "bilateral_eef_fk_box_bottom_invalid"
+        return None, None, diagnostics
     stack_top_z = float(stack.plane_height_base_m)
-    held_uncertainty = max(0.0, float(held.top_plane_z_uncertainty_m))
     stack_uncertainty = max(0.0, float(stack_residual))
-    gap_m = held_top_z - nominal_height - stack_top_z
-    uncertainty_m = held_uncertainty + stack_uncertainty + height_half_range_m
+    nominal_box_bottom_z = center_z - 0.5 * nominal_height
+    box_bottom_lower_bound_z = (
+        center_z - 0.5 * maximum_height - fixed_ready_uncertainty_m
+    )
+    stack_top_upper_bound_z = stack_top_z + stack_uncertainty
+    gap_m = nominal_box_bottom_z - stack_top_z
+    uncertainty_m = (
+        nominal_box_bottom_z
+        - box_bottom_lower_bound_z
+        + stack_uncertainty
+    )
+    clearance_lower_bound_m = box_bottom_lower_bound_z - stack_top_upper_bound_z
     diagnostics.update(
         {
             "valid": True,
-            "held_top_z_base_m": held_top_z,
+            "held_box_pose_source": held_proxy.source,
+            "held_box_center_z_base_m": center_z,
+            "box_bottom_z_nominal_m": nominal_box_bottom_z,
+            "box_bottom_z_lower_bound_m": box_bottom_lower_bound_z,
             "stack_top_z_base_m": stack_top_z,
-            "held_top_uncertainty_m": held_uncertainty,
+            "stack_top_z_upper_bound_m": stack_top_upper_bound_z,
+            "fixed_ready_box_bottom_uncertainty_m": fixed_ready_uncertainty_m,
             "stack_plane_p95_residual_m": stack_uncertainty,
+            "clearance_lower_bound_m": clearance_lower_bound_m,
             "predicted_box_bottom_gap_m": gap_m,
             "predicted_box_bottom_gap_uncertainty_m": uncertainty_m,
         }
@@ -1005,6 +1234,19 @@ def _placement_telemetry_payload(placement_telemetry: Any | None) -> Any:
     return to_jsonable(payload)
 
 
+def _dispatch_placement_fault_hold_if_needed(
+    controller: _ControllerLike,
+    placement: PlacementOutput,
+    *,
+    lowering_started: bool,
+    release_started: bool,
+) -> str | None:
+    if not placement.faulted or not (lowering_started or release_started):
+        return None
+    controller.fail_closed_cartesian_placement_hold(reason=placement.reason)
+    return "fail_closed_cartesian_placement_hold"
+
+
 def _placement_input(
     root: Mapping[str, Any],
     scene: PalletSceneObservation,
@@ -1021,8 +1263,39 @@ def _placement_input(
     measured_state = controller.get_measured_state()
     right_eef, left_eef = controller.get_measured_eef_transforms()
     telemetry = controller.placement_telemetry()
-    gap_m, gap_uncertainty_m, gap_diagnostics = _predict_box_bottom_gap(root, scene)
-    feedback_timestamp_s = float(getattr(measured_state, "received_monotonic_s", now_s))
+    held_proxy = _fixed_ready_held_pose(root, right_eef, left_eef)
+    gap_m, gap_uncertainty_m, gap_diagnostics = _predict_box_bottom_gap(
+        root,
+        scene,
+        held_proxy,
+    )
+    feedback_timestamp_s = float(
+        getattr(measured_state, "received_monotonic_s", now_s)
+    )
+    feedback_sequence = int(getattr(measured_state, "sequence", 0))
+    feedback_stale_s = float(
+        _section(root, "placement").get("feedback_stale_s", 0.25)
+    )
+    feedback_age_s = now_s - feedback_timestamp_s
+    measured_state_fresh = bool(
+        feedback_sequence > 0
+        and math.isfinite(feedback_age_s)
+        and -1e-12 <= feedback_age_s <= feedback_stale_s
+    )
+    box_bottom_z = gap_diagnostics.get("box_bottom_z_nominal_m")
+    box_bottom_lower = gap_diagnostics.get("box_bottom_z_lower_bound_m")
+    stack_top_z = gap_diagnostics.get("stack_top_z_base_m")
+    stack_top_upper = gap_diagnostics.get("stack_top_z_upper_bound_m")
+    box_bottom_uncertainty = (
+        None
+        if box_bottom_z is None or box_bottom_lower is None
+        else max(0.0, float(box_bottom_z) - float(box_bottom_lower))
+    )
+    stack_top_uncertainty = (
+        None
+        if stack_top_z is None or stack_top_upper is None
+        else max(0.0, float(stack_top_upper) - float(stack_top_z))
+    )
     input_sample = PlacementInput(
         now_s=now_s,
         feedback_timestamp_s=feedback_timestamp_s,
@@ -1031,7 +1304,7 @@ def _placement_input(
         arrived_hold=decision.state is PalletServoState.ARRIVED_HOLD,
         post_zero_wheel_stop=bool(stationary and zero_acknowledged),
         zero_command_ack=bool(zero_acknowledged),
-        measured_state_fresh=True,
+        measured_state_fresh=measured_state_fresh,
         controller_stream_healthy=bool(getattr(telemetry, "stream_running", False)),
         controller_arm_mode=_controller_arm_mode_string(telemetry),
         controller_target_ack=bool(getattr(telemetry, "target_acknowledged", False)),
@@ -1042,6 +1315,21 @@ def _placement_input(
         predicted_box_bottom_gap_uncertainty_m=gap_uncertainty_m,
         gap_observation_timestamp_s=gap_observation_timestamp_s,
         gap_observation_sequence=gap_observation_sequence,
+        box_bottom_z_base_m=box_bottom_z,
+        box_bottom_z_uncertainty_m=box_bottom_uncertainty,
+        stack_top_z_base_m=stack_top_z,
+        stack_top_uncertainty_m=stack_top_uncertainty,
+        stack_plane_z_base_m=stack_top_z,
+        stack_plane_uncertainty_m=stack_top_uncertainty,
+        stack_plane_timestamp_s=gap_observation_timestamp_s,
+        stack_plane_sequence=gap_observation_sequence,
+        bilateral_eef_timestamp_s=feedback_timestamp_s,
+        bilateral_eef_state_sequence=(
+            feedback_sequence if feedback_sequence > 0 else None
+        ),
+        descent_plan_source=(
+            "bilateral_eef_fk_box_bottom_minus_metric_stack_plane"
+        ),
     )
     diagnostics = {
         "gap_prediction": gap_diagnostics,
@@ -1124,7 +1412,7 @@ def _odometry_sample(
     """Convert fresh measured ``T_odom_base`` into the pure SE(2) contract."""
 
     try:
-        transform, _sequence, age_s = controller.get_measured_odometry()
+        transform, sequence, age_s = controller.get_measured_odometry()
         matrix = np.asarray(transform, dtype=np.float64)
         age = float(age_s)
         if not np.all(np.isfinite(matrix)):
@@ -1145,6 +1433,7 @@ def _odometry_sample(
                 x_m=x_m,
                 y_m=y_m,
                 yaw_rad=math.atan2(float(matrix[1, 0]), float(matrix[0, 0])),
+                sequence=int(sequence),
             ),
             None,
         )
@@ -1224,12 +1513,14 @@ def _annotate_fine_output(
     *,
     handoff_started: bool = False,
     measurement_source: str | None = None,
+    bridge_diagnostics: Mapping[str, Any] | None = None,
 ) -> PalletServoOutput:
     diagnostics = dict(output.diagnostics)
     diagnostics["controller_owner"] = "fine_slot1_servo"
     diagnostics["coarse_to_fine_handoff_started"] = bool(handoff_started)
     if measurement_source is not None:
         diagnostics["observed_feature_source"] = str(measurement_source)
+    diagnostics["visual_dropout_bridge"] = dict(bridge_diagnostics or {})
     return PalletServoOutput(
         command=output.command,
         state=output.state,
@@ -1269,12 +1560,22 @@ def _send_persistent_zero(controller: _ControllerLike) -> None:
 def _live_result_fresh(
     source_timestamp_s: float,
     now_s: float,
+    *,
+    max_age_s: float = _MAX_LIVE_CONTROL_RESULT_AGE_S,
 ) -> bool:
     age_s = float(now_s) - float(source_timestamp_s)
-    return bool(
+    max_age = float(max_age_s)
+    if not (
         math.isfinite(age_s)
+        and math.isfinite(max_age)
+        and max_age > 0.0
         and -1e-9 <= age_s
-        and age_s + 1e-12 < _MAX_LIVE_CONTROL_RESULT_AGE_S
+    ):
+        return False
+    if math.isclose(max_age, _MAX_LIVE_CONTROL_RESULT_AGE_S, abs_tol=1e-12):
+        return bool(age_s + 1e-12 < max_age)
+    return bool(
+        age_s <= max_age + 1e-12
     )
 
 
@@ -1285,7 +1586,11 @@ def _raw_complete_hole_evidence(
 ) -> tuple[bool, float | None]:
     """Expose raw complete-hole evidence so continuous acquisition can brake."""
 
-    if not frame_result_fresh or not scene.stack.valid:
+    if (
+        not frame_result_fresh
+        or not scene.stack.valid
+        or scene.stack.opening_size_m is None
+    ):
         return False, None
     try:
         timestamp_s = float(scene.stack.timestamp_s)
@@ -1304,6 +1609,7 @@ def _dispatch_live_decision(
     *,
     motion_interlocks_ok: bool,
     source_timestamp_s: float,
+    source_max_age_s: float = _MAX_LIVE_CONTROL_RESULT_AGE_S,
     now_s: float | None = None,
 ) -> str:
     """Submit one sourced proposal, substituting zero for stale live results."""
@@ -1329,7 +1635,11 @@ def _dispatch_live_decision(
         return "exact_zero_decision"
 
     publish_s = time.monotonic() if now_s is None else float(now_s)
-    if not _live_result_fresh(source_timestamp_s, publish_s):
+    if not _live_result_fresh(
+        source_timestamp_s,
+        publish_s,
+        max_age_s=source_max_age_s,
+    ):
         _send_persistent_zero(controller)
         return "frame_result_stale_selected_zero"
     if decision.diagnostics.get("controller_owner") == "forward_acquisition" and (
@@ -1660,6 +1970,167 @@ def _open_log(path: Path | None) -> TextIO | None:
     return path.open("x", encoding="utf-8")
 
 
+def _recovery_contract_record(
+    scene: PalletSceneObservation,
+    held: HeldPoseProxy,
+    *,
+    geometry: PalletGeometry,
+    estimator_config: Any | None,
+    bridge_diagnostics: Mapping[str, Any] | None,
+    odometry: OdometrySample | None,
+    grip_result: Any | None,
+    placement: PlacementOutput | None,
+    placement_runtime_diagnostics: Mapping[str, Any] | None,
+    measured_state: Any | None,
+) -> dict[str, Any]:
+    """Build the explicit audit schema used before each commissioning stage."""
+
+    stack = scene.stack
+    coarse = scene.coarse
+    proxy_center = (
+        None
+        if coarse is None
+        else coarse.fixed_outer_center_base(geometry.outer_size_m)
+    )
+    stack_center = stack.center_base if stack.valid else proxy_center
+    stack_yaw = (
+        stack.yaw_base_rad
+        if stack.valid
+        else None if coarse is None else coarse.yaw_base_rad
+    )
+    u_right = (
+        stack.u_right_base
+        if stack.valid
+        else None if coarse is None else coarse.u_right_base
+    )
+    v_far = (
+        stack.v_far_base
+        if stack.valid
+        else None if coarse is None else coarse.v_far_base
+    )
+    quality: dict[str, Any] = {}
+    quality.update(dict(getattr(coarse, "quality", {}) or {}))
+    quality.update(dict(getattr(stack, "quality", {}) or {}))
+    front_line = None if coarse is None else coarse.front_line
+    side_line = None if coarse is None else coarse.side_line
+    line_support = {
+        "front_m": None
+        if front_line is None
+        else float(front_line.support_length_m),
+        "side_m": None
+        if side_line is None
+        else float(side_line.support_length_m),
+    }
+    line_residual = {
+        "front_m": None
+        if front_line is None
+        else float(front_line.p95_residual_m),
+        "side_m": None
+        if side_line is None
+        else float(side_line.p95_residual_m),
+    }
+    fixed_axis = getattr(
+        estimator_config,
+        "fixed_approach_v_far_axis_base_xy",
+        None,
+    )
+    fixed_axis_source = getattr(
+        estimator_config,
+        "fixed_approach_axis_source",
+        None,
+    )
+    placement_plan = None
+    if placement is not None:
+        placement_plan = getattr(placement, "descent_plan", None)
+    if placement_plan is None and placement_runtime_diagnostics is not None:
+        placement_plan = placement_runtime_diagnostics.get("placement_descent_plan")
+    plan_payload = (
+        None
+        if placement_plan is None
+        else to_jsonable(
+            asdict(placement_plan)
+            if is_dataclass(placement_plan)
+            else placement_plan
+        )
+    )
+    bridge = dict(bridge_diagnostics or {})
+    return {
+        "stack_se2_source": _servo_measurement_source(scene, geometry),
+        "stack_branch": (
+            stack.axis_branch
+            if stack.axis_branch is not None
+            else None if coarse is None else coarse.topology_branch
+        ),
+        "stack_center_base_m": stack_center,
+        "stack_yaw_base_rad": stack_yaw,
+        "stack_covariance": quality.get("stack_covariance"),
+        "line_support_m": line_support,
+        "line_residual_m": line_residual,
+        "connection_gap_m": None if coarse is None else coarse.connection_gap_m,
+        "opening_crosscheck": {
+            "available": stack.opening_size_m is not None,
+            "opening_size_m": stack.opening_size_m,
+        },
+        "fixed_approach_v_far_axis_base_xy": fixed_axis,
+        "fixed_approach_axis_source": fixed_axis_source,
+        "resolved_u_right_base": u_right,
+        "resolved_v_far_base": v_far,
+        "fixed_approach_signed_alignment": quality.get(
+            "fixed_approach_signed_alignment"
+        ),
+        "fixed_approach_axis_residual_rad": quality.get(
+            "fixed_approach_axis_residual_rad",
+            quality.get("front_axis_residual_rad"),
+        ),
+        "fixed_approach_role_result": quality.get(
+            "fixed_approach_role_result",
+            "accepted" if stack_center is not None and u_right is not None else "rejected",
+        ),
+        "carried_box_pose_source": held.source,
+        "carried_box_center_base_m": held.center_base_xyz_m,
+        "carried_box_yaw_base_rad": held.yaw_base_rad,
+        "eef_state_sequence": None
+        if measured_state is None
+        else getattr(measured_state, "sequence", None),
+        "eef_timestamp_s": None
+        if measured_state is None
+        else getattr(measured_state, "received_monotonic_s", None),
+        "fk_disagreement_m": None,
+        "fk_disagreement_reason": "per_eef_box_offsets_unconfigured",
+        "clearance_source": None
+        if grip_result is None
+        else getattr(grip_result, "clearance_source", None),
+        "box_bottom_z_lower_bound_m": None
+        if grip_result is None
+        else getattr(grip_result, "box_bottom_z_lower_bound_m", None),
+        "stack_top_z_upper_bound_m": None
+        if grip_result is None
+        else getattr(grip_result, "stack_top_z_upper_bound_m", None),
+        "clearance_lower_bound_m": None
+        if grip_result is None
+        else getattr(grip_result, "clearance_lower_bound_m", None),
+        "clearance_rejection_reason": None
+        if grip_result is None
+        else ";".join(getattr(grip_result, "reasons", ())),
+        "dropout_age_s": bridge.get("dropout_age_s"),
+        "odometry_prediction_used": bool(
+            bridge.get("odometry_prediction_used", False)
+        ),
+        "odometry_timestamp_s": None if odometry is None else odometry.timestamp_s,
+        "odometry_sequence": None
+        if odometry is None
+        else getattr(odometry, "sequence", None),
+        "dropout_ttl_reason": bridge.get("prediction_reason"),
+        "placement_descent_plan_id": None
+        if not isinstance(plan_payload, Mapping)
+        else plan_payload.get("plan_id"),
+        "planned_delta_z_m": None
+        if not isinstance(plan_payload, Mapping)
+        else plan_payload.get("planned_delta_z_m"),
+        "placement_descent_plan": plan_payload,
+    }
+
+
 def _telemetry_record(
     frame_id: int,
     hardware_timestamp_ms: float,
@@ -1684,7 +2155,19 @@ def _telemetry_record(
     placement: PlacementOutput | None = None,
     placement_runtime_diagnostics: Mapping[str, Any] | None = None,
     loop_timing: Mapping[str, Any] | None = None,
+    geometry: PalletGeometry | None = None,
+    estimator_config: Any | None = None,
+    bridge_diagnostics: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    controller_telemetry: Any | None = None
+    measured_state: Any | None = None
+    controller_state_error: str | None = None
+    if controller is not None:
+        controller_telemetry = controller.telemetry()
+        try:
+            measured_state = controller.get_measured_state()
+        except Exception as exc:
+            controller_state_error = f"{type(exc).__name__}:{exc}"
     proposal_accepted = dispatch_result == "nonzero_proposal_accepted"
     selected_zero = dispatch_result in {
         "state_requires_persistent_zero",
@@ -1698,6 +2181,11 @@ def _telemetry_record(
         else VelocityCommand()
         if selected_zero
         else None
+    )
+    transmitted = (
+        None
+        if not execute or controller_telemetry is None
+        else getattr(controller_telemetry, "last_sent_mobility", None)
     )
     record: dict[str, Any] = {
         "schema_version": 1,
@@ -1757,7 +2245,15 @@ def _telemetry_record(
                     "wz_radps": selected.wz_radps,
                 }
             ),
-            "transmitted_twist": None,
+            "transmitted_twist": (
+                None
+                if transmitted is None
+                else {
+                    "vx_mps": transmitted.vx_mps,
+                    "vy_mps": transmitted.vy_mps,
+                    "wz_radps": transmitted.wz_radps,
+                }
+            ),
             "diagnostics": dict(output.diagnostics),
         },
         "placement": (
@@ -1775,12 +2271,25 @@ def _telemetry_record(
             }
         ),
     }
-    if controller is not None:
-        record["whole_body_owner"] = to_jsonable(controller.telemetry())
-        try:
-            record["robot_state"] = to_jsonable(controller.get_measured_state())
-        except Exception as exc:
-            record["robot_state_error"] = f"{type(exc).__name__}:{exc}"
+    if geometry is not None:
+        record["recovery_contract"] = _recovery_contract_record(
+            scene,
+            held,
+            geometry=geometry,
+            estimator_config=estimator_config,
+            bridge_diagnostics=bridge_diagnostics,
+            odometry=odometry,
+            grip_result=grip_result,
+            placement=placement,
+            placement_runtime_diagnostics=placement_runtime_diagnostics,
+            measured_state=measured_state,
+        )
+    if controller_telemetry is not None:
+        record["whole_body_owner"] = to_jsonable(controller_telemetry)
+    if measured_state is not None:
+        record["robot_state"] = to_jsonable(measured_state)
+    elif controller_state_error is not None:
+        record["robot_state_error"] = controller_state_error
     return to_jsonable(record)
 
 
@@ -1865,6 +2374,11 @@ def run_pallet_live(
     if allow_vision_geometry_release and not auto_place_slot1:
         raise ValueError(
             "allow_vision_geometry_release is valid only with auto_place_slot1=True"
+        )
+    if auto_place_slot1 and not allow_vision_geometry_release:
+        raise ValueError(
+            "slot-1 placement requires allow_vision_geometry_release=True; "
+            "omit auto_place_slot1 for alignment-only commissioning"
         )
 
     calibration = _section(root_config, "calibration")
@@ -1972,6 +2486,10 @@ def run_pallet_live(
         ),
     )
     servo = PalletSlot1Servo(PalletServoConfig.from_root_config(root_config))
+    servo_bridge = ServoObservationBridge(
+        maximum_prediction_age_s=_MAX_ODOMETRY_PREDICTION_AGE_S,
+        odometry_freshness_s=acquisition_config.odometry_freshness_s,
+    )
     placement_config = PlacementConfig.from_root_config(root_config)
     placement_sequencer = (
         Slot1PlacementSequencer(placement_config) if auto_place_slot1 else None
@@ -2154,6 +2672,15 @@ def run_pallet_live(
                         maximum_box_height_m=maximum_box_height_m,
                         box_bottom_uncertainty_m=box_bottom_uncertainty_m,
                     )
+                    stack_uncertainty = fresh_scene_sample[
+                        "stack_top_uncertainty_m"
+                    ]
+                    if (
+                        fresh_scene_sample["stack_top_z_base_m"] is None
+                        or stack_uncertainty is None
+                        or not math.isfinite(float(stack_uncertainty))
+                    ):
+                        fresh_scene_sample = None
                 _update_scene_window(
                     scene_window,
                     frame_result_fresh=frame_result_fresh,
@@ -2179,7 +2706,7 @@ def run_pallet_live(
                         decision_now_s,
                     )
                     zero_acknowledged = _zero_command_acknowledged(controller)
-                    if frame_result_fresh:
+                    if scene_window:
                         grip_result = controller.evaluate_grip_and_clearance_dwell(
                             list(scene_window),
                             allow_fixed_ready_geometry_only=(
@@ -2197,7 +2724,7 @@ def run_pallet_live(
                         )
                     else:
                         motion_interlocks_ok = False
-                        motion_interlock_reason = "frame_processing_stale"
+                        motion_interlock_reason = "clearance_evidence_unavailable"
                 else:
                     wheel_status = None
                     wheel = None
@@ -2248,11 +2775,18 @@ def run_pallet_live(
                     stationary=stationary_for_vision,
                 )
                 acquisition_output: AcquisitionOutput | None = None
+                bridge_diagnostics: dict[str, Any] = {
+                    "odometry_prediction_used": False,
+                    "dropout_age_s": None,
+                    "prediction_ttl_s": _MAX_ODOMETRY_PREDICTION_AGE_S,
+                    "prediction_reason": "fine_servo_not_active",
+                }
+                decision_source_timestamp_s = frame_source_monotonic_s
                 if shutdown_pending:
                     decision = _shutdown_hold_output("shutdown_handoff_pending")
                     decision_owner = PalletControlOwner.SHUTDOWN_HOLD
                 elif authority.owner is PalletControlOwner.FINE_SLOT1_SERVO:
-                    measurement = (
+                    raw_measurement = (
                         _servo_measurement(
                             scene,
                             slot1_hole_reference,
@@ -2268,12 +2802,31 @@ def run_pallet_live(
                             ),
                         )
                     )
+                    measurement, bridge_diagnostics = servo_bridge.resolve(
+                        raw_measurement,
+                        odometry,
+                        now_s=decision_now_s,
+                    )
+                    fine_output = servo.update(measurement, decision_now_s, wheel)
+                    if frame_result_fresh and raw_measurement.valid:
+                        servo_bridge.commit(
+                            raw_measurement,
+                            odometry,
+                            fine_output,
+                            now_s=decision_now_s,
+                        )
+                    decision_source_timestamp_s = float(measurement.timestamp_s)
                     decision = _annotate_fine_output(
-                        servo.update(measurement, decision_now_s, wheel),
-                        measurement_source=_servo_measurement_source(
-                            scene,
-                            estimator_config.geometry,
+                        fine_output,
+                        measurement_source=(
+                            "odometry_predicted_metric_stack"
+                            if bridge_diagnostics.get("odometry_prediction_used")
+                            else _servo_measurement_source(
+                                scene,
+                                estimator_config.geometry,
+                            )
                         ),
+                        bridge_diagnostics=bridge_diagnostics,
                     )
                     decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
                 else:
@@ -2345,6 +2898,7 @@ def run_pallet_live(
                                 scene,
                                 estimator_config.geometry,
                             ),
+                            bridge_diagnostics=bridge_diagnostics,
                         )
                         decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
                     else:
@@ -2368,6 +2922,11 @@ def run_pallet_live(
                     decision = _placement_zero_hold_output(decision)
                     decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
 
+                decision_source_max_age_s = (
+                    _MAX_ODOMETRY_PREDICTION_AGE_S
+                    if bridge_diagnostics.get("odometry_prediction_used")
+                    else _MAX_LIVE_CONTROL_RESULT_AGE_S
+                )
                 dispatch_result = "dry_run_no_actuation"
                 if execute:
                     assert controller is not None
@@ -2377,7 +2936,8 @@ def run_pallet_live(
                         decision_owner,
                         decision,
                         motion_interlocks_ok=motion_interlocks_ok,
-                        source_timestamp_s=frame_source_monotonic_s,
+                        source_timestamp_s=decision_source_timestamp_s,
+                        source_max_age_s=decision_source_max_age_s,
                     )
 
                 placement_output: PlacementOutput | None = None
@@ -2407,12 +2967,30 @@ def run_pallet_live(
                         allow_vision_geometry_release=allow_vision_geometry_release,
                     )
                     placement_output = placement_sequencer.update(sample)
-                    if (
+                    fault_dispatch = _dispatch_placement_fault_hold_if_needed(
+                        controller,
+                        placement_output,
+                        lowering_started=placement_lowering_started,
+                        release_started=placement_release_started,
+                    )
+                    if fault_dispatch is not None:
+                        placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                            fault_dispatch
+                        )
+                    elif (
                         placement_output.request
-                        is PlacementRequest.LOWER_CARTESIAN_50MM
+                        is PlacementRequest.LOWER_CARTESIAN_PLANNED
                         and not placement_lowering_started
                     ):
-                        controller.start_cartesian_lowering_hold()
+                        descent_plan = placement_output.descent_plan
+                        if descent_plan is None or not descent_plan.valid:
+                            raise RuntimeError(
+                                "planned Cartesian lowering requires a valid frozen "
+                                "PlacementDescentPlan"
+                            )
+                        controller.start_cartesian_lowering_hold(
+                            descent_plan=descent_plan
+                        )
                         placement_lowering_started = True
                         assert containment is not None
                         containment.mark_robot_touch()
@@ -2513,6 +3091,9 @@ def run_pallet_live(
                         or last_placement_runtime_diagnostics
                     ),
                     loop_timing=loop_timing,
+                    geometry=estimator_config.geometry,
+                    estimator_config=estimator_config,
+                    bridge_diagnostics=bridge_diagnostics,
                 )
                 _write_record(log_stream, record)
                 if frame_count % fps == 0:
@@ -2611,6 +3192,7 @@ __all__ = [
     "HeldPoseProxy",
     "LiveFrameGate",
     "LiveCameraContract",
+    "ServoObservationBridge",
     "configured_T_base_from_depth",
     "measured_T_base_from_depth",
     "run_pallet_live",

@@ -31,7 +31,7 @@ from .pallet_control_feedback import (
     parse_component_feedback,
     raise_for_terminal_feedback,
 )
-from .pallet_place import PlacementConfig
+from .pallet_place import PlacementConfig, PlacementDescentPlan
 from .pallet_servo import PalletServoConfig
 
 
@@ -142,6 +142,12 @@ def _readonly_se2_matrix(value: Any, name: str) -> np.ndarray:
     return result
 
 
+def _rotation_error_rad(left: np.ndarray, right: np.ndarray) -> float:
+    relative = left[:3, :3].T @ right[:3, :3]
+    cosine = float(np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0))
+    return math.acos(cosine)
+
+
 def _read_field(item: Any, name: str, default: Any = None) -> Any:
     if isinstance(item, Mapping):
         return item.get(name, default)
@@ -210,7 +216,8 @@ class PalletControlConfig:
     held_top_std_m: float = 0.005
     held_top_downward_drift_m: float = 0.005
     held_top_direct_plane_dwell_frames: int = 5
-    held_top_sample_fresh_after_s: float = 0.20
+    held_top_sample_fresh_after_s: float = 0.30
+    clearance_evidence_fresh_after_s: float = 0.30
     clearance_scene_max_span_s: float = 0.50
     maximum_box_height_m: float = 0.164
     minimum_clearance_m: float = 0.050
@@ -223,7 +230,6 @@ class PalletControlConfig:
     placement_angular_velocity_limit_radps: float = 0.20
     placement_linear_acceleration_limit_mps2: float = 0.08
     placement_angular_acceleration_limit_radps2: float = 0.30
-    placement_lowering_distance_m: float = 0.050
     # Preserve the same 150 mm inward Cartesian target offset used by the
     # box-pick lift command.  It is a compliant target error, not a requested
     # physical penetration into the carton.
@@ -280,6 +286,7 @@ class PalletControlConfig:
             "maximum_eef_separation_peak_to_peak_m",
             "maximum_eef_separation_axis_std_m",
             "maximum_scene_evidence_span_s",
+            "clearance_evidence_fresh_after_s",
             "fixed_ready_geometry_only_commissioning_enabled",
         }
         unknown_grip_keys = sorted(set(grip_interlock) - grip_interlock_keys)
@@ -435,6 +442,12 @@ class PalletControlConfig:
                     defaults.held_top_sample_fresh_after_s,
                 )
             ),
+            clearance_evidence_fresh_after_s=float(
+                grip_interlock.get(
+                    "clearance_evidence_fresh_after_s",
+                    defaults.clearance_evidence_fresh_after_s,
+                )
+            ),
             clearance_scene_max_span_s=float(
                 grip_interlock.get(
                     "maximum_scene_evidence_span_s",
@@ -475,12 +488,6 @@ class PalletControlConfig:
                 placement.get(
                     "angular_acceleration_limit_radps2",
                     defaults.placement_angular_acceleration_limit_radps2,
-                )
-            ),
-            placement_lowering_distance_m=float(
-                placement.get(
-                    "lowering_distance_m",
-                    defaults.placement_lowering_distance_m,
                 )
             ),
             placement_squeeze_offset_m=float(
@@ -567,6 +574,7 @@ class PalletControlConfig:
             "held_top_std_m",
             "held_top_downward_drift_m",
             "held_top_sample_fresh_after_s",
+            "clearance_evidence_fresh_after_s",
             "clearance_scene_max_span_s",
             "maximum_box_height_m",
             "minimum_clearance_m",
@@ -575,7 +583,6 @@ class PalletControlConfig:
             "placement_angular_velocity_limit_radps",
             "placement_linear_acceleration_limit_mps2",
             "placement_angular_acceleration_limit_radps2",
-            "placement_lowering_distance_m",
             "placement_squeeze_offset_m",
             "placement_release_spread_m",
             "placement_max_release_spread_m",
@@ -627,8 +634,12 @@ class PalletControlConfig:
             raise ValueError(
                 "held-top direct-plane dwell must contain at least 5 frames"
             )
-        if self.held_top_sample_fresh_after_s > 0.20 + 1e-12:
-            raise ValueError("held-top evidence freshness cannot exceed 0.20 seconds")
+        if self.held_top_sample_fresh_after_s > 0.30 + 1e-12:
+            raise ValueError(
+                "fixed-ready box-bottom capture freshness cannot exceed 0.30 seconds"
+            )
+        if abs(self.clearance_evidence_fresh_after_s - 0.30) > 1e-12:
+            raise ValueError("clearance evidence freshness must be exactly 0.30 seconds")
         if self.clearance_scene_max_span_s > 0.50 + 1e-12:
             raise ValueError("clearance scene evidence span cannot exceed 0.50 seconds")
         if self.maximum_box_height_m < 0.164 - 1e-12:
@@ -655,8 +666,6 @@ class PalletControlConfig:
             raise ValueError(
                 "placement angular acceleration cannot exceed 0.50 rad/s^2"
             )
-        if abs(self.placement_lowering_distance_m - 0.050) > 1e-12:
-            raise ValueError("placement lowering distance must be exactly 0.050 m")
         if self.placement_squeeze_offset_m > 0.150 + 1e-12:
             raise ValueError("placement squeeze offset cannot exceed 150 mm")
         if self.placement_release_spread_m > self.placement_max_release_spread_m:
@@ -726,6 +735,7 @@ class ArmStreamMode(str, Enum):
     CARTESIAN_LOADED_HOLD = "CARTESIAN_LOADED_HOLD"
     CARTESIAN_PLACEMENT_LOWERING = "CARTESIAN_PLACEMENT_LOWERING"
     CARTESIAN_PLACEMENT_RELEASE = "CARTESIAN_PLACEMENT_RELEASE"
+    CARTESIAN_PLACEMENT_FAIL_CLOSED_HOLD = "CARTESIAN_PLACEMENT_FAIL_CLOSED_HOLD"
 
 
 @dataclass(frozen=True, slots=True)
@@ -743,6 +753,7 @@ class CartesianArmTarget:
     lowering_distance_m: float = 0.0
     squeeze_offset_m: float = 0.0
     release_spread_m: float = 0.0
+    descent_plan_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, ArmStreamMode):
@@ -797,6 +808,11 @@ class CartesianArmTarget:
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
+        if self.descent_plan_id is not None:
+            plan_id = str(self.descent_plan_id).strip()
+            if not plan_id:
+                raise ValueError("descent_plan_id must not be empty when provided")
+            object.__setattr__(self, "descent_plan_id", plan_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -816,6 +832,7 @@ class PlacementTelemetry:
     target_acknowledged: bool
     acknowledged_command_sequence: int
     last_reason: str | None = None
+    descent_plan_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -994,6 +1011,8 @@ class GripContinuityResult:
     held_top_std_m: float | None
     held_top_downward_drift_m: float | None
     clearance_lower_bound_m: float | None
+    box_bottom_z_lower_bound_m: float | None = None
+    stack_top_z_upper_bound_m: float | None = None
     scene_evidence_span_s: float | None = None
     scene_latest_age_s: float | None = None
     scene_max_capture_age_at_acceptance_s: float | None = None
@@ -1758,17 +1777,19 @@ class RBY1PalletController:
     def start_cartesian_lowering_hold(
         self,
         *,
+        descent_plan: PlacementDescentPlan,
         squeeze_offset_m: float | None = None,
     ) -> CartesianArmTarget:
         """Switch the persistent stream to bilateral Cartesian lowering targets.
 
-        The target is exactly 50 mm downward in the RB-Y1 base z axis from the
-        acknowledged loaded-hold target, transformed into ``link_torso_5`` for
-        the SDK using fresh torso FK.  Entry is allowed only after an
-        acknowledged zero latch, a fresh wheel-stop dwell, and healthy Running
-        stream feedback.
+        The target comes from a frozen ``PlacementDescentPlan`` built after
+        arrival and wheel-stop.  The 50 mm value remains a pre-motion clearance
+        floor; it is not the commanded descent distance.  Entry is allowed only
+        after an acknowledged zero latch, a fresh wheel-stop dwell, and healthy
+        Running stream feedback.
         """
 
+        self._validate_descent_plan(descent_plan)
         requested_squeeze = (
             None
             if squeeze_offset_m is None
@@ -1790,6 +1811,7 @@ class RBY1PalletController:
         target = self._make_lowering_target_from_loaded_hold(
             state,
             loaded_target=loaded_target,
+            descent_plan=descent_plan,
             requested_squeeze_offset_m=requested_squeeze,
         )
         with self._condition:
@@ -1816,11 +1838,13 @@ class RBY1PalletController:
         state: MeasuredRobotState,
         *,
         loaded_target: CartesianArmTarget,
+        descent_plan: PlacementDescentPlan,
         requested_squeeze_offset_m: float | None,
     ) -> CartesianArmTarget:
-        """Lower from the commanded loaded-hold target, not measured compliance."""
+        """Lower from the immutable placement plan, not a fixed config delta."""
 
         self._validate_cartesian_state(state)
+        self._validate_descent_plan(descent_plan)
         if loaded_target.mode is not ArmStreamMode.CARTESIAN_LOADED_HOLD:
             raise ValueError("loaded_target must be a loaded-hold target")
         adopted_squeeze = float(loaded_target.squeeze_offset_m)
@@ -1834,22 +1858,11 @@ class RBY1PalletController:
         T_base_torso = self._T_base_torso_for_cartesian(state)
         if T_base_torso is None:
             raise MeasuredStateError("T_base_torso unexpectedly missing")
-        base_z = np.asarray(
-            (0.0, 0.0, -self.config.placement_lowering_distance_m),
-            dtype=np.float64,
-        )
-        right_base = np.array(
-            loaded_target.right_T_base_eef,
-            dtype=np.float64,
-            copy=True,
-        )
-        left_base = np.array(
-            loaded_target.left_T_base_eef,
-            dtype=np.float64,
-            copy=True,
-        )
-        right_base[:3, 3] += base_z
-        left_base[:3, 3] += base_z
+        if state.T_base_right_eef is None or state.T_base_left_eef is None:
+            raise MeasuredStateError("EEF FK unexpectedly missing")
+        self._validate_descent_plan_matches_state(descent_plan, state)
+        right_base = np.array(descent_plan.right_target_base, dtype=np.float64, copy=True)
+        left_base = np.array(descent_plan.left_target_base, dtype=np.float64, copy=True)
         T_torso_base = np.linalg.inv(T_base_torso)
         axis = tuple(float(value) for value in loaded_target.inter_eef_axis_base)
         return CartesianArmTarget(
@@ -1863,10 +1876,77 @@ class RBY1PalletController:
             inter_eef_axis_base=axis,
             created_monotonic_s=self._clock(),
             source_state_sequence=state.sequence,
-            lowering_distance_m=self.config.placement_lowering_distance_m,
+            lowering_distance_m=descent_plan.planned_delta_z_m,
             squeeze_offset_m=adopted_squeeze,
             release_spread_m=loaded_target.release_spread_m,
+            descent_plan_id=descent_plan.plan_id,
         )
+
+    def _validate_descent_plan(self, descent_plan: PlacementDescentPlan) -> None:
+        if not isinstance(descent_plan, PlacementDescentPlan):
+            raise TypeError("descent_plan must be a PlacementDescentPlan")
+        if not descent_plan.valid:
+            with self._condition:
+                self._placement_fail_closed_locked("descent_plan_invalid")
+            raise CombinedStreamError(
+                "cartesian lowering requires a valid descent plan: "
+                f"{descent_plan.rejection_reason}"
+            )
+        if descent_plan.min_delta_z_m < self.config.minimum_clearance_m - 1e-12:
+            with self._condition:
+                self._placement_fail_closed_locked("descent_plan_clearance_below_floor")
+            raise CombinedStreamError(
+                "descent plan violates the 50 mm pre-motion clearance floor"
+            )
+        if (
+            descent_plan.box_bottom_z_lower_bound_m
+            - descent_plan.stack_top_z_upper_bound_m
+            < self.config.minimum_clearance_m - 1e-12
+        ):
+            with self._condition:
+                self._placement_fail_closed_locked("descent_plan_bounds_below_floor")
+            raise CombinedStreamError(
+                "descent plan box-bottom/stack-top bounds violate the clearance floor"
+            )
+
+    def _validate_descent_plan_matches_state(
+        self,
+        descent_plan: PlacementDescentPlan,
+        state: MeasuredRobotState,
+    ) -> None:
+        if state.T_base_right_eef is None or state.T_base_left_eef is None:
+            raise MeasuredStateError("EEF FK unexpectedly missing")
+        translation_tolerance_m = max(0.015, self.config.minimum_clearance_m * 0.25)
+        rotation_tolerance_rad = math.radians(3.0)
+        right_translation_error = float(
+            np.linalg.norm(
+                state.T_base_right_eef[:3, 3] - descent_plan.right_eef_base[:3, 3]
+            )
+        )
+        left_translation_error = float(
+            np.linalg.norm(
+                state.T_base_left_eef[:3, 3] - descent_plan.left_eef_base[:3, 3]
+            )
+        )
+        right_rotation_error = _rotation_error_rad(
+            state.T_base_right_eef,
+            descent_plan.right_eef_base,
+        )
+        left_rotation_error = _rotation_error_rad(
+            state.T_base_left_eef,
+            descent_plan.left_eef_base,
+        )
+        if (
+            right_translation_error > translation_tolerance_m
+            or left_translation_error > translation_tolerance_m
+            or right_rotation_error > rotation_tolerance_rad
+            or left_rotation_error > rotation_tolerance_rad
+        ):
+            with self._condition:
+                self._placement_fail_closed_locked("descent_plan_eef_mismatch")
+            raise MeasuredStateError(
+                "current EEF FK does not match frozen descent plan provenance"
+            )
 
     def start_cartesian_release_hold(
         self,
@@ -1914,6 +1994,45 @@ class RBY1PalletController:
             self._condition.notify_all()
         return target
 
+    def fail_closed_cartesian_placement_hold(
+        self,
+        *,
+        reason: str,
+    ) -> CartesianArmTarget | None:
+        """Abort active placement into exact-zero mobility and measured arm hold."""
+
+        reason_text = str(reason).strip() or "placement_fault"
+        try:
+            state = self.get_measured_state()
+            target = self._make_measured_cartesian_hold_target(
+                state,
+                mode=ArmStreamMode.CARTESIAN_PLACEMENT_FAIL_CLOSED_HOLD,
+            )
+        except MeasuredStateError:
+            with self._condition:
+                self._placement_fail_closed_locked(
+                    f"{reason_text}:measured_cartesian_hold_unavailable"
+                )
+                if self._placement_started:
+                    self._phase = ControllerPhase.FAULT_HOLD
+                    self._condition.notify_all()
+            return None
+
+        with self._condition:
+            if not self._placement_started:
+                self._placement_fail_closed_locked(reason_text)
+                return None
+            self._arm_stream_mode = target.mode
+            self._cartesian_arm_target = target
+            self._placement_last_reason = reason_text
+            self._zero_latched = True
+            self._latest_proposal = ZERO_MOBILITY
+            self._latest_proposal_s = self._clock()
+            self._body_target_token = self._make_body_target_token()
+            self._proposal_generation += 1
+            self._condition.notify_all()
+        return target
+
     def placement_telemetry(self) -> PlacementTelemetry:
         with self._condition:
             state = self._latest_state
@@ -1958,6 +2077,7 @@ class RBY1PalletController:
                     self._last_acknowledged_command_sequence
                 ),
                 last_reason=self._placement_last_reason,
+                descent_plan_id=None if target is None else target.descent_plan_id,
             )
 
     def get_measured_odometry(self) -> tuple[np.ndarray, int, float]:
@@ -2158,6 +2278,8 @@ class RBY1PalletController:
         previous_capture_timestamp_s: float | None = None
         previous_accepted_monotonic_s: float | None = None
         previous_stack_source: str | None = None
+        previous_stack_z_m: float | None = None
+        previous_stack_uncertainty_m: float | None = None
         continuity_rejection: str | None = None
         for accepted_window_index, scene in enumerate(scene_window, start=1):
             pose_source = str(_read_field(scene, "held_box_pose_source", ""))
@@ -2169,6 +2291,8 @@ class RBY1PalletController:
             stack_source_valid = stack_source in {
                 "complete_stack_plane",
                 "metric_stack_plane_candidate",
+                "metric_fixed_outer_l_corner_plane",
+                "metric_inner_opening_plane",
                 "metric_coarse_l_corner_plane",
                 "metric_forward_edge_pair_plane",
             }
@@ -2193,7 +2317,9 @@ class RBY1PalletController:
                 previous_capture_timestamp_s = None
                 previous_accepted_monotonic_s = None
                 previous_stack_source = None
-                continuity_rejection = "held_top_frame_identity_unavailable"
+                previous_stack_z_m = None
+                previous_stack_uncertainty_m = None
+                continuity_rejection = "clearance_eef_box_bottom_frame_identity_unavailable"
                 continue
             identity_valid = (
                 not isinstance(frame_id_raw, bool)
@@ -2227,6 +2353,8 @@ class RBY1PalletController:
                 previous_capture_timestamp_s = None
                 previous_accepted_monotonic_s = None
                 previous_stack_source = None
+                previous_stack_z_m = None
+                previous_stack_uncertainty_m = None
                 continuity_rejection = (
                     "clearance_evidence_stale_at_acceptance"
                     if identity_valid and not accepted_fresh
@@ -2254,6 +2382,8 @@ class RBY1PalletController:
                 previous_capture_timestamp_s = None
                 previous_accepted_monotonic_s = None
                 previous_stack_source = None
+                previous_stack_z_m = None
+                previous_stack_uncertainty_m = None
                 continuity_rejection = (
                     "fixed_ready_stack_plane_source_invalid"
                     if not stack_source_valid
@@ -2264,18 +2394,42 @@ class RBY1PalletController:
             if previous_frame_id is not None:
                 if frame_id <= previous_frame_id:
                     direct_plane_run.clear()
-                    continuity_rejection = "clearance_source_frame_not_monotonic"
+                    continuity_rejection = "clearance_frame_not_monotonic"
                 elif (
                     previous_observation_sequence is None
-                    or observation_sequence != previous_observation_sequence + 1
+                    or observation_sequence <= previous_observation_sequence
                     or previous_capture_timestamp_s is None
                     or capture_timestamp_s <= previous_capture_timestamp_s
                     or previous_accepted_monotonic_s is None
                     or accepted_monotonic_s <= previous_accepted_monotonic_s
-                    or stack_source != previous_stack_source
                 ):
                     direct_plane_run.clear()
-                    continuity_rejection = "clearance_evidence_not_contiguous"
+                    continuity_rejection = "clearance_evidence_not_monotonic"
+                elif stack_source != previous_stack_source:
+                    source_dt_s = accepted_monotonic_s - previous_accepted_monotonic_s
+                    previous_stack_upper = (
+                        float(previous_stack_z_m)
+                        + float(previous_stack_uncertainty_m)
+                        + self.config.held_top_std_m
+                    )
+                    previous_stack_lower = (
+                        float(previous_stack_z_m)
+                        - float(previous_stack_uncertainty_m)
+                        - self.config.held_top_std_m
+                    )
+                    current_stack_upper = stack_value + stack_sigma + self.config.held_top_std_m
+                    current_stack_lower = stack_value - stack_sigma - self.config.held_top_std_m
+                    height_consistent = (
+                        current_stack_lower <= previous_stack_upper
+                        and previous_stack_lower <= current_stack_upper
+                    )
+                    if (
+                        source_dt_s < -1e-12
+                        or source_dt_s > self.config.clearance_evidence_fresh_after_s
+                        or not height_consistent
+                    ):
+                        direct_plane_run.clear()
+                        continuity_rejection = "clearance_stack_height_source_change_rejected"
 
             direct_plane_run.append(
                 _ClearanceSceneSample(
@@ -2292,6 +2446,8 @@ class RBY1PalletController:
             previous_capture_timestamp_s = capture_timestamp_s
             previous_accepted_monotonic_s = accepted_monotonic_s
             previous_stack_source = stack_source
+            previous_stack_z_m = stack_value
+            previous_stack_uncertainty_m = stack_sigma
 
         required_direct_frames = self.config.held_top_direct_plane_dwell_frames
         if len(direct_plane_run) > required_direct_frames:
@@ -2315,15 +2471,17 @@ class RBY1PalletController:
         held_std: float | None = None
         held_drift: float | None = None
         clearance: float | None = None
+        box_bottom_lower_bound: float | None = None
+        stack_top_upper_bound: float | None = None
         evidence_span_s: float | None = None
         latest_age_s: float | None = None
         max_capture_age_at_acceptance_s: float | None = None
         clearance_source = "fixed_ready_dual_eef_box_bottom_to_stack_plane"
         if len(held_top_z) < required_direct_frames:
             reasons.append(
-                continuity_rejection or "insufficient_contiguous_held_top_frames"
+                continuity_rejection or "insufficient_clearance_box_bottom_samples"
             )
-            reasons.append("insufficient_contiguous_held_top_frames")
+            reasons.append("insufficient_clearance_box_bottom_samples")
         else:
             evidence_span_s = accepted_timestamps[-1] - accepted_timestamps[0]
             latest_age_s = now_s - accepted_timestamps[-1]
@@ -2331,9 +2489,9 @@ class RBY1PalletController:
             if (
                 not math.isfinite(latest_age_s)
                 or latest_age_s < 0.0
-                or latest_age_s > self.config.held_top_sample_fresh_after_s
+                or latest_age_s > self.config.clearance_evidence_fresh_after_s
             ):
-                reasons.append("held_top_evidence_stale")
+                reasons.append("clearance_eef_box_bottom_evidence_stale")
             if (
                 not math.isfinite(evidence_span_s)
                 or evidence_span_s < 0.0
@@ -2344,22 +2502,22 @@ class RBY1PalletController:
             held_std = float(np.std(held_array))
             held_drift = max(0.0, float(held_array[0] - held_array[-1]))
             if float(np.ptp(held_array)) > self.config.held_top_peak_to_peak_m:
-                reasons.append("held_top_peak_to_peak")
+                reasons.append("fixed_ready_box_bottom_peak_to_peak")
             if held_std > self.config.held_top_std_m:
-                reasons.append("held_top_std")
+                reasons.append("fixed_ready_box_bottom_std")
             if held_drift > self.config.held_top_downward_drift_m:
-                reasons.append("held_top_downward_drift")
-            held_lower = min(
+                reasons.append("fixed_ready_box_bottom_downward_drift")
+            box_bottom_lower_bound = min(
                 z - uncertainty
                 for z, uncertainty in zip(held_top_z, held_top_uncertainty, strict=True)
             )
-            stack_upper = max(
+            stack_top_upper_bound = max(
                 z + uncertainty
                 for z, uncertainty in zip(
                     stack_top_z, stack_top_uncertainty, strict=True
                 )
             )
-            clearance = held_lower - stack_upper
+            clearance = box_bottom_lower_bound - stack_top_upper_bound
             if clearance < self.config.minimum_clearance_m:
                 reasons.append("insufficient_vertical_clearance")
 
@@ -2376,6 +2534,8 @@ class RBY1PalletController:
             held_top_std_m=held_std,
             held_top_downward_drift_m=held_drift,
             clearance_lower_bound_m=clearance,
+            box_bottom_z_lower_bound_m=box_bottom_lower_bound,
+            stack_top_z_upper_bound_m=stack_top_upper_bound,
             scene_evidence_span_s=evidence_span_s,
             scene_latest_age_s=latest_age_s,
             scene_max_capture_age_at_acceptance_s=(
@@ -3149,6 +3309,41 @@ class RBY1PalletController:
             lowering_distance_m=lowering_target.lowering_distance_m,
             squeeze_offset_m=0.0,
             release_spread_m=float(release_spread_m),
+            descent_plan_id=lowering_target.descent_plan_id,
+        )
+
+    def _make_measured_cartesian_hold_target(
+        self,
+        state: MeasuredRobotState,
+        *,
+        mode: ArmStreamMode,
+    ) -> CartesianArmTarget:
+        self._validate_cartesian_state(state)
+        T_base_torso = self._T_base_torso_for_cartesian(state)
+        if T_base_torso is None:
+            raise MeasuredStateError("T_base_torso unexpectedly missing")
+        if state.T_base_right_eef is None or state.T_base_left_eef is None:
+            raise MeasuredStateError("EEF FK unexpectedly missing")
+        right_base = np.array(state.T_base_right_eef, dtype=np.float64, copy=True)
+        left_base = np.array(state.T_base_left_eef, dtype=np.float64, copy=True)
+        axis = right_base[:3, 3] - left_base[:3, 3]
+        axis_norm = float(np.linalg.norm(axis))
+        if not math.isfinite(axis_norm) or axis_norm < 0.10:
+            raise MeasuredStateError("measured inter-EEF axis is invalid")
+        axis /= axis_norm
+        T_torso_base = np.linalg.inv(T_base_torso)
+        right_nullspace, left_nullspace = self._arm_joint_vectors_for_target(state)
+        return CartesianArmTarget(
+            mode=mode,
+            right_T_torso_eef=T_torso_base @ right_base,
+            left_T_torso_eef=T_torso_base @ left_base,
+            right_T_base_eef=right_base,
+            left_T_base_eef=left_base,
+            right_nullspace_joint_rad=right_nullspace,
+            left_nullspace_joint_rad=left_nullspace,
+            inter_eef_axis_base=tuple(float(value) for value in axis),
+            created_monotonic_s=self._clock(),
+            source_state_sequence=state.sequence,
         )
 
     def _T_base_torso_for_cartesian(

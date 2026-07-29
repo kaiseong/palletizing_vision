@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 from typing import Any, Mapping
+import uuid
 
 import numpy as np
 
@@ -79,13 +80,14 @@ class PlacementState(str, Enum):
 
 class PlacementRequest(str, Enum):
     HOLD_CURRENT = "HOLD_CURRENT"
-    LOWER_CARTESIAN_50MM = "LOWER_CARTESIAN_50MM"
+    LOWER_CARTESIAN_PLANNED = "LOWER_CARTESIAN_PLANNED"
     SPREAD_RELEASE = "SPREAD_RELEASE"
 
 
 @dataclass(frozen=True, slots=True)
 class PlacementConfig:
-    lowering_distance_m: float = 0.050
+    pre_motion_clearance_floor_m: float = 0.050
+    maximum_descent_m: float = 0.250
     pre_place_verify_dwell_s: float = 0.15
     lowering_timeout_s: float = 4.0
     seated_dwell_s: float = 0.35
@@ -98,8 +100,6 @@ class PlacementConfig:
     release_target_translation_tolerance_m: float = 0.012
     release_target_rotation_tolerance_rad: float = math.radians(4.0)
     release_spread_m: float = 0.080
-    vision_seating_residual_min_m: float = -0.020
-    vision_seating_residual_max_m: float = 0.010
     vision_seating_max_uncertainty_m: float = 0.015
     vision_evidence_fresh_after_s: float = 0.30
     vision_plan_valid_for_s: float = 5.0
@@ -108,7 +108,8 @@ class PlacementConfig:
 
     def __post_init__(self) -> None:
         for name in (
-            "lowering_distance_m",
+            "pre_motion_clearance_floor_m",
+            "maximum_descent_m",
             "lowering_timeout_s",
             "release_timeout_s",
             "feedback_stale_s",
@@ -130,20 +131,16 @@ class PlacementConfig:
             "release_target_dwell_s",
         ):
             object.__setattr__(self, name, _nonnegative(getattr(self, name), name))
-        if abs(self.lowering_distance_m - 0.050) > 1e-12:
-            raise ValueError("slot-1 commissioning lowering must be exactly 0.050 m")
-        residual_min = _finite(
-            self.vision_seating_residual_min_m,
-            "vision_seating_residual_min_m",
-        )
-        residual_max = _finite(
-            self.vision_seating_residual_max_m,
-            "vision_seating_residual_max_m",
-        )
-        if residual_min >= residual_max:
-            raise ValueError("vision seating residual min must be below max")
-        object.__setattr__(self, "vision_seating_residual_min_m", residual_min)
-        object.__setattr__(self, "vision_seating_residual_max_m", residual_max)
+        if self.pre_motion_clearance_floor_m < 0.050 - 1e-12:
+            raise ValueError("pre-motion clearance floor cannot be below 50 mm")
+        if self.maximum_descent_m > 0.300 + 1e-12:
+            raise ValueError("maximum planned descent cannot exceed 300 mm")
+        if self.vision_seating_max_uncertainty_m > 0.030 + 1e-12:
+            raise ValueError("descent uncertainty limit cannot exceed 30 mm")
+        if self.vision_plan_valid_for_s < self.lowering_timeout_s:
+            raise ValueError(
+                "vision plan validity must cover the full lowering timeout"
+            )
         if int(self.vision_evidence_min_samples) < 2:
             raise ValueError("vision_evidence_min_samples must be at least 2")
         object.__setattr__(
@@ -168,7 +165,8 @@ class PlacementConfig:
             "angular_velocity_limit_radps",
             "linear_acceleration_limit_mps2",
             "angular_acceleration_limit_radps2",
-            "lowering_distance_m",
+            "pre_motion_clearance_floor_m",
+            "maximum_descent_m",
             "squeeze_offset_m",
             "release_spread_m",
             "maximum_release_spread_m",
@@ -189,8 +187,6 @@ class PlacementConfig:
             "lower_rotation_tolerance_deg",
             "release_target_translation_tolerance_m",
             "release_target_rotation_tolerance_deg",
-            "vision_seating_residual_min_m",
-            "vision_seating_residual_max_m",
             "vision_seating_max_uncertainty_m",
             "vision_evidence_fresh_after_s",
             "vision_plan_valid_for_s",
@@ -205,8 +201,14 @@ class PlacementConfig:
 
         defaults = cls()
         return cls(
-            lowering_distance_m=float(
-                raw.get("lowering_distance_m", defaults.lowering_distance_m)
+            pre_motion_clearance_floor_m=float(
+                raw.get(
+                    "pre_motion_clearance_floor_m",
+                    defaults.pre_motion_clearance_floor_m,
+                )
+            ),
+            maximum_descent_m=float(
+                raw.get("maximum_descent_m", defaults.maximum_descent_m)
             ),
             pre_place_verify_dwell_s=float(
                 raw.get(
@@ -268,18 +270,6 @@ class PlacementConfig:
             release_spread_m=float(
                 raw.get("release_spread_m", defaults.release_spread_m)
             ),
-            vision_seating_residual_min_m=float(
-                raw.get(
-                    "vision_seating_residual_min_m",
-                    defaults.vision_seating_residual_min_m,
-                )
-            ),
-            vision_seating_residual_max_m=float(
-                raw.get(
-                    "vision_seating_residual_max_m",
-                    defaults.vision_seating_residual_max_m,
-                )
-            ),
             vision_seating_max_uncertainty_m=float(
                 raw.get(
                     "vision_seating_max_uncertainty_m",
@@ -314,6 +304,116 @@ class PlacementConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PlacementDescentPlan:
+    plan_id: str
+    freeze_monotonic_s: float
+    planned_delta_z_m: float
+    min_delta_z_m: float
+    max_delta_z_m: float
+    gap_m: float
+    gap_uncertainty_m: float
+    box_bottom_z_lower_bound_m: float
+    stack_top_z_upper_bound_m: float
+    stack_plane_z_base_m: float
+    stack_plane_uncertainty_m: float
+    stack_plane_timestamp_s: float
+    stack_plane_sequence: int
+    bilateral_eef_timestamp_s: float
+    bilateral_eef_state_sequence: int
+    right_eef_base: Any
+    left_eef_base: Any
+    right_target_base: Any
+    left_target_base: Any
+    valid: bool
+    rejection_reason: str | None
+    source: str
+
+    def __post_init__(self) -> None:
+        plan_id = str(self.plan_id).strip()
+        if not plan_id:
+            raise ValueError("plan_id must not be empty")
+        object.__setattr__(self, "plan_id", plan_id)
+        source = str(self.source).strip()
+        if not source:
+            raise ValueError("source must not be empty")
+        object.__setattr__(self, "source", source)
+        for name in (
+            "freeze_monotonic_s",
+            "planned_delta_z_m",
+            "min_delta_z_m",
+            "max_delta_z_m",
+            "gap_m",
+            "box_bottom_z_lower_bound_m",
+            "stack_top_z_upper_bound_m",
+            "stack_plane_z_base_m",
+            "stack_plane_timestamp_s",
+            "bilateral_eef_timestamp_s",
+        ):
+            object.__setattr__(self, name, _finite(getattr(self, name), name))
+        for name in (
+            "gap_uncertainty_m",
+            "stack_plane_uncertainty_m",
+        ):
+            object.__setattr__(self, name, _nonnegative(getattr(self, name), name))
+        if self.planned_delta_z_m <= 0.0:
+            raise ValueError("planned_delta_z_m must be positive")
+        if self.min_delta_z_m <= 0.0 or self.max_delta_z_m <= 0.0:
+            raise ValueError("delta bounds must be positive")
+        if self.min_delta_z_m > self.planned_delta_z_m + 1e-12:
+            raise ValueError("min_delta_z_m cannot exceed planned_delta_z_m")
+        if self.planned_delta_z_m > self.max_delta_z_m + 1e-12:
+            raise ValueError("planned_delta_z_m cannot exceed max_delta_z_m")
+        for name in ("stack_plane_sequence", "bilateral_eef_state_sequence"):
+            sequence = int(getattr(self, name))
+            if sequence < 1:
+                raise ValueError(f"{name} must be positive")
+            object.__setattr__(self, name, sequence)
+        object.__setattr__(
+            self,
+            "right_eef_base",
+            _readonly_transform(self.right_eef_base, "right_eef_base"),
+        )
+        object.__setattr__(
+            self,
+            "left_eef_base",
+            _readonly_transform(self.left_eef_base, "left_eef_base"),
+        )
+        object.__setattr__(
+            self,
+            "right_target_base",
+            _readonly_transform(self.right_target_base, "right_target_base"),
+        )
+        object.__setattr__(
+            self,
+            "left_target_base",
+            _readonly_transform(self.left_target_base, "left_target_base"),
+        )
+        expected_right_target = np.array(self.right_eef_base, dtype=np.float64, copy=True)
+        expected_left_target = np.array(self.left_eef_base, dtype=np.float64, copy=True)
+        expected_right_target[2, 3] -= self.planned_delta_z_m
+        expected_left_target[2, 3] -= self.planned_delta_z_m
+        if not np.allclose(
+            self.right_target_base,
+            expected_right_target,
+            rtol=0.0,
+            atol=1e-9,
+        ) or not np.allclose(
+            self.left_target_base,
+            expected_left_target,
+            rtol=0.0,
+            atol=1e-9,
+        ):
+            raise ValueError("target transforms must match planned_delta_z_m")
+        reason = None if self.rejection_reason is None else str(self.rejection_reason)
+        object.__setattr__(self, "valid", bool(self.valid))
+        if not self.valid:
+            raise ValueError("PlacementDescentPlan must be valid")
+        if reason:
+            raise ValueError("valid descent plan cannot carry a rejection reason")
+        object.__setattr__(self, "rejection_reason", reason)
+
+
+@dataclass(frozen=True, slots=True)
 class PlacementInput:
     now_s: float
     feedback_timestamp_s: float
@@ -333,6 +433,17 @@ class PlacementInput:
     predicted_box_bottom_gap_uncertainty_m: float | None = None
     gap_observation_timestamp_s: float | None = None
     gap_observation_sequence: int | None = None
+    box_bottom_z_base_m: float | None = None
+    box_bottom_z_uncertainty_m: float | None = None
+    stack_top_z_base_m: float | None = None
+    stack_top_uncertainty_m: float | None = None
+    stack_plane_z_base_m: float | None = None
+    stack_plane_uncertainty_m: float | None = None
+    stack_plane_timestamp_s: float | None = None
+    stack_plane_sequence: int | None = None
+    bilateral_eef_timestamp_s: float | None = None
+    bilateral_eef_state_sequence: int | None = None
+    descent_plan_source: str = "vision_eef_fk"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "now_s", _finite(self.now_s, "now_s"))
@@ -398,6 +509,36 @@ class PlacementInput:
             if sequence < 0:
                 raise ValueError("gap_observation_sequence must be non-negative")
             object.__setattr__(self, "gap_observation_sequence", sequence)
+        for name in (
+            "box_bottom_z_base_m",
+            "stack_top_z_base_m",
+            "stack_plane_z_base_m",
+            "stack_plane_timestamp_s",
+            "bilateral_eef_timestamp_s",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _finite(value, name))
+        for name in (
+            "box_bottom_z_uncertainty_m",
+            "stack_top_uncertainty_m",
+            "stack_plane_uncertainty_m",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _nonnegative(value, name))
+        for name in ("stack_plane_sequence", "bilateral_eef_state_sequence"):
+            value = getattr(self, name)
+            if value is not None:
+                sequence = int(value)
+                if sequence < 1:
+                    raise ValueError(f"{name} must be positive")
+                object.__setattr__(self, name, sequence)
+        object.__setattr__(
+            self,
+            "descent_plan_source",
+            str(self.descent_plan_source).strip() or "vision_eef_fk",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,6 +551,7 @@ class PlacementOutput:
     faulted: bool
     release_authorized: bool
     diagnostics: dict[str, object]
+    descent_plan: PlacementDescentPlan | None = None
 
     def __post_init__(self) -> None:
         if tuple(self.mobility_command) != ZERO_MOBILITY_COMMAND:
@@ -436,6 +578,8 @@ class Slot1PlacementSequencer:
         self._vision_gap_sample_count = 0
         self._lower_start_right: np.ndarray | None = None
         self._lower_start_left: np.ndarray | None = None
+        self._descent_plan: PlacementDescentPlan | None = None
+        self._descent_plan_rejection_reason: str | None = None
 
     def update(self, sample: PlacementInput) -> PlacementOutput:
         if not isinstance(sample, PlacementInput):
@@ -504,13 +648,21 @@ class Slot1PlacementSequencer:
                 PlacementRequest.HOLD_CURRENT,
                 "pre_place_verify_dwell",
             )
-        self._lower_start_right = sample.right_eef_base
-        self._lower_start_left = sample.left_eef_base
+        plan, rejection_reason = self._make_descent_plan(sample)
+        if rejection_reason is not None:
+            self._descent_plan_rejection_reason = rejection_reason
+            return self._fault(rejection_reason, sample)
+        assert plan is not None
+        self._descent_plan_rejection_reason = None
+        self._descent_plan = plan
+        self._lower_start_right = plan.right_eef_base
+        self._lower_start_left = plan.left_eef_base
         self._transition(PlacementState.LOWERING, sample.now_s)
         return self._output(
             sample,
-            PlacementRequest.LOWER_CARTESIAN_50MM,
+            PlacementRequest.LOWER_CARTESIAN_PLANNED,
             "lowering_started",
+            descent_plan=plan,
         )
 
     def _reset_pre_place_evidence(self) -> None:
@@ -521,6 +673,8 @@ class Slot1PlacementSequencer:
         self._baseline_gap_sequence = None
         self._vision_gap_anchor_m = None
         self._vision_gap_sample_count = 0
+        self._descent_plan = None
+        self._descent_plan_rejection_reason = None
 
     def _begin_pre_place_evidence(self, sample: PlacementInput) -> None:
         self._verify_started_s = sample.now_s
@@ -567,8 +721,9 @@ class Slot1PlacementSequencer:
         if sample.controller_arm_mode != LOWERING_MODE:
             return self._output(
                 sample,
-                PlacementRequest.LOWER_CARTESIAN_50MM,
+                PlacementRequest.LOWER_CARTESIAN_PLANNED,
                 "waiting_for_lowering_mode",
+                descent_plan=self._descent_plan,
             )
         if not sample.controller_target_ack:
             return self._output(
@@ -580,7 +735,7 @@ class Slot1PlacementSequencer:
             return self._output(
                 sample,
                 PlacementRequest.HOLD_CURRENT,
-                "waiting_for_measured_50mm_descent",
+                "waiting_for_measured_planned_descent",
             )
         if not self._seating_evidence(sample):
             return self._fault("seating_evidence_unavailable", sample)
@@ -599,6 +754,9 @@ class Slot1PlacementSequencer:
             return self._fault("lowered_geometry_lost_before_release", sample)
         if not self._seating_evidence(sample):
             return self._fault("seating_evidence_lost", sample)
+        release_evidence_reason = self._release_evidence_fault_reason(sample)
+        if release_evidence_reason is not None:
+            return self._fault(release_evidence_reason, sample)
         if self._contact_started_s is None:
             return self._fault("seating_dwell_timestamp_missing", sample)
         if sample.now_s - self._contact_started_s < self.config.seated_dwell_s:
@@ -616,6 +774,9 @@ class Slot1PlacementSequencer:
         )
 
     def _update_releasing(self, sample: PlacementInput) -> PlacementOutput:
+        release_evidence_reason = self._release_evidence_fault_reason(sample)
+        if release_evidence_reason is not None:
+            return self._fault(release_evidence_reason, sample)
         if self._state_elapsed(sample) > self.config.release_timeout_s:
             return self._fault("release_target_timeout", sample)
         if sample.controller_arm_mode != RELEASE_MODE:
@@ -717,14 +878,11 @@ class Slot1PlacementSequencer:
         return None
 
     def _lower_geometry_reached(self, sample: PlacementInput) -> bool:
-        if self._lower_start_right is None or self._lower_start_left is None:
+        plan = self._descent_plan
+        if plan is None or not plan.valid:
             return False
-        expected_right_z = (
-            float(self._lower_start_right[2, 3]) - self.config.lowering_distance_m
-        )
-        expected_left_z = (
-            float(self._lower_start_left[2, 3]) - self.config.lowering_distance_m
-        )
+        expected_right_z = float(plan.right_target_base[2, 3])
+        expected_left_z = float(plan.left_target_base[2, 3])
         z_ok = bool(
             abs(float(sample.right_eef_base[2, 3]) - expected_right_z)
             <= self.config.lower_z_tolerance_m
@@ -732,7 +890,7 @@ class Slot1PlacementSequencer:
             <= self.config.lower_z_tolerance_m
         )
         start_midpoint = 0.5 * (
-            self._lower_start_right[:2, 3] + self._lower_start_left[:2, 3]
+            plan.right_eef_base[:2, 3] + plan.left_eef_base[:2, 3]
         )
         current_midpoint = 0.5 * (
             sample.right_eef_base[:2, 3] + sample.left_eef_base[:2, 3]
@@ -742,9 +900,9 @@ class Slot1PlacementSequencer:
             <= self.config.lower_midpoint_xy_drift_m
         )
         rotation_ok = bool(
-            _rotation_error_rad(self._lower_start_right, sample.right_eef_base)
+            _rotation_error_rad(plan.right_eef_base, sample.right_eef_base)
             <= self.config.lower_rotation_tolerance_rad
-            and _rotation_error_rad(self._lower_start_left, sample.left_eef_base)
+            and _rotation_error_rad(plan.left_eef_base, sample.left_eef_base)
             <= self.config.lower_rotation_tolerance_rad
         )
         target_z_ok = True
@@ -782,11 +940,12 @@ class Slot1PlacementSequencer:
         )
         if not target_reached:
             return False
-        if self._lower_start_right is None or self._lower_start_left is None:
+        plan = self._descent_plan
+        if plan is None:
             return False
         initial_separation_m = float(
             np.linalg.norm(
-                self._lower_start_right[:3, 3] - self._lower_start_left[:3, 3]
+                plan.right_eef_base[:3, 3] - plan.left_eef_base[:3, 3]
             )
         )
         current_separation_m = float(
@@ -826,18 +985,242 @@ class Slot1PlacementSequencer:
             return False
         if uncertainty > self.config.vision_seating_max_uncertainty_m:
             return False
-        residual = gap - self.config.lowering_distance_m
-        residual_lower = residual - uncertainty
-        residual_upper = residual + uncertainty
         return bool(
-            residual_lower >= self.config.vision_seating_residual_min_m
-            and residual_upper <= self.config.vision_seating_residual_max_m
+            gap - uncertainty >= self.config.pre_motion_clearance_floor_m
+            and gap > 0.0
         )
 
     def _seating_evidence(self, sample: PlacementInput) -> bool:
+        plan = self._descent_plan
+        if plan is None or not plan.valid:
+            return False
+        if (
+            sample.stack_plane_z_base_m is not None
+            and abs(sample.stack_plane_z_base_m - plan.stack_plane_z_base_m)
+            > self.config.vision_gap_stability_tolerance_m
+        ):
+            return False
+        if (
+            sample.stack_plane_uncertainty_m is not None
+            and sample.stack_plane_uncertainty_m
+            > self.config.vision_seating_max_uncertainty_m
+        ):
+            return False
         return bool(
             sample.allow_vision_geometry_release
             and self._vision_seating_evidence(sample.now_s)
+        )
+
+    def _release_evidence_fault_reason(self, sample: PlacementInput) -> str | None:
+        plan = self._descent_plan
+        if plan is None or not plan.valid:
+            return "release_descent_plan_missing"
+        required = {
+            "stack_plane_z_base_m": sample.stack_plane_z_base_m,
+            "stack_plane_uncertainty_m": sample.stack_plane_uncertainty_m,
+            "stack_plane_timestamp_s": sample.stack_plane_timestamp_s,
+            "stack_plane_sequence": sample.stack_plane_sequence,
+            "bilateral_eef_timestamp_s": sample.bilateral_eef_timestamp_s,
+            "bilateral_eef_state_sequence": sample.bilateral_eef_state_sequence,
+        }
+        missing = tuple(name for name, value in required.items() if value is None)
+        if missing:
+            return "release_evidence_missing:" + ",".join(missing)
+
+        stack_plane_timestamp = float(sample.stack_plane_timestamp_s)
+        bilateral_eef_timestamp = float(sample.bilateral_eef_timestamp_s)
+        stack_plane_sequence = int(sample.stack_plane_sequence)
+        bilateral_eef_sequence = int(sample.bilateral_eef_state_sequence)
+        if (
+            stack_plane_timestamp < plan.stack_plane_timestamp_s - 1e-12
+            or stack_plane_sequence < plan.stack_plane_sequence
+        ):
+            return "release_stack_plane_regressed"
+        if (
+            bilateral_eef_timestamp < plan.bilateral_eef_timestamp_s - 1e-12
+            or bilateral_eef_sequence < plan.bilateral_eef_state_sequence
+        ):
+            return "release_bilateral_eef_regressed"
+        if not (
+            -1e-12
+            <= sample.now_s - stack_plane_timestamp
+            <= self.config.vision_evidence_fresh_after_s
+        ):
+            return "release_stack_plane_stale"
+        if not (
+            -1e-12
+            <= sample.now_s - bilateral_eef_timestamp
+            <= self.config.feedback_stale_s
+        ):
+            return "release_bilateral_eef_stale"
+        if (
+            abs(float(sample.stack_plane_z_base_m) - plan.stack_plane_z_base_m)
+            > self.config.vision_gap_stability_tolerance_m
+            or float(sample.stack_plane_uncertainty_m)
+            > self.config.vision_seating_max_uncertainty_m
+        ):
+            return "release_stack_plane_inconsistent"
+        expected_midpoint = 0.5 * (
+            plan.right_eef_base[:2, 3] + plan.left_eef_base[:2, 3]
+        )
+        current_midpoint = 0.5 * (
+            sample.right_eef_base[:2, 3] + sample.left_eef_base[:2, 3]
+        )
+        initial_separation_m = float(
+            np.linalg.norm(
+                plan.right_eef_base[:3, 3] - plan.left_eef_base[:3, 3]
+            )
+        )
+        current_separation_m = float(
+            np.linalg.norm(
+                sample.right_eef_base[:3, 3] - sample.left_eef_base[:3, 3]
+            )
+        )
+        max_release_separation_m = initial_separation_m + 2.0 * (
+            self.config.release_spread_m
+            + self.config.release_target_translation_tolerance_m
+        )
+        right_z_error_m = abs(
+            float(sample.right_eef_base[2, 3])
+            - float(plan.right_target_base[2, 3])
+        )
+        left_z_error_m = abs(
+            float(sample.left_eef_base[2, 3])
+            - float(plan.left_target_base[2, 3])
+        )
+        if (
+            right_z_error_m > self.config.lower_z_tolerance_m
+            or left_z_error_m > self.config.lower_z_tolerance_m
+            or np.linalg.norm(current_midpoint - expected_midpoint)
+            > self.config.lower_midpoint_xy_drift_m
+            or _rotation_error_rad(plan.right_eef_base, sample.right_eef_base)
+            > self.config.release_target_rotation_tolerance_rad
+            or _rotation_error_rad(plan.left_eef_base, sample.left_eef_base)
+            > self.config.release_target_rotation_tolerance_rad
+            or current_separation_m + self.config.release_target_translation_tolerance_m
+            < initial_separation_m
+            or current_separation_m > max_release_separation_m
+        ):
+            return "release_bilateral_eef_inconsistent"
+        if not sample.allow_vision_geometry_release:
+            return "release_vision_geometry_disabled"
+        return None
+
+    def _make_descent_plan(
+        self,
+        sample: PlacementInput,
+    ) -> tuple[PlacementDescentPlan | None, str | None]:
+        required = {
+            "predicted_box_bottom_gap_m": sample.predicted_box_bottom_gap_m,
+            "predicted_box_bottom_gap_uncertainty_m": (
+                sample.predicted_box_bottom_gap_uncertainty_m
+            ),
+            "gap_observation_timestamp_s": sample.gap_observation_timestamp_s,
+            "gap_observation_sequence": sample.gap_observation_sequence,
+            "box_bottom_z_base_m": sample.box_bottom_z_base_m,
+            "box_bottom_z_uncertainty_m": sample.box_bottom_z_uncertainty_m,
+            "stack_top_z_base_m": sample.stack_top_z_base_m,
+            "stack_top_uncertainty_m": sample.stack_top_uncertainty_m,
+            "stack_plane_z_base_m": sample.stack_plane_z_base_m,
+            "stack_plane_uncertainty_m": sample.stack_plane_uncertainty_m,
+            "stack_plane_timestamp_s": sample.stack_plane_timestamp_s,
+            "stack_plane_sequence": sample.stack_plane_sequence,
+            "bilateral_eef_timestamp_s": sample.bilateral_eef_timestamp_s,
+            "bilateral_eef_state_sequence": sample.bilateral_eef_state_sequence,
+        }
+        missing = tuple(name for name, value in required.items() if value is None)
+        if missing:
+            return None, "descent_authority_missing:" + ",".join(missing)
+
+        reported_gap = float(sample.predicted_box_bottom_gap_m)
+        reported_uncertainty = float(
+            sample.predicted_box_bottom_gap_uncertainty_m
+        )
+        box_bottom_z = float(sample.box_bottom_z_base_m)
+        box_uncertainty = float(sample.box_bottom_z_uncertainty_m)
+        stack_top_z = float(sample.stack_top_z_base_m)
+        stack_uncertainty = float(sample.stack_top_uncertainty_m)
+        stack_plane_z = float(sample.stack_plane_z_base_m)
+        stack_plane_uncertainty = float(sample.stack_plane_uncertainty_m)
+        stack_plane_timestamp = float(sample.stack_plane_timestamp_s)
+        bilateral_eef_timestamp = float(sample.bilateral_eef_timestamp_s)
+        stack_plane_sequence = int(sample.stack_plane_sequence)
+        bilateral_eef_sequence = int(sample.bilateral_eef_state_sequence)
+
+        gap = box_bottom_z - stack_top_z
+        uncertainty = box_uncertainty + stack_uncertainty
+        box_lower_bound = box_bottom_z - box_uncertainty
+        stack_upper_bound = stack_top_z + stack_uncertainty
+        min_delta = box_lower_bound - stack_upper_bound
+        max_delta = (
+            box_bottom_z + box_uncertainty
+            - (stack_top_z - stack_uncertainty)
+        )
+        rejection: str | None = None
+        if (
+            abs(reported_gap - gap) > 1e-6
+            or abs(reported_uncertainty - uncertainty) > 1e-6
+        ):
+            rejection = "descent_gap_bounds_inconsistent"
+        elif (
+            abs(stack_plane_z - stack_top_z)
+            > self.config.vision_gap_stability_tolerance_m
+            or abs(stack_plane_uncertainty - stack_uncertainty) > 1e-6
+        ):
+            rejection = "descent_stack_plane_inconsistent"
+        elif not (
+            -1e-12
+            <= sample.now_s - stack_plane_timestamp
+            <= self.config.vision_evidence_fresh_after_s
+        ):
+            rejection = "descent_stack_plane_stale"
+        elif not (
+            -1e-12
+            <= sample.now_s - bilateral_eef_timestamp
+            <= self.config.feedback_stale_s
+        ):
+            rejection = "descent_bilateral_eef_stale"
+        elif uncertainty > self.config.vision_seating_max_uncertainty_m:
+            rejection = "descent_gap_uncertainty_too_large"
+        elif min_delta < self.config.pre_motion_clearance_floor_m:
+            rejection = "descent_clearance_below_50mm_floor"
+        elif gap <= 0.0 or min_delta <= 0.0 or max_delta <= 0.0:
+            rejection = "descent_gap_nonpositive"
+        elif gap > self.config.maximum_descent_m:
+            rejection = "descent_distance_too_large"
+        if rejection is not None:
+            return None, rejection
+
+        right_target = np.array(sample.right_eef_base, dtype=np.float64, copy=True)
+        left_target = np.array(sample.left_eef_base, dtype=np.float64, copy=True)
+        right_target[2, 3] -= gap
+        left_target[2, 3] -= gap
+        return (
+            PlacementDescentPlan(
+                plan_id=uuid.uuid4().hex,
+                freeze_monotonic_s=sample.now_s,
+                planned_delta_z_m=gap,
+                min_delta_z_m=min_delta,
+                max_delta_z_m=max_delta,
+                gap_m=gap,
+                gap_uncertainty_m=uncertainty,
+                box_bottom_z_lower_bound_m=box_lower_bound,
+                stack_top_z_upper_bound_m=stack_upper_bound,
+                stack_plane_z_base_m=stack_plane_z,
+                stack_plane_uncertainty_m=stack_plane_uncertainty,
+                stack_plane_timestamp_s=stack_plane_timestamp,
+                stack_plane_sequence=int(stack_plane_sequence),
+                bilateral_eef_timestamp_s=bilateral_eef_timestamp,
+                bilateral_eef_state_sequence=int(bilateral_eef_sequence),
+                right_eef_base=sample.right_eef_base,
+                left_eef_base=sample.left_eef_base,
+                right_target_base=right_target,
+                left_target_base=left_target,
+                valid=True,
+                rejection_reason=None,
+                source=sample.descent_plan_source,
+            ),
+            None,
         )
 
     def _state_elapsed(self, sample: PlacementInput) -> float:
@@ -870,7 +1253,12 @@ class Slot1PlacementSequencer:
         done: bool = False,
         faulted: bool | None = None,
         release_authorized: bool = False,
+        descent_plan: PlacementDescentPlan | None = None,
     ) -> PlacementOutput:
+        active_plan = descent_plan or self._descent_plan
+        rejected_plan_reason = (
+            self._descent_plan_rejection_reason if active_plan is None else None
+        )
         diagnostics: dict[str, object] = {
             "controller_arm_mode": sample.controller_arm_mode,
             "controller_target_ack": sample.controller_target_ack,
@@ -889,6 +1277,20 @@ class Slot1PlacementSequencer:
                 if self._baseline_gap_timestamp_s is None
                 else sample.now_s - self._baseline_gap_timestamp_s
             ),
+            "descent_plan_id": None if active_plan is None else active_plan.plan_id,
+            "descent_plan_valid": (
+                False if rejected_plan_reason is not None else None
+            )
+            if active_plan is None
+            else active_plan.valid,
+            "descent_plan_rejection_reason": (
+                rejected_plan_reason
+                if active_plan is None
+                else active_plan.rejection_reason
+            ),
+            "planned_delta_z_m": (
+                None if active_plan is None else active_plan.planned_delta_z_m
+            ),
             "state_elapsed_s": self._state_elapsed(sample),
         }
         return PlacementOutput(
@@ -902,6 +1304,7 @@ class Slot1PlacementSequencer:
             else faulted,
             release_authorized=release_authorized,
             diagnostics=diagnostics,
+            descent_plan=active_plan,
         )
 
 
@@ -909,6 +1312,7 @@ __all__ = [
     "LOADED_HOLD_MODE",
     "LOWERING_MODE",
     "PlacementConfig",
+    "PlacementDescentPlan",
     "PlacementInput",
     "PlacementOutput",
     "PlacementRequest",

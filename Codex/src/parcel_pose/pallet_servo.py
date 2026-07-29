@@ -346,6 +346,8 @@ class PalletServoObservation:
     demonstrated_body_reference_yaw_base_rad: float | None
     axis_branch: str | None
     reference_source: str
+    odometry_propagated: bool = False
+    propagation_age_s: float = 0.0
     valid: bool = True
     rejection_reasons: tuple[str, ...] = ()
 
@@ -358,6 +360,19 @@ class PalletServoObservation:
             "rejection_reasons",
             tuple(str(reason) for reason in self.rejection_reasons),
         )
+        if not isinstance(self.odometry_propagated, bool):
+            raise ValueError("odometry_propagated must be bool")
+        object.__setattr__(
+            self,
+            "propagation_age_s",
+            _finite(self.propagation_age_s, "propagation_age_s"),
+        )
+        if self.propagation_age_s < 0.0:
+            raise ValueError("propagation_age_s must be non-negative")
+        if not self.odometry_propagated and self.propagation_age_s != 0.0:
+            raise ValueError(
+                "propagation_age_s requires odometry_propagated observation"
+            )
         source = str(self.reference_source).strip()
         object.__setattr__(self, "reference_source", source)
         if not self.valid:
@@ -434,6 +449,8 @@ class PalletServoObservation:
             demonstrated_body_reference_yaw_base_rad=None,
             axis_branch=None,
             reference_source=reference_source,
+            odometry_propagated=False,
+            propagation_age_s=0.0,
             valid=False,
             rejection_reasons=tuple(rejection_reasons),
         )
@@ -496,6 +513,8 @@ class _Sample:
     yaw_error_rad: float
     axis_branch: str
     reference_source: str
+    odometry_propagated: bool = False
+    propagation_age_s: float = 0.0
 
     @property
     def error_xy(self) -> FloatArray:
@@ -516,6 +535,8 @@ class PalletSlot1Servo:
         self._last_command = ZERO_VELOCITY
         self._last_update_s: float | None = None
         self._started_at_s: float | None = None
+        self._active_command_elapsed_s = 0.0
+        self._last_active_command_update_s: float | None = None
         self._perception_lost_at_s: float | None = None
         self._arrival_started_at_s: float | None = None
         self._arrival_frames = 0
@@ -536,6 +557,8 @@ class PalletSlot1Servo:
         self._last_command = ZERO_VELOCITY
         self._last_update_s = now
         self._started_at_s = now
+        self._active_command_elapsed_s = 0.0
+        self._last_active_command_update_s = None
         self._perception_lost_at_s = None
         self._clear_arrival()
         self._clear_wheel_stop()
@@ -618,12 +641,6 @@ class PalletSlot1Servo:
         if not accepted or sample is None:
             return self._perception_hold(accept_reason or "observation_invalid", now)
 
-        # A perception hold may persist indefinitely with zero mobility.  It
-        # cannot resume motion after the active-servo deadline; fresh vision at
-        # that point transitions to the persistent fault hold instead.
-        if now - self._started_at_s >= self.config.timeout_s:
-            return self.fault("servo_timeout", now)
-
         self._perception_lost_at_s = None
         filtered = self._filtered_sample()
         if filtered is None or len(self._samples) < self.config.filter_window:
@@ -686,9 +703,9 @@ class PalletSlot1Servo:
             self.state = PalletServoState.TRACKING
 
         command = self._tracking_command(filtered, now)
-        self._last_update_s = now
-        if not command.is_zero:
-            self._motion_started = True
+        timeout_reason = self._record_active_command_time(command, now)
+        if timeout_reason is not None:
+            return self.fault(timeout_reason, now)
         return self._output(
             True,
             "arrival_evidence" if evidence_active else "tracking",
@@ -752,6 +769,8 @@ class PalletSlot1Servo:
                 return None, "observation_timestamp_in_future"
             if age > self.config.stale_after_s:
                 return None, "observation_stale"
+            if observation.propagation_age_s > self.config.stale_after_s:
+                return None, "odometry_propagated_observation_stale"
             axis_branch = str(observation.axis_branch).strip()
             if not axis_branch:
                 return None, "axis_branch_missing"
@@ -782,6 +801,8 @@ class PalletSlot1Servo:
                 yaw_error,
                 axis_branch,
                 observation.reference_source,
+                observation.odometry_propagated,
+                observation.propagation_age_s,
             ),
             None,
         )
@@ -867,6 +888,8 @@ class PalletSlot1Servo:
             yaw_error_rad=_signed_line_angle(yaw),
             axis_branch=values[-1].axis_branch,
             reference_source=values[-1].reference_source,
+            odometry_propagated=values[-1].odometry_propagated,
+            propagation_age_s=values[-1].propagation_age_s,
         )
 
     @staticmethod
@@ -983,6 +1006,7 @@ class PalletSlot1Servo:
             self._perception_lost_at_s = now_s
         self.state = PalletServoState.PERCEPTION_HOLD
         self._force_zero(now_s)
+        self._last_active_command_update_s = None
         self._clear_arrival()
         return self._output(False, reason, now_s)
 
@@ -1003,6 +1027,7 @@ class PalletSlot1Servo:
         )
         wheel_reason, stopped = self._wheel_stop_status(wheel_motion, now_s)
         if not stopped:
+            self._last_active_command_update_s = None
             return self._output(
                 sample is not None,
                 wheel_reason
@@ -1020,6 +1045,7 @@ class PalletSlot1Servo:
             self._clear_arrival()
             self._clear_wheel_stop()
             self._perception_lost_at_s = now_s
+            self._last_active_command_update_s = None
             return self._output(
                 False,
                 "arrival_cancelled_after_wheel_stop",
@@ -1100,6 +1126,27 @@ class PalletSlot1Servo:
     def _force_zero(self, now_s: float) -> None:
         self._last_command = ZERO_VELOCITY
         self._last_update_s = now_s
+        self._last_active_command_update_s = None
+
+    def _record_active_command_time(
+        self,
+        command: VelocityCommand,
+        now_s: float,
+    ) -> str | None:
+        self._last_update_s = now_s
+        if command.is_zero:
+            self._last_active_command_update_s = None
+            return None
+        if self._last_active_command_update_s is not None:
+            self._active_command_elapsed_s += max(
+                0.0,
+                now_s - self._last_active_command_update_s,
+            )
+        self._last_active_command_update_s = now_s
+        self._motion_started = True
+        if self._active_command_elapsed_s >= self.config.timeout_s:
+            return "servo_timeout"
+        return None
 
     def _fault_on_time_rollback(self, now_s: float) -> PalletServoOutput | None:
         now = _finite(now_s, "now_s")
@@ -1108,6 +1155,7 @@ class PalletSlot1Servo:
         self.state = PalletServoState.FAULT_HOLD
         self._hold_reason = "clock_rollback_detected"
         self._last_command = ZERO_VELOCITY
+        self._last_active_command_update_s = None
         self._clear_arrival()
         self._clear_wheel_stop()
         return self._output(False, self._hold_reason, now)
@@ -1119,6 +1167,7 @@ class PalletSlot1Servo:
             self.state = PalletServoState.FAULT_HOLD
             self._hold_reason = "clock_rollback_detected"
             self._last_command = ZERO_VELOCITY
+            self._last_active_command_update_s = None
             self._clear_arrival()
             self._clear_wheel_stop()
             return previous
@@ -1167,6 +1216,7 @@ class PalletSlot1Servo:
             ),
             "zero_latched": self._zero_latched_at_s is not None,
             "motion_started": self._motion_started,
+            "active_command_elapsed_s": self._active_command_elapsed_s,
             "mobility_from_base": tuple(
                 tuple(float(value) for value in row)
                 for row in self.config.mobility_from_base.as_matrix()
@@ -1184,6 +1234,8 @@ class PalletSlot1Servo:
                 raw_demonstrated_body_reference_center_base_xy_m=tuple(
                     float(value) for value in raw.body_reference_xy
                 ),
+                raw_odometry_propagated=raw.odometry_propagated,
+                raw_propagation_age_s=raw.propagation_age_s,
             )
         if filtered is not None:
             diagnostics.update(
@@ -1196,6 +1248,8 @@ class PalletSlot1Servo:
                 filtered_demonstrated_body_reference_center_base_xy_m=tuple(
                     float(value) for value in filtered.body_reference_xy
                 ),
+                filtered_odometry_propagated=filtered.odometry_propagated,
+                filtered_propagation_age_s=filtered.propagation_age_s,
             )
             if diagnostics["reference_source"] is None:
                 diagnostics["reference_source"] = filtered.reference_source

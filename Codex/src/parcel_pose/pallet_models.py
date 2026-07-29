@@ -22,6 +22,11 @@ from .models import Plane
 FloatArray = NDArray[np.float64]
 
 
+_NOMINAL_SLOT1_RIGHT_OFFSET_M = 0.12800
+_NOMINAL_SLOT1_FAR_OFFSET_M = 0.20175
+_SLOT1_OFFSET_ROLE_TOLERANCE_M = 0.001
+
+
 def _finite_positive(value: float, name: str) -> float:
     result = float(value)
     if not math.isfinite(result) or result <= 0.0:
@@ -80,6 +85,27 @@ def _nonnegative_pair(values: Sequence[float], name: str) -> tuple[float, float]
     return result
 
 
+def _reject_swapped_slot1_offsets(
+    values: tuple[float, float],
+    name: str,
+) -> tuple[float, float]:
+    right_m, far_m = values
+    if math.isclose(
+        right_m,
+        _NOMINAL_SLOT1_FAR_OFFSET_M,
+        abs_tol=_SLOT1_OFFSET_ROLE_TOLERANCE_M,
+    ) and math.isclose(
+        far_m,
+        _NOMINAL_SLOT1_RIGHT_OFFSET_M,
+        abs_tol=_SLOT1_OFFSET_ROLE_TOLERANCE_M,
+    ):
+        raise ValueError(
+            f"{name} must be ordered [right, far]; got values matching swapped "
+            "nominal slot-1 offsets (right=0.128 m, far=0.202 m)"
+        )
+    return values
+
+
 @dataclass(frozen=True, slots=True)
 class PalletGeometry:
     """Fixed pinwheel-stack geometry measured by the operator."""
@@ -96,7 +122,12 @@ class PalletGeometry:
             self, "opening_size_m", _float_pair(self.opening_size_m, "opening_size_m")
         )
         object.__setattr__(
-            self, "slot1_offset_m", _float_pair(self.slot1_offset_m, "slot1_offset_m")
+            self,
+            "slot1_offset_m",
+            _reject_swapped_slot1_offsets(
+                _float_pair(self.slot1_offset_m, "slot1_offset_m"),
+                "slot1_offset_m",
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -258,7 +289,8 @@ class PalletEstimatorConfig:
     min_rim_support_ratio: float = 0.25
     held_plane_min_separation_m: float = 0.080
     held_plane_max_uncertainty_m: float = 0.012
-    rough_front_axis_base: tuple[float, float] = (1.0, 0.0)
+    fixed_approach_v_far_axis_base_xy: tuple[float, float] = (1.0, 0.0)
+    fixed_approach_axis_source: str = "rb_y1_base_positive_x_points_into_pallet"
     l_corner_edge_band_m: float = 0.012
     l_corner_min_front_support_m: float = 0.450
     l_corner_min_side_support_m: float = 0.180
@@ -345,18 +377,24 @@ class PalletEstimatorConfig:
         if crop_margin < 0:
             raise ValueError("l_corner_image_crop_margin_px must be non-negative")
         object.__setattr__(self, "l_corner_image_crop_margin_px", crop_margin)
-        axis = np.asarray(self.rough_front_axis_base, dtype=np.float64)
+        axis = np.asarray(self.fixed_approach_v_far_axis_base_xy, dtype=np.float64)
         if (
             axis.shape != (2,)
             or not np.all(np.isfinite(axis))
             or np.linalg.norm(axis) <= 1e-9
         ):
             raise ValueError(
-                "rough_front_axis_base must be a finite non-zero XY vector"
+                "fixed_approach_v_far_axis_base_xy must be a finite non-zero XY vector"
             )
         object.__setattr__(
-            self, "rough_front_axis_base", tuple((axis / np.linalg.norm(axis)).tolist())
+            self,
+            "fixed_approach_v_far_axis_base_xy",
+            tuple((axis / np.linalg.norm(axis)).tolist()),
         )
+        source = str(self.fixed_approach_axis_source).strip()
+        if not source:
+            raise ValueError("fixed_approach_axis_source must not be empty")
+        object.__setattr__(self, "fixed_approach_axis_source", source)
 
 
 @dataclass(frozen=True, slots=True)
@@ -700,6 +738,7 @@ class StackObservation:
     rejection_reasons: tuple[str, ...]
     calibration_status: str = "nominal_ready_assumed"
     axis_branch: str | None = None
+    stack_se2_source: str | None = None
 
     def __post_init__(self) -> None:
         timestamp = float(self.timestamp_s)
@@ -728,6 +767,12 @@ class StackObservation:
         object.__setattr__(self, "rejection_reasons", reasons)
         branch = None if self.axis_branch is None else str(self.axis_branch).strip()
         object.__setattr__(self, "axis_branch", branch or None)
+        source = (
+            None
+            if self.stack_se2_source is None
+            else str(self.stack_se2_source).strip()
+        )
+        object.__setattr__(self, "stack_se2_source", source or None)
         if self.valid and any(
             value is None
             for value in (
@@ -737,12 +782,13 @@ class StackObservation:
                 self.yaw_base_rad,
                 self.plane_height_base_m,
                 self.slot1_target_base,
-                self.opening_size_m,
                 self.axis_branch,
+                self.stack_se2_source,
             )
         ):
             raise ValueError(
-                "valid stack observations require complete geometry and axis branch"
+                "valid stack observations require metric SE(2), plane, target, "
+                "source, and axis branch"
             )
         if not self.valid and not reasons:
             raise ValueError("invalid stack observations require a rejection reason")
@@ -775,6 +821,7 @@ class StackObservation:
             "rejection_reasons": list(self.rejection_reasons),
             "calibration_status": self.calibration_status,
             "axis_branch": self.axis_branch,
+            "stack_se2_source": self.stack_se2_source,
         }
 
 
@@ -1054,7 +1101,6 @@ def load_pallet_estimator_config(
             )
         ),
     )
-
     perception_raw = root.get("perception", pallet_raw.get("perception", {}))
     if not isinstance(perception_raw, Mapping):
         raise ValueError("perception configuration block must be an object")
@@ -1081,6 +1127,17 @@ def load_pallet_estimator_config(
         raise ValueError(
             "unknown perception configuration key(s): " + ", ".join(unknown)
         )
+    legacy_front_axis_key = "rough" + "_front_axis_base"
+    if legacy_front_axis_key in pallet_raw or legacy_front_axis_key in geometry_raw:
+        raise ValueError(
+            "legacy front-axis key is retired; use "
+            "pallet.fixed_approach_v_far_axis_base_xy with "
+            "pallet.fixed_approach_axis_source"
+        )
+    if "fixed_approach_v_far_axis_base_xy" not in pallet_raw:
+        raise ValueError("pallet.fixed_approach_v_far_axis_base_xy is required")
+    if "fixed_approach_axis_source" not in pallet_raw:
+        raise ValueError("pallet.fixed_approach_axis_source is required")
     gates = PalletPerceptionGates(
         min_inner_rim_count=int(perception_raw.get("minimum_inner_rims", 3)),
         max_opening_size_error_m=float(
@@ -1117,6 +1174,12 @@ def load_pallet_estimator_config(
     kwargs: dict[str, Any] = {
         "geometry": geometry,
         "gates": gates,
+        "fixed_approach_v_far_axis_base_xy": tuple(
+            pallet_raw.get("fixed_approach_v_far_axis_base_xy", ())
+        ),
+        "fixed_approach_axis_source": pallet_raw.get(
+            "fixed_approach_axis_source", ""
+        ),
         "min_depth_m": float(perception_raw.get("min_depth_m", defaults.min_depth_m)),
         "max_depth_m": float(perception_raw.get("max_depth_m", defaults.max_depth_m)),
         "plane_fit_tolerance_m": float(

@@ -420,9 +420,13 @@ def draw_pallet_overlay(
         else "ABSTAIN"
     )
     branch = stack.axis_branch or (None if coarse is None else coarse.topology_branch)
+    source = getattr(stack, "stack_se2_source", None) or "--"
     lines = [
         f"PALLET SLOT1 {status}{frame_text}{state_text}",
-        f"registration: {stack.calibration_status}  branch={branch or '--'}",
+        (
+            f"registration: {stack.calibration_status}  "
+            f"branch={branch or '--'} source={source}"
+        ),
     ]
     if stack.center_base is not None and stack.slot1_target_base is not None:
         center = stack.center_base
@@ -434,8 +438,15 @@ def draw_pallet_overlay(
         )
         lines.extend(
             (
-                f"hole base [m] x={center[0]:+.3f} y={center[1]:+.3f} z={center[2]:+.3f} yaw={yaw_deg:+.2f} deg",
-                f"slot1 base [m] x={target[0]:+.3f} y={target[1]:+.3f} z={target[2]:+.3f}",
+                (
+                    f"stack center [m] x={center[0]:+.3f} "
+                    f"y={center[1]:+.3f} z={center[2]:+.3f} "
+                    f"yaw={yaw_deg:+.2f} deg"
+                ),
+                (
+                    f"slot1 base [m] x={target[0]:+.3f} "
+                    f"y={target[1]:+.3f} z={target[2]:+.3f}"
+                ),
             )
         )
         if slot1_hole_reference is not None:
@@ -461,7 +472,19 @@ def draw_pallet_overlay(
         residual = 1_000.0 * quality.get("stack_plane_p95_residual_m", math.nan)
         orthogonality = math.degrees(quality.get("orthogonality_error_rad", math.nan))
         lines.append(
-            f"opening={1_000*opening_u:.1f}x{1_000*opening_v:.1f} mm rims={int(quality.get('inner_rim_count', 0))}/4 plane_p95={residual:.1f} mm orth={orthogonality:.1f} deg"
+            f"opening={1_000*opening_u:.1f}x{1_000*opening_v:.1f} mm "
+            f"rims={int(quality.get('inner_rim_count', 0))}/4 "
+            f"plane_p95={residual:.1f} mm orth={orthogonality:.1f} deg"
+        )
+    if quality and "fixed_approach_signed_alignment" in quality:
+        alignment = quality.get("fixed_approach_signed_alignment", math.nan)
+        residual = math.degrees(
+            quality.get("fixed_approach_axis_residual_rad", math.nan)
+        )
+        crosscheck = quality.get("opening_crosscheck_pass", math.nan)
+        lines.append(
+            f"fixed-axis align={alignment:+.3f} residual={residual:.1f} deg "
+            f"opening_crosscheck={crosscheck:.0f}"
         )
     elif (coarse_valid or edge_pair_valid) and coarse is not None:
         front_support = (

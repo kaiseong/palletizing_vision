@@ -389,10 +389,19 @@ class OdometrySample:
     x_m: float
     y_m: float
     yaw_rad: float
+    sequence: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("timestamp_s", "x_m", "y_m", "yaw_rad"):
             object.__setattr__(self, name, float(getattr(self, name)))
+        if self.sequence is None:
+            return
+        if isinstance(self.sequence, bool):
+            raise ValueError("sequence must be an integer when present")
+        sequence = int(self.sequence)
+        if sequence != self.sequence or sequence < 0:
+            raise ValueError("sequence must be a non-negative integer when present")
+        object.__setattr__(self, "sequence", sequence)
 
 
 @dataclass(frozen=True, slots=True)

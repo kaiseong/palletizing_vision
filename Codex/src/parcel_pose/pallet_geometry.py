@@ -93,6 +93,69 @@ class _LCornerFitResult:
     component_boundary_base: FloatArray | None
 
 
+@dataclass(frozen=True, slots=True)
+class _FixedAxisResolution:
+    normal: FloatArray
+    u_right: FloatArray
+    v_far: FloatArray
+    fixed_v_far: FloatArray
+    signed_alignment: float
+    axis_residual_rad: float
+    u_right_residual_rad: float
+    role_result: str
+    rejection_reason: str | None
+
+
+def _resolve_fixed_approach_axes(
+    *,
+    stack_normal: ArrayLike,
+    T_base_depth: FloatArray,
+    config: PalletEstimatorConfig,
+) -> _FixedAxisResolution:
+    normal = _unit(stack_normal)
+    if normal[2] < 0.0:
+        normal = -normal
+    image_right = np.asarray(T_base_depth[:3, 0], dtype=np.float64)
+    u_right = _unit(image_right - float(image_right @ normal) * normal)
+    v_far = _unit(np.cross(normal, u_right))
+    configured = np.asarray(
+        (
+            config.fixed_approach_v_far_axis_base_xy[0],
+            config.fixed_approach_v_far_axis_base_xy[1],
+            0.0,
+        ),
+        dtype=np.float64,
+    )
+    fixed_v_far = _unit(configured - float(configured @ normal) * normal)
+    signed_alignment = float(v_far @ fixed_v_far)
+    axis_residual = math.acos(float(np.clip(signed_alignment, -1.0, 1.0)))
+    u_right_residual = math.acos(
+        float(np.clip(abs(float(u_right @ fixed_v_far)), 0.0, 1.0))
+    )
+    reason: str | None = None
+    role_result = "accepted"
+    if signed_alignment <= 0.0:
+        reason = "fixed_approach_axis_opposite"
+        role_result = "opposite"
+    elif axis_residual > config.gates.max_start_yaw_residual_rad:
+        reason = "fixed_approach_axis_residual_too_large"
+        role_result = "residual_exceeded"
+    elif u_right_residual + math.radians(2.0) < axis_residual:
+        reason = "fixed_approach_axis_role_conflict"
+        role_result = "swapped_u_right_v_far"
+    return _FixedAxisResolution(
+        normal=normal,
+        u_right=u_right,
+        v_far=v_far,
+        fixed_v_far=fixed_v_far,
+        signed_alignment=signed_alignment,
+        axis_residual_rad=axis_residual,
+        u_right_residual_rad=u_right_residual,
+        role_result=role_result,
+        rejection_reason=reason,
+    )
+
+
 def _fit_trimmed_horizontal_plane(
     points: FloatArray,
     *,
@@ -650,21 +713,32 @@ def _fit_partial_l_corner(
     boundary_z = _plane_z(stack_plane.plane, boundary_xy)
     boundary_base = np.column_stack((boundary_xy, boundary_z))
 
-    normal = np.asarray(stack_plane.plane.normal, dtype=np.float64)
-    image_right = np.asarray(T_base_depth[:3, 0], dtype=np.float64)
-    image_right = _unit(image_right - float(image_right @ normal) * normal)
-    v_far = _unit(np.cross(normal, image_right))
-    rough_front = np.array(
-        (config.rough_front_axis_base[0], config.rough_front_axis_base[1], 0.0),
-        dtype=np.float64,
-    )
-    rough_front = _unit(rough_front - float(rough_front @ normal) * normal)
-    if float(v_far @ rough_front) <= 0.0:
+    try:
+        fixed_axis = _resolve_fixed_approach_axes(
+            stack_normal=stack_plane.plane.normal,
+            T_base_depth=T_base_depth,
+            config=config,
+        )
+    except ValueError:
         return rejected(
-            ("l_corner_reflected_branch",),
+            ("fixed_approach_axis_unresolved",),
+            component_boundary_base=boundary_base,
+        )
+    normal = fixed_axis.normal
+    image_right = fixed_axis.u_right
+    v_far = fixed_axis.v_far
+    if fixed_axis.rejection_reason is not None:
+        return rejected(
+            (fixed_axis.rejection_reason,),
             quality={
                 **base_quality,
-                "rough_front_signed_alignment": float(v_far @ rough_front),
+                "fixed_approach_signed_alignment": fixed_axis.signed_alignment,
+                "fixed_approach_axis_residual_rad": (
+                    fixed_axis.axis_residual_rad
+                ),
+                "fixed_approach_u_right_residual_rad": (
+                    fixed_axis.u_right_residual_rad
+                ),
             },
             component_boundary_base=boundary_base,
         )
@@ -770,8 +844,9 @@ def _fit_partial_l_corner(
     connection_gap = float(
         max(np.min(front_endpoint_distances), np.min(side_endpoint_distances))
     )
-    if connection_gap > config.l_corner_max_connection_gap_m:
-        reasons.append("l_corner_lines_disconnected")
+    # Endpoint connection is useful quality evidence, but the commissioned
+    # fixed-outer rectangle still constrains centre/yaw when support, residual,
+    # role, and orthogonality checks pass.
     if (
         int(np.argmin(front_endpoint_distances)) != 1
         or int(np.argmin(side_endpoint_distances)) != 0
@@ -791,6 +866,14 @@ def _fit_partial_l_corner(
     observed_v_far = _unit(np.cross(normal, observed_u_right))
     if float(observed_v_far @ side_line.direction_base) <= 0.0:
         reasons.append("l_corner_reflected_branch")
+    observed_alignment = float(observed_v_far @ fixed_axis.fixed_v_far)
+    observed_axis_residual = math.acos(
+        float(np.clip(observed_alignment, -1.0, 1.0))
+    )
+    if observed_alignment <= 0.0:
+        reasons.append("fixed_approach_observed_axis_opposite")
+    elif observed_axis_residual > config.gates.max_start_yaw_residual_rad:
+        reasons.append("fixed_approach_observed_axis_residual_too_large")
 
     interior_xy = corner_xy - 0.025 * u_xy + 0.025 * v_xy
     interior_row = int(
@@ -825,6 +908,11 @@ def _fit_partial_l_corner(
         "l_corner_side_axis_residual_rad": side_fit.axis_residual_rad,
         "l_corner_connection_gap_m": connection_gap,
         "l_corner_orthogonality_error_rad": orthogonality,
+        "fixed_approach_signed_alignment": fixed_axis.signed_alignment,
+        "fixed_approach_axis_residual_rad": fixed_axis.axis_residual_rad,
+        "fixed_approach_u_right_residual_rad": fixed_axis.u_right_residual_rad,
+        "fixed_approach_observed_signed_alignment": observed_alignment,
+        "fixed_approach_observed_axis_residual_rad": observed_axis_residual,
     }
     forward_acquisition_reasons: list[str] = []
     if front_fit.support_length_m < config.l_corner_acquisition_min_front_support_m:
@@ -987,6 +1075,31 @@ class PalletStackEstimator:
             held_top=None,
             coarse=coarse,
         )
+
+    def _previous_valid_center_jump_rejection(
+        self,
+        center_base: FloatArray,
+        *,
+        timestamp_s: float,
+    ) -> str | None:
+        if (
+            self._previous_valid_timestamp_s is None
+            or self._previous_valid_center is None
+        ):
+            return None
+        center_jump_age_s = float(timestamp_s) - float(
+            self._previous_valid_timestamp_s
+        )
+        if center_jump_age_s < -1e-6:
+            return "center_jump_timestamp_regressed"
+        if center_jump_age_s > self.config.gates.max_consecutive_center_jump_age_s:
+            return None
+        center_jump_m = float(
+            np.linalg.norm(center_base[:2] - self._previous_valid_center[:2])
+        )
+        if center_jump_m > self.config.gates.max_consecutive_center_jump_m:
+            return "center_jump_exceeded"
+        return None
 
     def estimate(
         self,
@@ -1240,6 +1353,108 @@ class PalletStackEstimator:
             ),
             l_corner_corner_base=coarse.corner_base,
         )
+        fixed_outer_center_base = (
+            None
+            if coarse is None
+            else coarse.fixed_outer_center_base(config.geometry.outer_size_m)
+        )
+        fixed_outer_quality: dict[str, float] = {}
+        if fixed_outer_center_base is not None:
+            fixed_outer_quality = {
+                "fixed_outer_center_x_m": float(fixed_outer_center_base[0]),
+                "fixed_outer_center_y_m": float(fixed_outer_center_base[1]),
+                "fixed_outer_center_z_m": float(fixed_outer_center_base[2]),
+                "fixed_outer_width_u_m": float(config.geometry.outer_size_m[0]),
+                "fixed_outer_depth_v_m": float(config.geometry.outer_size_m[1]),
+            }
+
+        def held_top_for(
+            center_for_height: FloatArray,
+        ) -> tuple[HeldBoxTopObservation | None, FloatArray]:
+            held_observation: HeldBoxTopObservation | None = None
+            held_evidence = points_base[closer_mask]
+            try:
+                if held_box_hint is None or held_box_hint.center_base is None:
+                    raise ValueError("held box association requires an EEF center hint")
+                if held_footprint_mask is None:
+                    raise ValueError("held box association requires an EEF footprint")
+                association = closer_mask & held_footprint_mask
+                association_points = points_base[association]
+                lower_held_z = float(
+                    center_for_height[2] + config.held_plane_min_separation_m
+                )
+                held_peak, _ = _dominant_height(
+                    association_points[:, 2],
+                    lower_m=lower_held_z,
+                    upper_m=config.workspace_z_m[1],
+                    bin_m=config.z_histogram_bin_m,
+                )
+                held_seed_points = association_points[
+                    np.abs(association_points[:, 2] - held_peak)
+                    <= config.plane_seed_band_m
+                ]
+                held_plane = _fit_trimmed_horizontal_plane(
+                    held_seed_points,
+                    slab_m=config.plane_fit_tolerance_m,
+                    max_points=config.plane_fit_max_points,
+                )
+                held_normal = np.asarray(held_plane.plane.normal, dtype=np.float64)
+                dense_held_normal = np.asarray(held_normal, dtype=dense_dtype)
+                dense_held_plane_d = dense_dtype.type(held_plane.plane.d)
+                held_evidence = association_points[
+                    np.abs(
+                        association_points @ dense_held_normal - dense_held_plane_d
+                    )
+                    <= np.asarray(config.plane_slab_m, dtype=dense_dtype)
+                ]
+                held_z = float(np.median(held_evidence[:, 2]))
+                distinct = bool(
+                    held_z - center_for_height[2]
+                    >= config.held_plane_min_separation_m
+                )
+                if held_evidence.shape[0] >= 100:
+                    footprint = tuple(
+                        float(value)
+                        for value in np.sort(
+                            np.percentile(held_evidence[:, :2], 97.5, axis=0)
+                            - np.percentile(held_evidence[:, :2], 2.5, axis=0)
+                        )
+                    )
+                else:
+                    footprint = None
+                eef_z = held_box_hint.eef_proxy_z_base_m
+                delta_z = None if eef_z is None else held_z - float(eef_z)
+                held_reasons: list[str] = []
+                if not distinct:
+                    held_reasons.append("held_plane_not_distinct_from_stack")
+                if held_plane.p95_residual_m > config.held_plane_max_uncertainty_m:
+                    held_reasons.append("held_plane_residual_too_large")
+                held_observation = HeldBoxTopObservation(
+                    timestamp_s=timestamp,
+                    top_plane_z_base_m=held_z,
+                    top_plane_z_uncertainty_m=held_plane.p95_residual_m,
+                    eef_proxy_z_base_m=eef_z,
+                    delta_z_top_eef_m=delta_z,
+                    footprint_size_m=footprint,
+                    distinct_from_stack=distinct,
+                    valid=not held_reasons,
+                    rejection_reasons=tuple(held_reasons),
+                )
+            except ValueError:
+                if held_box_hint is not None:
+                    held_observation = HeldBoxTopObservation(
+                        timestamp_s=timestamp,
+                        top_plane_z_base_m=None,
+                        top_plane_z_uncertainty_m=None,
+                        eef_proxy_z_base_m=held_box_hint.eef_proxy_z_base_m,
+                        delta_z_top_eef_m=None,
+                        footprint_size_m=held_box_hint.footprint_size_m,
+                        distinct_from_stack=False,
+                        valid=False,
+                        rejection_reasons=("held_top_plane_unobservable",),
+                    )
+            return held_observation, held_evidence
+
         holes = cv2.bitwise_and(hull, cv2.bitwise_not(occupancy))
         holes = cv2.morphologyEx(
             holes,
@@ -1259,6 +1474,105 @@ class PalletStackEstimator:
             maximum_m=config.opening_component_max_m,
         )
         if not candidates:
+            if (
+                fixed_outer_center_base is not None
+                and coarse is not None
+                and coarse.u_right_base is not None
+                and coarse.v_far_base is not None
+                and coarse.yaw_base_rad is not None
+            ):
+                slot_offset = config.geometry.slot1_offset_m
+                slot_target = (
+                    fixed_outer_center_base
+                    + slot_offset[0] * coarse.u_right_base
+                    + slot_offset[1] * coarse.v_far_base
+                )
+                held_observation, held_evidence = held_top_for(fixed_outer_center_base)
+                quality = {
+                    "workspace_point_count": float(workspace_count),
+                    "stack_height_peak_m": float(peak_z),
+                    "stack_height_peak_point_count": float(peak_count),
+                    "stack_plane_seed_count": float(stack_plane.seed_count),
+                    "stack_plane_inlier_count": float(stack_plane.inlier_count),
+                    "stack_plane_p95_residual_m": stack_plane.p95_residual_m,
+                    "stack_plane_normal_z": float(normal[2]),
+                    "inner_opening_candidate_count": 0.0,
+                    "inner_rim_count": 0.0,
+                    "orthogonality_error_rad": 0.0,
+                    "opening_crosscheck_available": 0.0,
+                    "opening_crosscheck_pass": 0.0,
+                    "outer_observed": 1.0,
+                    "closer_points_rejected": float(closer_rejected),
+                    "held_selection_excluded_point_count": float(
+                        held_selection_excluded_count
+                    ),
+                    **coarse.quality,
+                    **fixed_outer_quality,
+                }
+                center_jump_rejection = self._previous_valid_center_jump_rejection(
+                    fixed_outer_center_base,
+                    timestamp_s=timestamp_s,
+                )
+                if center_jump_rejection is not None:
+                    return self._failure(
+                        center_jump_rejection,
+                        timestamp_s=timestamp,
+                        calibration_status=calibration_status,
+                        quality=quality,
+                        coarse=coarse,
+                        evidence=coarse_evidence,
+                    )
+                observation = PalletSceneObservation(
+                    stack=StackObservation(
+                        timestamp_s=timestamp,
+                        center_base=fixed_outer_center_base,
+                        u_right_base=coarse.u_right_base,
+                        v_far_base=coarse.v_far_base,
+                        yaw_base_rad=float(coarse.yaw_base_rad),
+                        plane_height_base_m=float(fixed_outer_center_base[2]),
+                        slot1_target_base=slot_target,
+                        opening_size_m=None,
+                        quality=quality,
+                        valid=True,
+                        rejection_reasons=(),
+                        calibration_status=calibration_status,
+                        axis_branch="image_right",
+                        stack_se2_source="fixed_outer_l_corner",
+                    ),
+                    held_top=held_observation,
+                    coarse=coarse,
+                )
+                self.last_evidence = PalletFrameEvidence(
+                    stack_plane_base=stack_plane.plane,
+                    stack_points_base=_sample_points(stack_points, 2_500),
+                    held_points_base=_sample_points(held_evidence, 1_000),
+                    closer_points_rejected=closer_rejected,
+                    held_excluded_points_base=_sample_points(
+                        points_base[held_selection_exclusion],
+                        1_000,
+                    ),
+                    l_corner_component_points_base=(
+                        None
+                        if l_corner_fit.component_boundary_base is None
+                        else _sample_points(l_corner_fit.component_boundary_base, 1_500)
+                    ),
+                    l_corner_front_endpoints_base=(
+                        None
+                        if coarse.front_line is None
+                        else coarse.front_line.endpoints_base
+                    ),
+                    l_corner_side_endpoints_base=(
+                        None
+                        if coarse.side_line is None
+                        else coarse.side_line.endpoints_base
+                    ),
+                    l_corner_corner_base=coarse.corner_base,
+                    outer_size_m=config.geometry.outer_size_m,
+                )
+                self._previous_valid_frame_id = frame_number
+                self._previous_valid_timestamp_s = float(timestamp_s)
+                self._previous_valid_center = fixed_outer_center_base.copy()
+                return observation
             return self._failure(
                 "inner_opening_not_found",
                 timestamp_s=timestamp,
@@ -1297,25 +1611,51 @@ class PalletStackEstimator:
             (center_xy[0], center_xy[1], float(_plane_z(stack_plane.plane, center_xy))),
             dtype=np.float64,
         )
+        opening_center_base = center_base.copy()
 
         edge_vectors = np.roll(corners_base, -1, axis=0) - corners_base
         edge_lengths = np.linalg.norm(edge_vectors, axis=1)
         edge_directions = edge_vectors / np.maximum(edge_lengths[:, None], 1e-12)
-        image_right = np.asarray(transform[:3, 0], dtype=np.float64)
-        image_right = image_right - float(image_right @ normal) * normal
-        image_right = _unit(image_right)
+        try:
+            fixed_axis = _resolve_fixed_approach_axes(
+                stack_normal=normal,
+                T_base_depth=transform,
+                config=config,
+            )
+        except ValueError:
+            fixed_axis = None
+        image_right = (
+            fixed_axis.u_right
+            if fixed_axis is not None
+            else _unit(
+                np.asarray(transform[:3, 0], dtype=np.float64)
+                - float(np.asarray(transform[:3, 0], dtype=np.float64) @ normal)
+                * normal
+            )
+        )
         u_index = int(np.argmax(np.abs(edge_directions @ image_right)))
         u_right = edge_directions[u_index]
         if float(u_right @ image_right) < 0.0:
             u_right = -u_right
         u_right = _unit(u_right - float(u_right @ normal) * normal)
         v_far = _unit(np.cross(normal, u_right))
-        rough_front = np.array(
-            (config.rough_front_axis_base[0], config.rough_front_axis_base[1], 0.0),
-            dtype=np.float64,
-        )
-        rough_front = _unit(rough_front - float(rough_front @ normal) * normal)
-        start_yaw_residual = _line_angle_difference(v_far, rough_front)
+        if fixed_axis is None:
+            fixed_signed_alignment = 0.0
+            start_yaw_residual = math.pi
+            fixed_role_result = "unresolved"
+        else:
+            fixed_signed_alignment = float(v_far @ fixed_axis.fixed_v_far)
+            start_yaw_residual = math.acos(
+                float(np.clip(fixed_signed_alignment, -1.0, 1.0))
+            )
+            opening_u_role_residual = math.acos(
+                float(np.clip(abs(float(u_right @ fixed_axis.fixed_v_far)), 0.0, 1.0))
+            )
+            fixed_role_result = (
+                "swapped_u_right_v_far"
+                if opening_u_role_residual + math.radians(2.0) < start_yaw_residual
+                else fixed_axis.role_result
+            )
 
         u_opening_size = float(edge_lengths[u_index])
         v_opening_size = float(edge_lengths[(u_index + 1) % 4])
@@ -1325,9 +1665,23 @@ class PalletStackEstimator:
             abs(measured_opening[0] - expected_opening[0]),
             abs(measured_opening[1] - expected_opening[1]),
         )
+        stack_se2_source = "inner_opening"
+        if (
+            fixed_outer_center_base is not None
+            and coarse is not None
+            and coarse.u_right_base is not None
+            and coarse.v_far_base is not None
+            and coarse.yaw_base_rad is not None
+        ):
+            center_base = fixed_outer_center_base
+            u_right = coarse.u_right_base
+            v_far = coarse.v_far_base
+            yaw = float(coarse.yaw_base_rad)
+            stack_se2_source = "fixed_outer_l_corner"
+        else:
+            yaw = float(math.atan2(u_right[1], u_right[0]))
         slot_offset = config.geometry.slot1_offset_m
         slot_target = center_base + slot_offset[0] * u_right + slot_offset[1] * v_far
-        yaw = float(math.atan2(u_right[1], u_right[0]))
 
         outer_rectangle = cv2.minAreaRect(hull_points.reshape(-1, 2).astype(np.float32))
         outer_size = tuple(
@@ -1348,118 +1702,66 @@ class PalletStackEstimator:
             int(rim_observed[(u_index + 1) % 4]) + int(rim_observed[(u_index + 3) % 4]),
         )
         rejection_reasons: list[str] = []
-        if max(axis_size_errors) > config.gates.max_opening_size_error_m:
+        opening_crosscheck_pass = (
+            max(axis_size_errors) <= config.gates.max_opening_size_error_m
+            and rim_count >= config.gates.min_inner_rim_count
+            and min(rim_direction_counts) >= 1
+            and orthogonality_error <= config.gates.max_orthogonality_error_rad
+        )
+        opening_refinement_weight = 0.0
+        if stack_se2_source == "fixed_outer_l_corner" and opening_crosscheck_pass:
+            # The fixed outer rim remains primary.  A geometrically consistent
+            # opening contributes a small center refinement that reduces depth
+            # stride quantization without making opening visibility mandatory.
+            opening_refinement_weight = 0.25
+            center_base = (
+                (1.0 - opening_refinement_weight) * center_base
+                + opening_refinement_weight * opening_center_base
+            )
+            slot_target = (
+                center_base
+                + slot_offset[0] * u_right
+                + slot_offset[1] * v_far
+            )
+        if (
+            fixed_outer_center_base is None
+            and max(axis_size_errors) > config.gates.max_opening_size_error_m
+        ):
             rejection_reasons.append("opening_size_mismatch")
-        if rim_count < config.gates.min_inner_rim_count:
+        if (
+            fixed_outer_center_base is None
+            and rim_count < config.gates.min_inner_rim_count
+        ):
             rejection_reasons.append("insufficient_inner_rims")
-        if min(rim_direction_counts) < 1:
+        if fixed_outer_center_base is None and min(rim_direction_counts) < 1:
             rejection_reasons.append("inner_rims_single_direction")
-        if orthogonality_error > config.gates.max_orthogonality_error_rad:
+        if (
+            fixed_outer_center_base is None
+            and orthogonality_error > config.gates.max_orthogonality_error_rad
+        ):
             rejection_reasons.append("opening_orthogonality_error")
         if stack_plane.p95_residual_m > config.gates.max_plane_p95_residual_m:
             rejection_reasons.append("stack_plane_residual_too_large")
-        if start_yaw_residual > config.gates.max_start_yaw_residual_rad:
-            rejection_reasons.append("rough_front_yaw_exceeded")
-        if (
-            self._previous_valid_frame_id is not None
-            and self._previous_valid_timestamp_s is not None
-            and self._previous_valid_center is not None
-        ):
-            center_jump_age_s = float(timestamp_s) - float(
-                self._previous_valid_timestamp_s
-            )
-            if center_jump_age_s < -1e-6:
-                rejection_reasons.append("center_jump_timestamp_regressed")
-            elif center_jump_age_s <= config.gates.max_consecutive_center_jump_age_s:
-                center_jump_m = float(
-                    np.linalg.norm(center_base[:2] - self._previous_valid_center[:2])
-                )
-                if center_jump_m > config.gates.max_consecutive_center_jump_m:
-                    rejection_reasons.append("center_jump_exceeded")
+        if fixed_axis is None:
+            rejection_reasons.append("fixed_approach_axis_unresolved")
+        elif fixed_signed_alignment <= 0.0:
+            rejection_reasons.append("fixed_approach_axis_opposite")
+        elif start_yaw_residual > config.gates.max_start_yaw_residual_rad:
+            rejection_reasons.append("fixed_approach_axis_residual_too_large")
+        elif fixed_role_result != "accepted":
+            rejection_reasons.append("fixed_approach_axis_role_conflict")
+        center_jump_rejection = self._previous_valid_center_jump_rejection(
+            center_base,
+            timestamp_s=timestamp_s,
+        )
+        if center_jump_rejection is not None:
+            rejection_reasons.append(center_jump_rejection)
 
-        held_observation: HeldBoxTopObservation | None = None
         # Every closer point is excluded from stack fitting.  A particular
         # closer plane is labelled "held box" only when fresh EEF geometry
         # supplies an association region; replay without robot state must not
         # confidently relabel a robot link or the box underside as its top.
-        held_evidence = points_base[closer_mask]
-        try:
-            if held_box_hint is None or held_box_hint.center_base is None:
-                raise ValueError("held box association requires an EEF center hint")
-            if held_footprint_mask is None:
-                raise ValueError("held box association requires an EEF footprint")
-            association = closer_mask & held_footprint_mask
-            association_points = points_base[association]
-            lower_held_z = float(center_base[2] + config.held_plane_min_separation_m)
-            held_peak, _ = _dominant_height(
-                association_points[:, 2],
-                lower_m=lower_held_z,
-                upper_m=config.workspace_z_m[1],
-                bin_m=config.z_histogram_bin_m,
-            )
-            held_seed_points = association_points[
-                np.abs(association_points[:, 2] - held_peak)
-                <= config.plane_seed_band_m
-            ]
-            held_plane = _fit_trimmed_horizontal_plane(
-                held_seed_points,
-                slab_m=config.plane_fit_tolerance_m,
-                max_points=config.plane_fit_max_points,
-            )
-            held_normal = np.asarray(held_plane.plane.normal, dtype=np.float64)
-            dense_held_normal = np.asarray(held_normal, dtype=dense_dtype)
-            dense_held_plane_d = dense_dtype.type(held_plane.plane.d)
-            held_evidence = association_points[
-                np.abs(
-                    association_points @ dense_held_normal - dense_held_plane_d
-                )
-                <= np.asarray(config.plane_slab_m, dtype=dense_dtype)
-            ]
-            held_z = float(np.median(held_evidence[:, 2]))
-            distinct = bool(
-                held_z - center_base[2] >= config.held_plane_min_separation_m
-            )
-            if held_evidence.shape[0] >= 100:
-                footprint = tuple(
-                    float(value)
-                    for value in np.sort(
-                        np.percentile(held_evidence[:, :2], 97.5, axis=0)
-                        - np.percentile(held_evidence[:, :2], 2.5, axis=0)
-                    )
-                )
-            else:
-                footprint = None
-            eef_z = held_box_hint.eef_proxy_z_base_m
-            delta_z = None if eef_z is None else held_z - float(eef_z)
-            held_reasons: list[str] = []
-            if not distinct:
-                held_reasons.append("held_plane_not_distinct_from_stack")
-            if held_plane.p95_residual_m > config.held_plane_max_uncertainty_m:
-                held_reasons.append("held_plane_residual_too_large")
-            held_observation = HeldBoxTopObservation(
-                timestamp_s=timestamp,
-                top_plane_z_base_m=held_z,
-                top_plane_z_uncertainty_m=held_plane.p95_residual_m,
-                eef_proxy_z_base_m=eef_z,
-                delta_z_top_eef_m=delta_z,
-                footprint_size_m=footprint,
-                distinct_from_stack=distinct,
-                valid=not held_reasons,
-                rejection_reasons=tuple(held_reasons),
-            )
-        except ValueError:
-            if held_box_hint is not None:
-                held_observation = HeldBoxTopObservation(
-                    timestamp_s=timestamp,
-                    top_plane_z_base_m=None,
-                    top_plane_z_uncertainty_m=None,
-                    eef_proxy_z_base_m=held_box_hint.eef_proxy_z_base_m,
-                    delta_z_top_eef_m=None,
-                    footprint_size_m=held_box_hint.footprint_size_m,
-                    distinct_from_stack=False,
-                    valid=False,
-                    rejection_reasons=("held_top_plane_unobservable",),
-                )
+        held_observation, held_evidence = held_top_for(opening_center_base)
 
         quality = {
             "workspace_point_count": float(workspace_count),
@@ -1476,11 +1778,17 @@ class PalletStackEstimator:
             "opening_u_error_m": axis_size_errors[0],
             "opening_v_error_m": axis_size_errors[1],
             "orthogonality_error_rad": float(orthogonality_error),
-            "rough_front_yaw_residual_rad": float(start_yaw_residual),
+            "opening_crosscheck_available": 1.0,
+            "opening_crosscheck_pass": 1.0 if opening_crosscheck_pass else 0.0,
+            "opening_center_refinement_weight": opening_refinement_weight,
+            "fixed_approach_signed_alignment": float(fixed_signed_alignment),
+            "fixed_approach_axis_residual_rad": float(start_yaw_residual),
             "outer_observed": float(outer_observed),
             "outer_size_error_norm_m": outer_error,
             "closer_points_rejected": float(closer_rejected),
             "held_selection_excluded_point_count": float(held_selection_excluded_count),
+            **coarse.quality,
+            **fixed_outer_quality,
         }
         valid = not rejection_reasons
         observation = PalletSceneObservation(
@@ -1498,6 +1806,7 @@ class PalletStackEstimator:
                 rejection_reasons=tuple(rejection_reasons),
                 calibration_status=calibration_status,
                 axis_branch="image_right",
+                stack_se2_source=stack_se2_source,
             ),
             held_top=held_observation,
             coarse=coarse,

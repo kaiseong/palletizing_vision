@@ -33,15 +33,28 @@ part of the current placement decision; every `placement.maximum_force_n`,
   `--allow-geometry-only-grip-check`, and
   `--allow-vision-geometry-release`.
 - Replace repeated stop-step acquisition with `continuous_forward`: five
-  stationary L/edge-pair frames authorize one `0.030 m/s` forward cruise, with
-  a release-capped `0.150 m` budget and `0.006 m` braking allowance.
-- During continuous cruise, a fresh raw complete-hole observation immediately
-  commands zero and waits for wheel stop plus stationary hole dwell. A
-  dwell-complete hole also requests zero handoff. L/edge geometry remains a
-  moving-step visibility predicate until the hole appears.
-- After zero handoff, fine alignment uses only complete-hole x/y/yaw against
-  the demonstrated reference: hole centre `[0.865000, 0.139523] m`, yaw
+  stationary relaxed edge-pair frames authorize one `0.030 m/s` forward cruise,
+  with a release-capped `0.150 m` budget and `0.006 m` braking allowance.
+- Project D435 depth-optical `+X` onto the fitted stack plane to obtain
+  `u_right`, orient the stack-plane normal, and compute
+  `v_far = normalize(n_stack x u_right)`. The result must align positively with
+  the calibrated approach vector. The active config stores both
+  `fixed_approach_v_far_axis_base_xy` and `fixed_approach_axis_source`; a
+  missing or ambiguous provenance is invalid.
+- Treat a metric outer L-corner plus the measured `660 x 658 mm` outer footprint
+  as enough to recover a valid stack SE(2) and centred-opening proxy before the
+  centre opening is visible. Complete-hole geometry becomes cross-check and
+  refinement evidence, not the sole fine-alignment authority.
+- During continuous cruise, a fresh strict L-corner proxy or raw complete-hole
+  observation immediately commands zero and waits for wheel stop plus
+  stationary dwell before handoff.
+- After zero handoff, fine alignment uses coupled x/y/yaw against the
+  demonstrated reference: opening/proxy centre `[0.865000, 0.139523] m`, yaw
   `-90 deg`, in `base_at_configured_slot1_ready_pose`.
+- The visual dropout bridge may propagate one controller-accepted metric
+  observation through fresh odometry for at most `0.30 s`. Odometry-propagated
+  samples cannot refresh the bridge; expiry, stale odometry, or conflicting
+  geometry selects exact-zero mobility.
 - Keep one whole-body stream alive. Each packet contains torso/head Position,
   both arm commands, and mobile SE(2) velocity. The loaded place path uses
   bilateral Cartesian impedance for arm lower/release with nullspace joint
@@ -50,17 +63,22 @@ part of the current placement decision; every `placement.maximum_force_n`,
 - Placement starts only from `ARRIVED_HOLD` with exact-zero Running feedback,
   fresh stopped-wheel dwell, loaded Cartesian-hold mode, fresh measured FK, and
   fresh vision geometry.
-- The lowering command copies the acknowledged loaded-hold target and moves
-  both EEF targets down `0.050 m` in RB-Y1 base z. It preserves orientation,
-  squeeze metadata, and nullspace targets rather than re-basing on a compliant
-  measured wrist pose and accidentally ratcheting the squeeze.
-  It must reach measured z within `0.008 m`, midpoint XY drift within
-  `0.015 m`, and rotation within `3 deg` before any release path is considered.
+- The previous fixed-distance lowering is rejected. `0.050 m` is now only the
+  pre-motion clearance floor. Placement freezes a typed immutable
+  `PlacementDescentPlan` from the current FK box-bottom and stack-plane bounds,
+  then lowers by that plan's base-z distance.
+- The lowering command copies the acknowledged loaded-hold target and shifts
+  both EEF targets by the frozen plan distance in RB-Y1 base z. It preserves
+  orientation, squeeze metadata, and nullspace targets rather than re-basing on
+  a compliant measured wrist pose and accidentally ratcheting the squeeze. It
+  must reach measured z within `0.008 m`, midpoint XY drift within `0.015 m`,
+  and rotation within `3 deg` before any release path is considered.
 - Release is vision/FK gated. The sequencer requires at least three fresh gap
   samples, `0.008 m` gap stability, evidence age `<=0.30 s`, plan age
-  `<=5.0 s`, predicted post-lower residual in `[-0.020, +0.010] m`, and
-  uncertainty `<=0.015 m`. After a `0.35 s` seated dwell, it spreads from the
-  planned lowered geometry by `0.080 m` per arm.
+  `<=15.0 s`, FK box-bottom lower bound minus stack-plane upper bound
+  `>=0.050 m`, uncertainty `<=0.025 m`, and descent `<=0.250 m`. After a
+  `0.35 s` seated dwell, it spreads from the planned lowered geometry by
+  `0.080 m` per arm.
 - Release completion requires Running feedback, each EEF within `0.012 m` and
   `4 deg` of the release target, measured inter-EEF separation increase at
   least `0.136 m`, and a `0.35 s` target dwell.
@@ -84,11 +102,12 @@ part of the current placement decision; every `placement.maximum_force_n`,
 ## Consequences
 
 The mobile base no longer performs repeated small stop-step moves when the
-partial L/edge evidence is stable. It cruises forward until the raw complete
-hole appears, then brakes, verifies zero motion, collects stationary hole
-dwell, and hands off once to the fine x/y/yaw servo. Once placement starts,
-later vision drift cannot reopen mobile authority; the runtime keeps sending
-exact-zero mobile velocity while the arms lower and release.
+partial edge evidence is stable. It cruises forward until strict outer-corner
+proxy or complete-hole geometry appears, then brakes, verifies zero motion,
+collects stationary dwell, and hands off once to the coupled fine x/y/yaw
+servo. Once placement starts, later vision drift cannot reopen mobile
+authority; the runtime keeps sending exact-zero mobile velocity while the arms
+lower and release.
 
 The control stream also avoids a body/mobility ownership gap. Torso/head
 Position, arm Cartesian impedance, nullspace hold, and mobile velocity are
