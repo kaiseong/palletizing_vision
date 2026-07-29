@@ -124,10 +124,11 @@ LIFT_ANGULAR_VELOCITY_LIMIT = float(np.pi / 2)  # rad/s
 LIFT_LINEAR_ACCELERATION_LIMIT = 0.9            # m/s^2
 LIFT_ANGULAR_ACCELERATION_LIMIT = float(np.pi)  # rad/s^2
 # Per-arm (7-joint) joint-space impedance that holds the box while lifting.
-# TUNE for your robot/payload: stiffness firm enough to hold, torque above load.
+# Torque saturation is intentionally not overridden: the RB-Y1 controller uses
+# its model/runtime default for each joint.  The persistent pallet stream uses
+# the same policy, avoiding a discontinuous command envelope at the boundary.
 LIFT_JOINT_STIFFNESS = [150.0] * 7              # Nm/rad
 LIFT_JOINT_DAMPING_RATIO = 1.0                  # critically damped -> smooth, no overshoot
-LIFT_JOINT_TORQUE_LIMIT = [100.0] * 7            # Nm (must exceed the holding torque)
 # control_hold_time [s]: keep the box raised/held after the lift finishes.
 LIFT_HOLD_TIME = 100.0
 
@@ -441,8 +442,8 @@ def build_impedance_lift_command(dyn_model, dyn_state, q):
 
     Uses a Cartesian IMPEDANCE controller that follows a timed trajectory
     (set_minimum_time + velocity limits) so the box rises gently over
-    LIFT_MINIMUM_TIME, while joint-space impedance (stiffness / damping /
-    torque limit) tracks it compliantly."""
+    LIFT_MINIMUM_TIME, while joint-space impedance (configured stiffness and
+    damping, controller-default torque saturation) tracks it compliantly."""
     # Current EEF poses in the torso-tip frame (command reference), via FK.
     dyn_state.set_q(q)
     dyn_model.compute_forward_kinematics(dyn_state)
@@ -480,7 +481,6 @@ def build_impedance_lift_command(dyn_model, dyn_state, q):
             )
             .set_joint_stiffness(LIFT_JOINT_STIFFNESS)
             .set_joint_damping_ratio(LIFT_JOINT_DAMPING_RATIO)
-            .set_joint_torque_limit(LIFT_JOINT_TORQUE_LIMIT)
             .set_minimum_time(LIFT_MINIMUM_TIME)
         )
 

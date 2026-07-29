@@ -3726,7 +3726,7 @@ class RBY1PalletController:
         )
 
         def arm(target: tuple[float, ...]) -> Any:
-            # Deliberately omit any torque-limit override; the SDK policy stays default.
+            # Match box-pick: omit the override so controller defaults remain active.
             return (
                 self._sdk.JointImpedanceControlCommandBuilder()
                 .set_command_header(header())
@@ -3740,7 +3740,7 @@ class RBY1PalletController:
             target: np.ndarray,
             nullspace_joint_rad: tuple[float, ...],
         ) -> Any:
-            # Deliberately omit torque-limit override; the SDK policy stays default.
+            # Match box-pick lift: controller defaults own per-joint saturation.
             cartesian_builder = getattr(
                 self._sdk,
                 "CartesianImpedanceControlCommandBuilder",

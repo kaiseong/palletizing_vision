@@ -70,6 +70,11 @@ part of the current placement decision; every `placement.maximum_force_n`,
 - F/T values are optional telemetry in this configuration. Missing or invalid
   F/T becomes explicit zero-fallback diagnostics, and no F/T threshold can trip
   because the thresholds are `null`.
+- Box-pick lift and pallet Cartesian hold both omit a joint-torque-limit
+  override. The RB-Y1 controller therefore applies its per-joint model/runtime
+  defaults; the former box-pick-only `[100] * 7 Nm` blanket request is rejected
+  because it neither matched the pallet stream nor the controller's per-joint
+  default policy.
 - `pallet_geometry._dominant_height()` selects the dominant support plane
   inside the configured ROI after held-carton exclusion. This assumes one
   pallet stack in the workspace; a larger staging table or adjacent higher

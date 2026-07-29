@@ -809,10 +809,15 @@ may already have occurred.
 
 The packaged grasp motion itself has not been contact-validated
 by these camera recordings: it uses a 300 mm inward target, a 150 mm continuing
-lift squeeze, 100 Nm per-arm-joint torque limits, and a 100 s lift hold. Its FT
-monitor reports force but does not autonomously abort on a threshold. Run the
-first physical trials supervised with an accessible emergency stop and tune
-those values independently before unattended operation.
+lift squeeze, and a 100 s lift hold. Box-pick lift and pallet placement both
+omit a Cartesian-impedance torque-limit override, so the RB-Y1 controller
+applies its per-joint model/runtime defaults instead of the former unsafe
+`[100] * 7 Nm` blanket request. Controller model/runtime parameters remain
+authoritative; the application does not assume one common limit for all seven
+joints. Its FT monitor is optional; the pallet placement path does not use F/T
+thresholds. Run the first physical trials supervised with an accessible
+emergency stop and tune the geometric/squeeze values independently before
+unattended operation.
 
 ## Verification
 
