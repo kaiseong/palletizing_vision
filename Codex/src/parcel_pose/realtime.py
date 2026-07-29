@@ -8,10 +8,12 @@ may use current base poses without changing estimator or overlay semantics.
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 import sys
 import time
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, TextIO
 
 import numpy as np
 from numpy.typing import NDArray
@@ -235,6 +237,69 @@ def draw_live_overlay(
     return output
 
 
+def _open_video(path: Path | None, shape: tuple[int, int], fps: int) -> Any | None:
+    if path is None:
+        return None
+    if path.exists():
+        raise FileExistsError(f"refusing to overwrite live-view video: {path}")
+    cv2 = _cv2()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    height, width = shape
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (width, height)
+    )
+    if not writer.isOpened():
+        raise LiveViewUnavailableError(f"cannot open live-view MP4 writer: {path}")
+    return writer
+
+
+def _open_log(path: Path | None) -> TextIO | None:
+    if path is None:
+        return None
+    if path.exists():
+        raise FileExistsError(f"refusing to overwrite live-view telemetry: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path.open("x", encoding="utf-8")
+
+
+def _write_live_record(
+    stream: TextIO | None,
+    *,
+    frame_index: int,
+    depth_frame_number: int,
+    depth_timestamp_ms: float,
+    estimator_latency_ms: float,
+    base_pose: BasePoseDiagnostic | None,
+    handoff_ready: bool,
+) -> None:
+    if stream is None:
+        return
+    if base_pose is None:
+        pose_record: dict[str, Any] | None = None
+    else:
+        x_m, y_m, z_m = base_pose.box_center_xyz_m
+        pose_record = {
+            "box_center_xyz_m": [float(x_m), float(y_m), float(z_m)],
+            "yaw_signed_deg": float(base_pose.yaw_signed_deg),
+        }
+    stream.write(
+        json.dumps(
+            {
+                "frame_index": int(frame_index),
+                "depth_frame_number": int(depth_frame_number),
+                "depth_timestamp_ms": float(depth_timestamp_ms),
+                "estimator_latency_ms": float(estimator_latency_ms),
+                "base_pose": pose_record,
+                "handoff_ready": bool(handoff_ready),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    stream.flush()
+
+
 def run_live_view(
     calibration: Calibration,
     estimator_config: EstimatorConfig,
@@ -245,6 +310,9 @@ def run_live_view(
     fullscreen: bool = False,
     window_name: str = DEFAULT_WINDOW_NAME,
     automation: LivePoseAutomation | None = None,
+    headless: bool = False,
+    output_mp4: str | Path | None = None,
+    log_jsonl: str | Path | None = None,
 ) -> int:
     """Run the D435/estimator/display loop and return the displayed frame count."""
 
@@ -258,17 +326,21 @@ def run_live_view(
         raise ValueError("--window-name cannot be empty")
 
     cv2 = _cv2()
-    _require_highgui(cv2)
+    if not headless:
+        _require_highgui(cv2)
     displayed_frames = 0
     window_created = False
     handoff_ready = False
     handoff_started = False
     user_cancelled = False
+    video_writer: Any | None = None
+    log_stream: TextIO | None = None
     stream_config = D435StreamConfig(
         align_color_to_depth=False,
         warmup_frames=warmup_frames,
     )
     try:
+        log_stream = _open_log(None if log_jsonl is None else Path(log_jsonl))
         with RealSenseAdapter(stream_config) as camera:
             metadata = camera.session_metadata(**dict(metadata_context))
             _validate_camera_profile(calibration, metadata)
@@ -280,19 +352,20 @@ def run_live_view(
                 estimator_config,
             )
             color_from_depth = factory_extrinsics_to_transform(metadata.depth_to_color)
-            try:
-                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                window_created = True
-                if fullscreen:
-                    cv2.setWindowProperty(
-                        window_name,
-                        cv2.WND_PROP_FULLSCREEN,
-                        cv2.WINDOW_FULLSCREEN,
-                    )
-            except Exception as exc:
-                raise LiveViewUnavailableError(
-                    f"OpenCV could not create the live-view window: {exc}"
-                ) from exc
+            if not headless:
+                try:
+                    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                    window_created = True
+                    if fullscreen:
+                        cv2.setWindowProperty(
+                            window_name,
+                            cv2.WND_PROP_FULLSCREEN,
+                            cv2.WINDOW_FULLSCREEN,
+                        )
+                except Exception as exc:
+                    raise LiveViewUnavailableError(
+                        f"OpenCV could not create the live-view window: {exc}"
+                    ) from exc
 
             while max_frames is None or displayed_frames < max_frames:
                 try:
@@ -327,13 +400,28 @@ def run_live_view(
                     estimator_latency_ms=estimator_ms,
                     cv2_module=cv2,
                 )
-                try:
-                    cv2.imshow(window_name, overlay)
-                    key = int(cv2.waitKey(1)) & 0xFF
-                except Exception as exc:
-                    raise LiveViewUnavailableError(
-                        f"OpenCV live-view display failed: {exc}"
-                    ) from exc
+                if video_writer is None and output_mp4 is not None:
+                    video_writer = _open_video(Path(output_mp4), overlay.shape[:2], 30)
+                if video_writer is not None:
+                    video_writer.write(overlay)
+                _write_live_record(
+                    log_stream,
+                    frame_index=displayed_frames,
+                    depth_frame_number=frame.depth_frame_number,
+                    depth_timestamp_ms=frame.depth_timestamp_ms,
+                    estimator_latency_ms=estimator_ms,
+                    base_pose=base_pose,
+                    handoff_ready=handoff_ready,
+                )
+                key = -1
+                if not headless:
+                    try:
+                        cv2.imshow(window_name, overlay)
+                        key = int(cv2.waitKey(1)) & 0xFF
+                    except Exception as exc:
+                        raise LiveViewUnavailableError(
+                            f"OpenCV live-view display failed: {exc}"
+                        ) from exc
                 displayed_frames += 1
                 if key in {27, ord("q"), ord("Q")}:
                     user_cancelled = True
@@ -349,6 +437,10 @@ def run_live_view(
         if handoff_started:
             raise
     finally:
+        if video_writer is not None:
+            video_writer.release()
+        if log_stream is not None:
+            log_stream.close()
         if window_created:
             try:
                 cv2.destroyWindow(window_name)

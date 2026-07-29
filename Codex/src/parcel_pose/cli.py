@@ -108,8 +108,23 @@ def build_parser() -> argparse.ArgumentParser:
     live_view.add_argument("--calibration", type=Path, required=True)
     live_view.add_argument("--warmup-frames", type=int, default=30)
     live_view.add_argument("--max-frames", type=int)
+    live_view.add_argument(
+        "--headless",
+        action="store_true",
+        help="run capture, visual servo, and auto-grab without an OpenCV window",
+    )
     live_view.add_argument("--fullscreen", action="store_true")
     live_view.add_argument("--window-name", default="RB-Y1 Parcel Pose")
+    live_view.add_argument(
+        "--output-mp4",
+        type=Path,
+        help="optional annotated live video (the path must not already exist)",
+    )
+    live_view.add_argument(
+        "--log-jsonl",
+        type=Path,
+        help="optional per-frame pose telemetry (the path must not already exist)",
+    )
     live_view.add_argument(
         "--auto-grab",
         action="store_true",
@@ -463,8 +478,11 @@ def _run_live_view(args: argparse.Namespace) -> int:
             _recording_context(config, {}),
             warmup_frames=args.warmup_frames,
             max_frames=args.max_frames,
+            headless=args.headless,
             fullscreen=args.fullscreen,
             window_name=args.window_name,
+            output_mp4=args.output_mp4,
+            log_jsonl=args.log_jsonl,
             automation=automation,
         )
     except (
