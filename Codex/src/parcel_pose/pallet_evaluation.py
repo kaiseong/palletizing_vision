@@ -225,6 +225,102 @@ def _replay_held_hint(root: Mapping[str, Any]) -> HeldBoxHint | None:
     )
 
 
+def _finite_float(value: Any, *, name: str) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _fixed_ready_clearance_audit(
+    root: Mapping[str, Any],
+    *,
+    stack_upper_bound_m: float | None,
+    maximum_box_height_m: float,
+    minimum_clearance_m: float,
+) -> dict[str, Any]:
+    held = root.get("held_box", {})
+    if not isinstance(held, Mapping):
+        return {
+            "applicable": False,
+            "status": "unobservable_missing_held_box_config",
+            "source": "configured_fixed_ready_dual_eef_nominal_geometry",
+            "motion_authorized_from_this_audit": False,
+        }
+    required_keys = (
+        "nominal_ready_right_eef_base_xyz_m",
+        "nominal_ready_left_eef_base_xyz_m",
+    )
+    missing_keys = [key for key in required_keys if held.get(key) is None]
+    if missing_keys:
+        return {
+            "applicable": False,
+            "status": "unobservable_missing_fixed_ready_eef_config",
+            "missing_keys": missing_keys,
+            "source": "configured_fixed_ready_dual_eef_nominal_geometry",
+            "motion_authorized_from_this_audit": False,
+        }
+    right = np.asarray(held["nominal_ready_right_eef_base_xyz_m"], dtype=np.float64)
+    left = np.asarray(held["nominal_ready_left_eef_base_xyz_m"], dtype=np.float64)
+    offset = np.asarray(
+        held.get("center_offset_from_eef_midpoint_m", (0.0, 0.0, 0.0)),
+        dtype=np.float64,
+    )
+    if any(value.shape != (3,) for value in (right, left, offset)):
+        raise ValueError(
+            "fixed-ready EEF origins and held-box offset must be XYZ vectors"
+        )
+    if not np.all(np.isfinite([right, left, offset])):
+        raise ValueError("fixed-ready EEF origins and held-box offset must be finite")
+    box_bottom_uncertainty_m = _finite_float(
+        held.get("fixed_ready_box_bottom_uncertainty_m", 0.015),
+        name="held_box.fixed_ready_box_bottom_uncertainty_m",
+    )
+    if box_bottom_uncertainty_m < 0.0:
+        raise ValueError(
+            "held_box.fixed_ready_box_bottom_uncertainty_m must be non-negative"
+        )
+    eef_midpoint = 0.5 * (right + left)
+    center = eef_midpoint + offset
+    nominal_box_bottom_z_m = float(center[2]) - 0.5 * maximum_box_height_m
+    conservative_box_bottom_z_m = nominal_box_bottom_z_m - box_bottom_uncertainty_m
+    clearance_lower_bound_m = (
+        None
+        if stack_upper_bound_m is None
+        else conservative_box_bottom_z_m - stack_upper_bound_m
+    )
+    gate_passed = (
+        None
+        if clearance_lower_bound_m is None
+        else bool(clearance_lower_bound_m >= minimum_clearance_m)
+    )
+    return {
+        "applicable": True,
+        "source": "configured_fixed_ready_dual_eef_nominal_geometry",
+        "right_eef_base_xyz_m": right.tolist(),
+        "left_eef_base_xyz_m": left.tolist(),
+        "eef_midpoint_base_xyz_m": eef_midpoint.tolist(),
+        "center_offset_from_eef_midpoint_m": offset.tolist(),
+        "configured_center_base_xyz_m": center.tolist(),
+        "maximum_box_height_m": maximum_box_height_m,
+        "fixed_ready_box_bottom_uncertainty_m": box_bottom_uncertainty_m,
+        "nominal_box_bottom_z_base_m": nominal_box_bottom_z_m,
+        "conservative_box_bottom_z_base_m": conservative_box_bottom_z_m,
+        "conservative_stack_top_z_base_m": stack_upper_bound_m,
+        "required_lower_bound_m": minimum_clearance_m,
+        "observed_conservative_lower_bound_m": clearance_lower_bound_m,
+        "review_only_gate_passed": gate_passed,
+        "motion_authorized_from_this_audit": False,
+        "status": (
+            "unobservable_no_valid_stack_top"
+            if clearance_lower_bound_m is None
+            else "pass_review_only_nominal_geometry"
+            if clearance_lower_bound_m >= minimum_clearance_m
+            else "fail_review_only_raise_ready_pose"
+        ),
+    }
+
+
 def _angle_std_rad(values: Sequence[float]) -> float | None:
     if not values:
         return None
@@ -661,24 +757,72 @@ def evaluate_pallet_session(
         and item.stack.plane_height_base_m is not None
         and "stack_plane_p95_residual_m" in item.stack.quality
     ]
+    stack_top_samples = [
+        (
+            float(item.stack.plane_height_base_m),
+            float(item.stack.quality["stack_plane_p95_residual_m"]),
+        )
+        for item in observations
+        if item.valid
+        and item.stack.plane_height_base_m is not None
+        and "stack_plane_p95_residual_m" in item.stack.quality
+    ]
     held_config = root.get("held_box", {})
     safety_config = root.get("safety", {})
-    maximum_box_height_m = float(
+    maximum_box_height_m = _finite_float(
         held_config.get("maximum_height_m", 0.164)
         if isinstance(held_config, Mapping)
-        else 0.164
+        else 0.164,
+        name="held_box.maximum_height_m",
     )
-    minimum_clearance_m = float(
+    if maximum_box_height_m <= 0.0:
+        raise ValueError("held_box.maximum_height_m must be positive")
+    minimum_clearance_m = _finite_float(
         safety_config.get("minimum_clearance_m", 0.050)
         if isinstance(safety_config, Mapping)
-        else 0.050
+        else 0.050,
+        name="safety.minimum_clearance_m",
     )
+    if minimum_clearance_m <= 0.0:
+        raise ValueError("safety.minimum_clearance_m must be positive")
     clearance_lower_bound_m = None
+    direct_held_lower_m = None
+    direct_stack_upper_m = None
+    stack_upper_m = None
+    valid_clearance_sample_count = 0
+    valid_stack_top_sample_count = 0
     if clearance_samples:
         clearance_array = np.asarray(clearance_samples, dtype=np.float64)
-        held_lower_m = float(np.min(clearance_array[:, 0] - clearance_array[:, 1]))
-        stack_upper_m = float(np.max(clearance_array[:, 2] + clearance_array[:, 3]))
-        clearance_lower_bound_m = held_lower_m - maximum_box_height_m - stack_upper_m
+        clearance_array = clearance_array[
+            np.all(np.isfinite(clearance_array), axis=1)
+        ]
+        if clearance_array.size:
+            valid_clearance_sample_count = int(clearance_array.shape[0])
+            direct_held_lower_m = float(
+                np.min(clearance_array[:, 0] - clearance_array[:, 1])
+            )
+            direct_stack_upper_m = float(
+                np.max(clearance_array[:, 2] + clearance_array[:, 3])
+            )
+            clearance_lower_bound_m = (
+                direct_held_lower_m - maximum_box_height_m - direct_stack_upper_m
+            )
+    if stack_top_samples:
+        stack_top_array = np.asarray(stack_top_samples, dtype=np.float64)
+        stack_top_array = stack_top_array[
+            np.all(np.isfinite(stack_top_array), axis=1)
+        ]
+        if stack_top_array.size:
+            valid_stack_top_sample_count = int(stack_top_array.shape[0])
+            stack_upper_m = float(
+                np.max(stack_top_array[:, 0] + stack_top_array[:, 1])
+            )
+    fixed_ready_clearance = _fixed_ready_clearance_audit(
+        root,
+        stack_upper_bound_m=stack_upper_m,
+        maximum_box_height_m=maximum_box_height_m,
+        minimum_clearance_m=minimum_clearance_m,
+    )
 
     reviewed_acquisition_rows = [
         row for row in acquisition_rows if row["in_fixed_review_interval"]
@@ -879,11 +1023,30 @@ def evaluate_pallet_session(
         "acquisition_audit": acquisition_summary,
         "absolute_placement_accuracy": "not_measured_no_external_ground_truth",
         "vertical_clearance": {
-            "valid_held_top_frame_count": len(clearance_samples),
+            "valid_held_top_frame_count": valid_clearance_sample_count,
+            "valid_stack_top_frame_count": valid_stack_top_sample_count,
             "maximum_box_height_m": maximum_box_height_m,
             "required_lower_bound_m": minimum_clearance_m,
             "observed_conservative_lower_bound_m": clearance_lower_bound_m,
+            "direct_depth_held_top": {
+                "source": "direct_held_top_minus_max_box_height_to_stack_plane",
+                "valid_held_top_frame_count": valid_clearance_sample_count,
+                "held_top_lower_z_base_m": direct_held_lower_m,
+                "conservative_stack_top_z_base_m": direct_stack_upper_m,
+                "required_lower_bound_m": minimum_clearance_m,
+                "observed_conservative_lower_bound_m": clearance_lower_bound_m,
+                "gate_passed": bool(clearance_gate_passed),
+                "status": (
+                    "unobservable"
+                    if clearance_lower_bound_m is None
+                    else "pass"
+                    if clearance_lower_bound_m >= minimum_clearance_m
+                    else "fail_raise_ready_pose"
+                ),
+            },
+            "fixed_ready_configured_geometry": fixed_ready_clearance,
             "nonzero_motion_gate_passed": bool(clearance_gate_passed),
+            "motion_authorized_from_nominal_geometry": False,
             "status": (
                 "unobservable"
                 if clearance_lower_bound_m is None

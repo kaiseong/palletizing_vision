@@ -122,13 +122,17 @@ def build_parser() -> argparse.ArgumentParser:
     live = subparsers.add_parser(
         "live",
         help=(
-            "run D435 perception with an optional slot-1 ready-pose command; "
-            "mobile pallet actuation remains blocked"
+            "run D435 perception and optionally align a held box to the slot-1 "
+            "ready position"
         ),
     )
     live.add_argument("--config", type=Path, default=_default_config_path())
     live.add_argument("--warmup-frames", type=int, default=30)
-    live.add_argument("--max-frames", type=int)
+    live.add_argument(
+        "--max-frames",
+        type=int,
+        help="bound perception-only runs; rejected for loaded robot execution",
+    )
     live.add_argument("--headless", action="store_true")
     live.add_argument("--window-name", default="RB-Y1 Pallet Slot-1")
     live.add_argument("--output-mp4", type=Path)
@@ -146,14 +150,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-palletize-slot1",
         action="store_true",
         help=(
-            "request the supervised slot-1 controller; currently fails before robot "
-            "connection because the ownership bridge is uncommissioned"
+            "start the supervised loaded-box slot-1 base alignment; requires "
+            "--ensure-slot1-ready and the explicit calibration/safety acknowledgements"
         ),
     )
     live.add_argument(
         "--allow-nominal-registration",
         action="store_true",
         help="explicitly accept the nominal_unverified camera/base registration",
+    )
+    live.add_argument(
+        "--allow-geometry-only-grip-check",
+        action="store_true",
+        help=(
+            "commissioning-only: allow the fixed-ready FK/EEF geometry and measured "
+            "joint continuity to replace unconfigured F/T plausibility thresholds; "
+            "the loaded config must enable the same reviewed commissioning policy"
+        ),
     )
     live.add_argument(
         "--robot-address",
@@ -243,11 +256,14 @@ def _run_evaluate(args: argparse.Namespace) -> int:
 def _run_live(args: argparse.Namespace) -> int:
     if args.allow_nominal_registration and not args.auto_palletize_slot1:
         raise ValueError("--allow-nominal-registration requires --auto-palletize-slot1")
-    if args.auto_palletize_slot1:
-        raise RuntimeError(
-            "pallet live actuation is deliberately unavailable until an atomic "
-            "box-pick-to-pallet ownership bridge is commissioned. No robot or camera "
-            "connection was attempted."
+    if args.allow_geometry_only_grip_check and not args.auto_palletize_slot1:
+        raise ValueError(
+            "--allow-geometry-only-grip-check requires --auto-palletize-slot1"
+        )
+    if args.auto_palletize_slot1 and not args.ensure_slot1_ready:
+        raise ValueError(
+            "loaded slot-1 alignment requires --ensure-slot1-ready so the configured "
+            "held-box posture is verified before the combined command stream starts"
         )
     config = _load_config(args.config)
     from .pallet_runtime import run_pallet_live
@@ -257,6 +273,9 @@ def _run_live(args: argparse.Namespace) -> int:
             config,
             execute=bool(args.auto_palletize_slot1),
             allow_nominal_registration=bool(args.allow_nominal_registration),
+            allow_geometry_only_grip_check=bool(
+                args.allow_geometry_only_grip_check
+            ),
             ensure_slot1_ready=bool(args.ensure_slot1_ready),
             robot_address=str(args.robot_address),
             robot_power=str(args.robot_power),

@@ -1,10 +1,11 @@
 # ADR 0004: Forward-only stack reacquisition before slot-1 fine servo
 
-Status: accepted for software verification; physical commissioning blocked
+Status: accepted for software verification; superseded in part by ADR 0005
 
 Supersedes the ready-transition ownership portion of ADR 0003. The metric
 opening model, single combined owner, and hover-only terminal scope remain in
-force.
+force. ADR 0005 adds the standalone loaded-slot1-ready commissioning path; this
+ADR's integrated box-pick-to-pallet handoff rejection remains active.
 
 ## Context
 
@@ -45,10 +46,10 @@ are intentionally not used as final slot-pose sources.
   authority once at exact zero and measured wheel stop. Coarse authority is
   permanently revoked for that session.
 - Reject both the active `GripHandoff` scaffold and an already-released
-  `ReadyHoldHandoff` at the runtime facade and controller before any robot
-  command. The current box-pick endpoint does not provide a single-stream epoch
-  transfer with exact torso/head/control-mode and stream-identity provenance;
-  release-first adoption additionally has an unbounded body-hold gap.
+  `ReadyHoldHandoff` for integrated box-pick-to-pallet takeover. The current
+  box-pick endpoint does not provide a single-stream epoch transfer with exact
+  torso/head/control-mode and stream-identity provenance; release-first
+  adoption additionally has an unbounded body-hold gap.
 - Require a future reviewed integration to use one persistent combined stream
   with an internal owner epoch transfer, or an equivalent atomic/two-phase
   protocol whose successor packet is acknowledged before source release. It
@@ -81,14 +82,18 @@ the supplied recordings contain no odometry. Generated replay rows therefore
 distinguish `would_request_step` from `motion_authorized` and never claim
 executed travel.
 
-The current recordings estimate only about 29.5–32.0 mm conservative vertical
-clearance, below the retained 50 mm gate. Combined with the shipped zero
-acquisition budget and nominal/unverified base registration, physical nonzero
-motion remains fail-closed. A supervised future commissioning change must
-provide fresh clearance, F/T, odometry, and external accuracy evidence; passing
-these software checks alone does not authorize placement or descent.
+Direct close-range held-top replay evidence remains discrepant and untrusted:
+it estimated only about 29.5-32.0 mm conservative vertical clearance, while the
+fixed-ready dual-EEF box-bottom audit is about 179 mm against the retained
+50 mm gate. ADR 0005 raises the standalone commissioning budget to the
+release-capped 150 mm, but replay still has no odometry and registration remains
+nominal/unverified. This ADR therefore does not authorize physical placement or
+descent. A supervised commissioning pass must review the fixed-ready clearance
+audit and provide F/T, odometry, and external accuracy evidence; passing
+software gates alone is not placement authorization.
 
 The original post-release ready-adoption acceptance item is explicitly not met
-and neither ownership model is exposed as an actuator capability. Replay and
-perception remain deliverable; physical commissioning requires the reviewed
-atomic bridge and calibration evidence described above.
+and neither ownership model is exposed as an integrated actuator capability.
+Replay, perception, and the ADR 0005 standalone loaded-ready commissioning path
+remain separate surfaces; integrated physical commissioning requires the
+reviewed atomic bridge and calibration evidence described above.

@@ -1,10 +1,12 @@
 # ADR 0003: Metric slot-1 hover with one persistent control owner
 
-Status: partially superseded by ADR 0004
+Status: partially superseded by ADR 0004 and ADR 0005
 
 ADR 0004 replaces this document's ready-transition ownership path and adds the
 partial-L forward-acquisition phase. The metric opening/slot formulation,
-single combined owner, and hover-only scope below remain active.
+single combined owner, and hover-only scope below remain active. ADR 0005 adds
+the standalone loaded-slot1-ready commissioning path; the integrated
+box-pick-to-pallet handoff remains unavailable.
 
 ## Context
 
@@ -41,12 +43,13 @@ Recorded sessions can prove camera-frame metric consistency and temporal stabili
 
 The present box-pick implementation cannot yet be that predecessor: its final
 lift is a finite one-shot command with a different torque policy, after which
-the caller closes the robot lifecycle. Consequently the public `pallet` CLI
-remains replay/perception-only and standalone actuation fails before robot
-connection. This is a deliberate commissioning block, not an operator prompt
-to bypass. Physical motion additionally remains blocked until a re-recorded
-ready pose proves at least 50 mm conservative vertical clearance and finite
-site-specific F/T plausibility limits are configured.
+the caller closes the robot lifecycle. Consequently integrated takeover from
+box-pick remains blocked, not an operator prompt to bypass. ADR 0005 documents
+the separate standalone path where the user starts already holding the box at
+the configured ready posture and the pallet process becomes the only live
+combined owner. Physical commissioning still requires fixed-ready clearance
+audit review against the 50 mm conservative vertical-clearance floor plus
+finite site-specific F/T plausibility limits.
 The injected destination controller must already be connected and identity/FK
 validated before the source creates its immutable handoff snapshot; connection
 latency is never hidden by weakening the 150 ms handoff-freshness limit. Until

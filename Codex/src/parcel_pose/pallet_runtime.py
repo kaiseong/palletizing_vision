@@ -1,16 +1,15 @@
 """Live D435 facade and in-process slot-1 hover coordinator.
 
 Plain ``pallet live`` is perception-only: it never imports the RB-Y1 SDK and
-never connects to a robot.  The explicit ``ensure_slot1_ready`` option may send
-one all-joint Position command before perception, but it does not enable mobile
-motion.  Mobile actuation remains unavailable until the box-pick owner and
-pallet owner share a reviewed atomic ownership bridge.  Both the active
-``GripHandoff`` scaffold and the already-released ``ReadyHoldHandoff`` model are
-rejected before a pallet-control stream is created.
+never connects to a robot.  Explicit loaded slot-1 execution first verifies the
+configured ready posture, then starts one combined owner whose every packet
+contains torso/head hold, both-arm impedance hold, and SE(2) mobility.  The
+legacy active/released box-pick ownership-transfer scaffolds remain rejected;
+this MVP starts only after the previous process has ended and the current
+session has freshly measured the already-held ready posture.
 
-The pure controller's terminal target is a persistent zero-mobility body hold;
-no current live path publishes it.  This module has no descent, contact,
-release, gripper, or slide operation.
+The execute path terminates alignment in a persistent zero-mobility body hold.
+This module has no descent, contact, release, gripper, or slide operation.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import Any, Mapping, Protocol, TextIO
+from typing import Any, Callable, Mapping, Protocol, TextIO
 
 import numpy as np
 
@@ -68,6 +67,14 @@ class _ControllerLike(Protocol):
     owner_epoch: str
     is_connected: bool
 
+    def connect(self) -> None: ...
+
+    def bootstrap_loaded_slot1_ready(
+        self,
+        *,
+        loaded_box_acknowledged: bool,
+    ) -> Any: ...
+
     def accept_grip_handoff(
         self,
         handoff: Any,
@@ -75,7 +82,12 @@ class _ControllerLike(Protocol):
         source_witness: Any,
     ) -> None: ...
 
-    def send_ready_transition_once(self, minimum_time_s: float = 5.0) -> Any: ...
+    def send_ready_transition_once(
+        self,
+        minimum_time_s: float = 5.0,
+        *,
+        on_send_attempt: Callable[[], None] | None = None,
+    ) -> Any: ...
 
     def wait_ready_transition_ack(self, command_id: Any) -> Any: ...
 
@@ -91,7 +103,12 @@ class _ControllerLike(Protocol):
 
     def get_measured_odometry(self) -> tuple[np.ndarray, int, float]: ...
 
-    def evaluate_grip_and_clearance_dwell(self, scene_window: list[Any]) -> Any: ...
+    def evaluate_grip_and_clearance_dwell(
+        self,
+        scene_window: list[Any],
+        *,
+        allow_fixed_ready_geometry_only: bool = False,
+    ) -> Any: ...
 
     def wheel_stop_status(self) -> Any: ...
 
@@ -107,7 +124,7 @@ class _ControllerLike(Protocol):
 
     def transfer_owner(self, next_owner: str) -> Any: ...
 
-    def close(self, *, force: bool = False) -> None: ...
+    def close(self, *, force: bool = False) -> bool: ...
 
     def telemetry(self) -> Any: ...
 
@@ -159,7 +176,7 @@ class ActuationContainmentState:
     """
 
     controller: _ControllerLike
-    source_hold_witness: ActiveGripHoldWitness
+    source_hold_witness: ActiveGripHoldWitness | None
     robot_touched: bool = False
     destination_commanded: bool = False
     destination_steady: bool = False
@@ -218,7 +235,7 @@ class ActuationContainmentState:
             except BaseException as exc:  # containment must include interrupts here
                 self.last_hold_error = f"destination hold confirmation failed: {exc}"
 
-        if not self.destination_commanded:
+        if not self.destination_commanded and self.source_hold_witness is not None:
             try:
                 self.source_hold_witness.assert_active()
             except BaseException as exc:
@@ -232,6 +249,11 @@ class ActuationContainmentState:
             self.persistent_support_confirmed = True
             self.successor_acknowledged = True
             self.support_owner = "source_ownership_retained_before_destination_command"
+            self.last_hold_error = None
+            return True
+        if not self.destination_commanded:
+            self.persistent_support_confirmed = True
+            self.support_owner = "standalone_ready_session_not_commanded"
             self.last_hold_error = None
             return True
         return False
@@ -624,6 +646,27 @@ def _nominal_held_pose(root: Mapping[str, Any]) -> HeldPoseProxy:
     )
 
 
+def _fixed_ready_held_pose(
+    root: Mapping[str, Any],
+    right_eef: Any,
+    left_eef: Any,
+) -> HeldPoseProxy:
+    """Recover the held center/yaw from fresh EEFs at the fixed ready pose."""
+
+    held = _section(root, "held_box")
+    return _held_pose_from_eefs(
+        right_eef,
+        left_eef,
+        source="fresh_dual_eef_fixed_ready_nominal_box_offset",
+        center_offset_base=held.get(
+            "center_offset_from_eef_midpoint_m", (0.0, 0.0, 0.0)
+        ),
+        yaw_offset_rad=math.radians(
+            float(held.get("long_axis_from_eef_line_offset_deg", 0.0))
+        ),
+    )
+
+
 def _held_pose_from_eefs(
     right_eef: Any,
     left_eef: Any,
@@ -788,12 +831,33 @@ def _servo_measurement(
 
 def _controller_scene_sample(
     scene: PalletSceneObservation,
+    held_proxy: HeldPoseProxy,
     *,
     frame_id: int,
     capture_timestamp_s: float,
+    maximum_box_height_m: float,
+    box_bottom_uncertainty_m: float,
 ) -> dict[str, Any]:
     held = scene.held_top
     stack = scene.stack
+    coarse = scene.coarse
+    stack_top_z = stack.plane_height_base_m
+    stack_top_uncertainty = stack.quality.get(
+        "stack_plane_p95_residual_m", math.nan
+    )
+    stack_top_source = "complete_stack_plane"
+    if (
+        stack_top_z is None
+        and coarse is not None
+        and coarse.plane_height_base_m is not None
+    ):
+        stack_top_z = coarse.plane_height_base_m
+        stack_top_uncertainty = coarse.plane_p95_residual_m
+        stack_top_source = "metric_coarse_l_corner_plane"
+    box_bottom_z = (
+        float(held_proxy.center_base_xyz_m[2])
+        - 0.5 * float(maximum_box_height_m)
+    )
     return {
         "frame_id": int(frame_id),
         "capture_timestamp_s": float(capture_timestamp_s),
@@ -804,10 +868,12 @@ def _controller_scene_sample(
         "held_top_uncertainty_m": (
             None if held is None else held.top_plane_z_uncertainty_m
         ),
-        "stack_top_z_base_m": stack.plane_height_base_m,
-        "stack_top_uncertainty_m": stack.quality.get(
-            "stack_plane_p95_residual_m", math.nan
-        ),
+        "stack_top_z_base_m": stack_top_z,
+        "stack_top_uncertainty_m": stack_top_uncertainty,
+        "stack_top_source": stack_top_source,
+        "held_box_bottom_z_base_m": box_bottom_z,
+        "held_box_bottom_uncertainty_m": float(box_bottom_uncertainty_m),
+        "held_box_pose_source": held_proxy.source,
     }
 
 
@@ -1354,11 +1420,38 @@ def _prepare_actuation(
     )
 
 
+def _prepare_loaded_ready_actuation(
+    controller: _ControllerLike,
+    minimum_time_s: float,
+    containment: ActuationContainmentState,
+) -> None:
+    """Start the standalone loaded-ready combined owner at exact zero mobility."""
+
+    controller.connect()
+    controller.bootstrap_loaded_slot1_ready(loaded_box_acknowledged=True)
+
+    def mark_ambiguous_transport_boundary() -> None:
+        # A transport exception after this point can occur after the robot has
+        # accepted the packet, so containment must assume destination ownership.
+        containment.mark_robot_touch()
+        containment.mark_destination_commanded()
+
+    transition_id = controller.send_ready_transition_once(
+        minimum_time_s,
+        on_send_attempt=mark_ambiguous_transport_boundary,
+    )
+    controller.wait_ready_transition_ack(transition_id)
+    controller.start_combined_stream()
+    containment.mark_destination_steady()
+    controller.reverify_wheel_stop_after_stream_start(timeout_s=2.0)
+
+
 def run_pallet_live(
     root_config: Mapping[str, Any],
     *,
     execute: bool = False,
     allow_nominal_registration: bool = False,
+    allow_geometry_only_grip_check: bool = False,
     ensure_slot1_ready: bool = False,
     robot_address: str = "192.168.30.1:50051",
     robot_power: str = ".*",
@@ -1374,16 +1467,22 @@ def run_pallet_live(
     ready_hold_handoff: Any | None = None,
     source_release_witness: Any | None = None,
 ) -> int:
-    """Run live perception and optionally restore the fixed slot-1 ready pose.
+    """Run pallet perception or loaded-box slot-1 base alignment.
 
-    The ready-pose option is a bounded one-shot Position command.  It is kept
-    separate from ``execute`` and cannot create a mobility/body command stream.
+    Execution is a standalone post-pick boundary: the previous process must be
+    stopped, the configured loaded ready posture is verified, and this process
+    becomes the sole combined body/mobility stream owner.
     """
 
     if not isinstance(root_config, Mapping):
         raise TypeError("root_config must be a mapping")
     if max_frames is not None and max_frames <= 0:
         raise ValueError("max_frames must be positive")
+    if execute and max_frames is not None:
+        raise ValueError(
+            "loaded execution cannot use max_frames because a bounded normal exit "
+            "would abandon the non-daemon carried-load command owner"
+        )
     active_pair = grip_handoff is not None or source_hold_witness is not None
     released_pair = ready_hold_handoff is not None or source_release_witness is not None
     if active_pair and released_pair:
@@ -1394,14 +1493,56 @@ def run_pallet_live(
         raise ValueError("active grip handoff and witness must be provided together")
     if released_pair and (ready_hold_handoff is None or source_release_witness is None):
         raise ValueError("released ready handoff and witness must be provided together")
-    if execute:
-        del allow_nominal_registration
+    if execute and (active_pair or released_pair):
         raise RuntimeError(
-            "pallet live actuation is deliberately unavailable: neither active nor "
-            "released ownership handoff has a commissioned atomic box-pick-to-pallet "
-            "stream bridge. No robot connection or command was attempted."
+            "legacy box-pick ownership handoffs remain unavailable; loaded slot-1 "
+            "alignment must start as the sole process from the freshly measured "
+            "configured ready posture"
         )
-    elif any(
+    if execute and not ensure_slot1_ready:
+        raise ValueError("loaded slot-1 execution requires ensure_slot1_ready=True")
+
+    calibration = _section(root_config, "calibration")
+    absolute_registration = bool(calibration.get("absolute_base_validated", False))
+    if execute and not absolute_registration and not allow_nominal_registration:
+        raise RuntimeError(
+            "base registration is nominal_unverified; explicit "
+            "allow_nominal_registration=True is required for robot motion"
+        )
+
+    grip_config = _section(root_config, "grip_interlock")
+    ft_thresholds_configured = all(
+        grip_config.get(name) is not None
+        for name in (
+            "maximum_force_n",
+            "maximum_torque_nm",
+            "maximum_force_jump_n",
+        )
+    )
+    geometry_only_policy_enabled = grip_config.get(
+        "fixed_ready_geometry_only_commissioning_enabled", False
+    )
+    if not isinstance(geometry_only_policy_enabled, bool):
+        raise ValueError(
+            "grip_interlock.fixed_ready_geometry_only_commissioning_enabled must "
+            "be a boolean"
+        )
+    if allow_geometry_only_grip_check and not geometry_only_policy_enabled:
+        raise RuntimeError(
+            "the CLI geometry-only acknowledgement is not enabled by the reviewed "
+            "grip-interlock commissioning policy"
+        )
+    if execute and not ft_thresholds_configured and not allow_geometry_only_grip_check:
+        raise RuntimeError(
+            "F/T plausibility thresholds are unconfigured; commissioning motion "
+            "requires allow_geometry_only_grip_check=True to use the fixed-ready "
+            "FK/EEF clearance model explicitly"
+        )
+    if not execute and allow_geometry_only_grip_check:
+        raise ValueError(
+            "allow_geometry_only_grip_check is valid only with execute=True"
+        )
+    if not execute and any(
         value is not None
         for value in (
             controller,
@@ -1468,6 +1609,21 @@ def run_pallet_live(
     scene_window: deque[dict[str, Any]] = deque(maxlen=30)
     calibration_status = "nominal_ready_assumed"
     T_base_depth = configured_T_base_from_depth(root_config)
+    held_config = _section(root_config, "held_box")
+    maximum_box_height_m = float(held_config.get("maximum_height_m", 0.164))
+    box_bottom_uncertainty_m = float(
+        held_config.get("fixed_ready_box_bottom_uncertainty_m", 0.015)
+    )
+    if not math.isfinite(maximum_box_height_m) or maximum_box_height_m <= 0.0:
+        raise ValueError("held_box.maximum_height_m must be finite and positive")
+    if (
+        not math.isfinite(box_bottom_uncertainty_m)
+        or box_bottom_uncertainty_m < 0.0
+    ):
+        raise ValueError(
+            "held_box.fixed_ready_box_bottom_uncertainty_m must be finite and "
+            "non-negative"
+        )
     held_proxy = _nominal_held_pose(root_config)
 
     video_writer: Any | None = None
@@ -1481,30 +1637,31 @@ def run_pallet_live(
         ),
     )
     containment: ActuationContainmentState | None = None
-    if execute:
-        assert controller is not None
-        assert source_hold_witness is not None
-        containment = ActuationContainmentState(
-            controller,
-            source_hold_witness,
-        )
     try:
-        if ensure_slot1_ready:
+        if ensure_slot1_ready and controller is None:
             from .pallet_ready import ensure_slot1_ready_from_config
 
             ensure_slot1_ready_from_config(
                 root_config,
                 address=robot_address,
                 power=robot_power,
+                prepare_for_stream=execute,
             )
             calibration_status = "nominal_unverified_ready_posture_checked_at_start"
         if execute:
-            assert controller is not None and containment is not None
-            assert grip_handoff is not None and source_hold_witness is not None
-            _prepare_actuation(
+            if controller is None:
+                from .pallet_control import PalletControlConfig, RBY1PalletController
+
+                controller = RBY1PalletController(
+                    execute=True,
+                    config=PalletControlConfig.from_root_config(
+                        root_config,
+                        address_override=robot_address,
+                    ),
+                )
+            containment = ActuationContainmentState(controller, None)
+            _prepare_loaded_ready_actuation(
                 controller,
-                grip_handoff,
-                source_hold_witness,
                 float(
                     _section(root_config, "robot").get(
                         "ready_transition_minimum_time_s", 5.0
@@ -1512,18 +1669,19 @@ def run_pallet_live(
                 ),
                 containment,
             )
-            active_handoff = grip_handoff
             T_base_depth = measured_T_base_from_depth(
                 root_config, controller.get_measured_T_base_head()
             )
             right_eef, left_eef = controller.get_measured_eef_transforms()
-            held_proxy = _held_pose_from_handoff(
-                root_config,
-                right_eef,
-                left_eef,
-                active_handoff,
-            )
-            calibration_status = "nominal_unverified"
+            held_proxy = _fixed_ready_held_pose(root_config, right_eef, left_eef)
+            calibration_status = "nominal_unverified_operator_accepted"
+            if allow_geometry_only_grip_check:
+                print(
+                    "warning: loaded slot-1 MVP is using fixed-ready FK/EEF geometry "
+                    "instead of unconfigured F/T plausibility thresholds",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
         log_stream = _open_log(None if log_jsonl is None else Path(log_jsonl))
         with RealSenseAdapter(stream_config) as camera:
@@ -1578,11 +1736,8 @@ def run_pallet_live(
                         root_config, controller.get_measured_T_base_head()
                     )
                     right_eef, left_eef = controller.get_measured_eef_transforms()
-                    held_proxy = _held_pose_from_handoff(
-                        root_config,
-                        right_eef,
-                        left_eef,
-                        active_handoff,
+                    held_proxy = _fixed_ready_held_pose(
+                        root_config, right_eef, left_eef
                     )
 
                 depth_m = (
@@ -1612,8 +1767,11 @@ def run_pallet_live(
                     scene_window.append(
                         _controller_scene_sample(
                             scene,
+                            held_proxy,
                             frame_id=frame.depth_frame_number,
                             capture_timestamp_s=frame_source_monotonic_s,
+                            maximum_box_height_m=maximum_box_height_m,
+                            box_bottom_uncertainty_m=box_bottom_uncertainty_m,
                         )
                     )
                 else:
@@ -1639,7 +1797,10 @@ def run_pallet_live(
                     zero_acknowledged = _zero_command_acknowledged(controller)
                     if frame_result_fresh:
                         grip = controller.evaluate_grip_and_clearance_dwell(
-                            list(scene_window)
+                            list(scene_window),
+                            allow_fixed_ready_geometry_only=(
+                                allow_geometry_only_grip_check
+                            ),
                         )
                         motion_interlocks_ok = bool(getattr(grip, "passed", False))
                         grip_reasons = tuple(getattr(grip, "reasons", ()))
@@ -1848,6 +2009,19 @@ def run_pallet_live(
         if execute and containment is not None and containment.robot_touched:
             containment.confirm_persistent_support()
             containment.block_until_escape_is_safe()
+        elif execute and controller is not None and controller.is_connected:
+            # Connection/bootstrap failures before the first command own no
+            # carried-load stream and may close normally.  Do not leave the
+            # measured-state update thread alive on a rejected ready posture.
+            try:
+                controller.close()
+            except BaseException as close_error:
+                print(
+                    "warning: pre-command pallet controller cleanup failed: "
+                    f"{type(close_error).__name__}:{close_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         raise
     finally:
         if video_writer is not None:

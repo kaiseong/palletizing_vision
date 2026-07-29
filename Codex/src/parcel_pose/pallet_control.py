@@ -222,6 +222,7 @@ class PalletControlConfig:
     ft_max_force_jump_n: float | None = None
     force_torque_feedback_required: bool = True
     unconfigured_force_torque_policy: str = "nonzero_mobility_fail_closed"
+    fixed_ready_geometry_only_commissioning_enabled: bool = False
 
     @classmethod
     def from_root_config(
@@ -304,6 +305,14 @@ class PalletControlConfig:
         )
         if not isinstance(ft_required, bool):
             raise ValueError("force_torque_feedback_required must be a boolean")
+        geometry_only_enabled = grip_interlock.get(
+            "fixed_ready_geometry_only_commissioning_enabled",
+            defaults.fixed_ready_geometry_only_commissioning_enabled,
+        )
+        if not isinstance(geometry_only_enabled, bool):
+            raise ValueError(
+                "fixed_ready_geometry_only_commissioning_enabled must be a boolean"
+            )
 
         absolute_linear = float(
             servo.get("absolute_linear_speed_limit_mps", HARD_MAX_LINEAR_SPEED_MPS)
@@ -465,6 +474,9 @@ class PalletControlConfig:
                     defaults.unconfigured_force_torque_policy,
                 )
             ).strip(),
+            fixed_ready_geometry_only_commissioning_enabled=(
+                geometry_only_enabled
+            ),
         )
 
     def __post_init__(self) -> None:
@@ -767,6 +779,83 @@ class ReadyHoldHandoff:
 
 
 @dataclass(frozen=True, slots=True)
+class LoadedSlot1ReadyBootstrap:
+    """Same-session proof for an already-held box at the slot-1 ready pose.
+
+    This is deliberately not an upstream ownership transfer.  It only records
+    that this controller session measured the configured slot-1 ready posture
+    before opening its own combined body/mobility stream.
+    """
+
+    owner_epoch: str
+    source_phase: str
+    measured_state_sequence: int
+    measured_robot_state_timestamp_s: float | None
+    measured_monotonic_s: float
+    acknowledged_loaded_box: bool
+    max_joint_error_rad: float
+    torso_target_rad: tuple[float, ...]
+    right_arm_target_rad: tuple[float, ...]
+    left_arm_target_rad: tuple[float, ...]
+    head_target_rad: tuple[float, ...]
+    right_stiffness: tuple[float, ...]
+    left_stiffness: tuple[float, ...]
+    torque_policy: str
+
+    def __post_init__(self) -> None:
+        if not str(self.owner_epoch).strip() or not str(self.source_phase).strip():
+            raise ValueError("loaded-ready owner_epoch/source_phase must not be empty")
+        if self.measured_state_sequence < 1:
+            raise ValueError("loaded-ready measured state sequence must be positive")
+        if not math.isfinite(float(self.measured_monotonic_s)):
+            raise ValueError("loaded-ready measured monotonic timestamp must be finite")
+        if self.measured_robot_state_timestamp_s is not None and not math.isfinite(
+            float(self.measured_robot_state_timestamp_s)
+        ):
+            raise ValueError(
+                "loaded-ready robot-state timestamp must be finite when present"
+            )
+        if self.acknowledged_loaded_box is not True:
+            raise ValueError("acknowledged_loaded_box must be explicitly true")
+        if not math.isfinite(float(self.max_joint_error_rad)):
+            raise ValueError("loaded-ready max joint error must be finite")
+        if self.max_joint_error_rad < 0.0:
+            raise ValueError("loaded-ready max joint error must be non-negative")
+        if not str(self.torque_policy).strip():
+            raise ValueError("loaded-ready torque policy must not be empty")
+        object.__setattr__(
+            self,
+            "torso_target_rad",
+            _finite_vector(self.torso_target_rad, 6, "torso_target_rad"),
+        )
+        object.__setattr__(
+            self,
+            "right_arm_target_rad",
+            _finite_vector(self.right_arm_target_rad, 7, "right_arm_target_rad"),
+        )
+        object.__setattr__(
+            self,
+            "left_arm_target_rad",
+            _finite_vector(self.left_arm_target_rad, 7, "left_arm_target_rad"),
+        )
+        object.__setattr__(
+            self,
+            "head_target_rad",
+            _finite_vector(self.head_target_rad, 2, "head_target_rad"),
+        )
+        object.__setattr__(
+            self,
+            "right_stiffness",
+            _finite_vector(self.right_stiffness, 7, "right_stiffness"),
+        )
+        object.__setattr__(
+            self,
+            "left_stiffness",
+            _finite_vector(self.left_stiffness, 7, "left_stiffness"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentFeedbackAck:
     root: bool
     component: bool
@@ -887,6 +976,9 @@ class GripContinuityResult:
     held_top_std_m: float | None
     held_top_downward_drift_m: float | None
     clearance_lower_bound_m: float | None
+    force_torque_verified: bool = False
+    clearance_source: str = "unavailable"
+    fixed_ready_geometry_only_authorized: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -957,7 +1049,7 @@ class RBY1PalletController:
         self._clock = clock
         self._fk_provider = fk_provider
         self._owner_epoch = owner_epoch or f"pallet-{uuid.uuid4()}"
-        self._source_handoff: GripHandoff | None = None
+        self._source_handoff: GripHandoff | LoadedSlot1ReadyBootstrap | None = None
         self._active_right_arm_target_rad = self.config.ready_pose.right_arm_rad
         self._active_left_arm_target_rad = self.config.ready_pose.left_arm_rad
         self._grip_result: GripContinuityResult | None = None
@@ -1137,13 +1229,124 @@ class RBY1PalletController:
             "source-to-destination lease transfer is available"
         )
 
+    def bootstrap_loaded_slot1_ready(
+        self,
+        *,
+        loaded_box_acknowledged: bool,
+    ) -> LoadedSlot1ReadyBootstrap:
+        """Adopt an already-held box only from this measured ready session.
+
+        The caller must explicitly acknowledge that the box is still held at
+        the configured slot-1 ready posture.  This method opens no stream and
+        sends no command; it only installs local provenance so the normal
+        zero-mobility combined ready transition can be sent next.
+        """
+
+        self._require_execute_and_connected()
+        if not isinstance(loaded_box_acknowledged, bool) or not loaded_box_acknowledged:
+            raise CommandOwnershipError(
+                "loaded slot-1 ready bootstrap requires explicit loaded-box "
+                "acknowledgement"
+            )
+
+        with self._condition:
+            if self._phase != ControllerPhase.CONNECTED:
+                raise CommandOwnershipError(
+                    "loaded slot-1 ready bootstrap is allowed only before the "
+                    f"combined stream starts; phase={self._phase.value}"
+                )
+            if self._stream is not None:
+                raise CommandOwnershipError(
+                    "loaded slot-1 ready bootstrap refuses an already-open stream"
+                )
+            if self._pump_thread is not None and self._pump_thread.is_alive():
+                raise CommandOwnershipError(
+                    "loaded slot-1 ready bootstrap refuses a running pump"
+                )
+            if self._ready_transition_command_count != 0:
+                raise CommandOwnershipError(
+                    "loaded slot-1 ready bootstrap must precede the ready transition"
+                )
+            if self._source_handoff is not None:
+                raise CommandOwnershipError(
+                    "loaded slot-1 ready bootstrap cannot replace existing provenance"
+                )
+
+        state = self.get_measured_state()
+        missing: list[str] = []
+        if state.T_base_head is None:
+            missing.append("T_base_head")
+        if state.T_base_right_eef is None:
+            missing.append("T_base_right_eef")
+        if state.T_base_left_eef is None:
+            missing.append("T_base_left_eef")
+        if state.T_odom_base is None:
+            missing.append("T_odom_base")
+        if state.base_twist_w_vx_vy is None:
+            missing.append("base_twist_w_vx_vy")
+        if missing:
+            detail = state.kinematics_error or state.odometry_error
+            raise MeasuredStateError(
+                "loaded slot-1 ready bootstrap requires fresh FK/odometry: "
+                f"missing={tuple(missing)} detail={detail}"
+            )
+
+        errors, all_ready = self._ready_joint_errors(state)
+        max_error = float(np.max(np.abs(errors)))
+        if not all_ready or max_error > self.config.ready_tolerance_rad:
+            raise ReadyTransitionError(
+                "loaded slot-1 ready bootstrap requires measured configured "
+                "ready posture within 1.0 deg; "
+                f"max_joint_error_deg={math.degrees(max_error):.3f}, "
+                f"all_ready={all_ready}"
+            )
+
+        pose = self.config.ready_pose
+        provenance = LoadedSlot1ReadyBootstrap(
+            owner_epoch=self._owner_epoch,
+            source_phase=ControllerPhase.CONNECTED.value,
+            measured_state_sequence=state.sequence,
+            measured_robot_state_timestamp_s=state.robot_timestamp_s,
+            measured_monotonic_s=state.received_monotonic_s,
+            acknowledged_loaded_box=True,
+            max_joint_error_rad=max_error,
+            torso_target_rad=pose.torso_rad,
+            right_arm_target_rad=pose.right_arm_rad,
+            left_arm_target_rad=pose.left_arm_rad,
+            head_target_rad=pose.head_rad,
+            right_stiffness=ARM_STIFFNESS,
+            left_stiffness=ARM_STIFFNESS,
+            torque_policy=TORQUE_POLICY,
+        )
+        with self._condition:
+            if self._phase != ControllerPhase.CONNECTED or self._stream is not None:
+                raise CommandOwnershipError(
+                    "loaded slot-1 ready bootstrap lost exclusive pre-stream state"
+                )
+            self._active_right_arm_target_rad = pose.right_arm_rad
+            self._active_left_arm_target_rad = pose.left_arm_rad
+            self._source_handoff = provenance
+            self._body_target_token = self._make_body_target_token()
+            self._condition.notify_all()
+        return provenance
+
     def send_ready_transition_once(
         self,
         minimum_time_s: float = 5.0,
+        *,
+        on_send_attempt: Callable[[], None] | None = None,
     ) -> CommandId:
-        """Send exactly one zero-base, five-component ready transition."""
+        """Send exactly one zero-base, five-component ready transition.
+
+        ``on_send_attempt`` runs after stream creation and command construction,
+        immediately before transport I/O.  The containment layer uses that
+        boundary to distinguish harmless pre-send failures from an ambiguous
+        transport failure that may already have reached the robot.
+        """
 
         self._require_execute_and_connected()
+        if on_send_attempt is not None and not callable(on_send_attempt):
+            raise TypeError("on_send_attempt must be callable when provided")
         minimum_time_s = _positive(minimum_time_s, "minimum_time_s")
         minimum_time_s = max(
             minimum_time_s,
@@ -1160,9 +1363,9 @@ class RBY1PalletController:
                 )
             if self._source_handoff is None:
                 raise ReadyTransitionError(
-                    "ready transition requires same-process GripHandoff provenance"
+                    "ready transition requires same-process loaded-ready or "
+                    "GripHandoff provenance"
                 )
-            self._ensure_stream_locked()
             self._command_sequence += 1
             command_id = CommandId(self._owner_epoch, self._command_sequence)
             self._ready_transition_command_count = 1
@@ -1173,9 +1376,16 @@ class RBY1PalletController:
             ZERO_MOBILITY,
             minimum_time_s=minimum_time_s,
         )
+        with self._condition:
+            self._ensure_stream_locked()
+            stream = self._stream
+        if stream is None:  # defensive: _ensure_stream_locked must assign it
+            raise ReadyTransitionError("combined command stream was not created")
+        if on_send_attempt is not None:
+            on_send_attempt()
         try:
             with self._sdk_send_lock:
-                feedback = self._stream.send_command(
+                feedback = stream.send_command(
                     command,
                     timeout_ms=self.config.send_timeout_ms,
                 )
@@ -1323,7 +1533,8 @@ class RBY1PalletController:
         with self._condition:
             if self._source_handoff is None:
                 raise CombinedStreamError(
-                    "cannot establish a carried-load hold without GripHandoff"
+                    "cannot establish a carried-load hold without same-process "
+                    "loaded-ready or GripHandoff provenance"
                 )
             if self._stream is None:
                 raise CombinedStreamError(
@@ -1624,8 +1835,28 @@ class RBY1PalletController:
     def evaluate_grip_and_clearance_dwell(
         self,
         scene_window: Sequence[Any],
+        *,
+        allow_fixed_ready_geometry_only: bool = False,
     ) -> GripContinuityResult:
-        """Evaluate measured continuity; missing evidence always fails closed."""
+        """Evaluate loaded hold continuity and conservative vertical clearance.
+
+        The default path requires configured F/T plausibility bounds and a
+        directly observed held top plane.  The explicit commissioning path may
+        instead use the freshly measured fixed-ready EEF box-bottom model; all
+        joint tracking, EEF stability, frame freshness, stack-plane, clearance,
+        and command-ownership gates remain active.
+        """
+
+        if not isinstance(allow_fixed_ready_geometry_only, bool):
+            raise TypeError("allow_fixed_ready_geometry_only must be a boolean")
+        if (
+            allow_fixed_ready_geometry_only
+            and not self.config.fixed_ready_geometry_only_commissioning_enabled
+        ):
+            raise CommandOwnershipError(
+                "fixed-ready geometry-only grip checking is not enabled by the "
+                "reviewed grip-interlock configuration"
+            )
 
         now_s = self._clock()
         sample_margin_s = 2.0 / self.config.state_update_rate_hz
@@ -1699,11 +1930,14 @@ class RBY1PalletController:
         else:
             reasons.append("insufficient_eef_separation_samples")
 
-        if not ft_complete:
+        force_torque_verified = False
+        if not ft_complete and not allow_fixed_ready_geometry_only:
             reasons.append("force_torque_feedback_unavailable")
         if self.config.ft_max_force_n is None or self.config.ft_max_torque_nm is None:
-            reasons.append("force_torque_plausibility_range_unconfigured")
-        elif right_force_norms and left_force_norms:
+            if not allow_fixed_ready_geometry_only:
+                reasons.append("force_torque_plausibility_range_unconfigured")
+        elif ft_complete and right_force_norms and left_force_norms:
+            force_torque_verified = True
             if max(right_force_norms + left_force_norms) > self.config.ft_max_force_n:
                 reasons.append("force_feedback_out_of_range")
             torque_vectors = [
@@ -1719,7 +1953,9 @@ class RBY1PalletController:
             ):
                 reasons.append("torque_feedback_out_of_range")
             if self.config.ft_max_force_jump_n is None:
-                reasons.append("force_contact_loss_jump_unconfigured")
+                if not allow_fixed_ready_geometry_only:
+                    reasons.append("force_contact_loss_jump_unconfigured")
+                force_torque_verified = False
             else:
                 force_series = np.c_[right_force_norms, left_force_norms]
                 if (
@@ -1732,10 +1968,31 @@ class RBY1PalletController:
         direct_plane_run: list[tuple[float, float, float, float]] = []
         previous_frame_id: int | None = None
         previous_timestamp_s: float | None = None
+        previous_stack_source: str | None = None
         continuity_rejection: str | None = None
         for scene in scene_window:
-            distinct = bool(_read_field(scene, "held_top_distinct_from_stack", False))
-            held = _read_field(scene, "held_top_z_base_m")
+            if allow_fixed_ready_geometry_only:
+                pose_source = str(_read_field(scene, "held_box_pose_source", ""))
+                distinct = pose_source == (
+                    "fresh_dual_eef_fixed_ready_nominal_box_offset"
+                )
+                held = _read_field(scene, "held_box_bottom_z_base_m")
+                held_uncertainty_field = "held_box_bottom_uncertainty_m"
+                invalid_reason = "fixed_ready_box_bottom_geometry_invalid"
+                stack_source = str(_read_field(scene, "stack_top_source", ""))
+                stack_source_valid = stack_source in {
+                    "complete_stack_plane",
+                    "metric_coarse_l_corner_plane",
+                }
+            else:
+                distinct = bool(
+                    _read_field(scene, "held_top_distinct_from_stack", False)
+                )
+                held = _read_field(scene, "held_top_z_base_m")
+                held_uncertainty_field = "held_top_uncertainty_m"
+                invalid_reason = "held_top_direct_plane_invalid"
+                stack_source = "legacy_direct_stack_plane"
+                stack_source_valid = True
             stack = _read_field(scene, "stack_top_z_base_m")
             frame_id_raw = _read_field(scene, "frame_id")
             timestamp_raw = _read_field(scene, "capture_timestamp_s")
@@ -1772,13 +2029,13 @@ class RBY1PalletController:
                     and (
                         age_s < 0.0 or age_s > self.config.held_top_sample_fresh_after_s
                     )
-                    else "held_top_direct_plane_invalid"
+                    else invalid_reason
                 )
                 continue
 
             held_value = float(held)
             stack_value = float(stack)
-            held_sigma = float(_read_field(scene, "held_top_uncertainty_m", math.nan))
+            held_sigma = float(_read_field(scene, held_uncertainty_field, math.nan))
             stack_sigma = float(_read_field(scene, "stack_top_uncertainty_m", math.nan))
             values_valid = (
                 all(
@@ -1787,25 +2044,33 @@ class RBY1PalletController:
                 )
                 and held_sigma >= 0.0
                 and stack_sigma >= 0.0
+                and stack_source_valid
             )
             if not values_valid:
                 direct_plane_run.clear()
                 previous_frame_id = None
                 previous_timestamp_s = None
-                continuity_rejection = "held_top_direct_plane_invalid"
+                previous_stack_source = None
+                continuity_rejection = (
+                    "fixed_ready_stack_plane_source_invalid"
+                    if not stack_source_valid
+                    else invalid_reason
+                )
                 continue
 
             if previous_frame_id is not None and (
                 frame_id != previous_frame_id + 1
                 or previous_timestamp_s is None
                 or timestamp_s <= previous_timestamp_s
+                or stack_source != previous_stack_source
             ):
                 direct_plane_run.clear()
-                continuity_rejection = "held_top_evidence_not_contiguous"
+                continuity_rejection = "clearance_evidence_not_contiguous"
 
             direct_plane_run.append((held_value, held_sigma, stack_value, stack_sigma))
             previous_frame_id = frame_id
             previous_timestamp_s = timestamp_s
+            previous_stack_source = stack_source
 
         required_direct_frames = self.config.held_top_direct_plane_dwell_frames
         if len(direct_plane_run) > required_direct_frames:
@@ -1818,6 +2083,11 @@ class RBY1PalletController:
         held_std: float | None = None
         held_drift: float | None = None
         clearance: float | None = None
+        clearance_source = (
+            "fixed_ready_dual_eef_box_bottom_to_stack_plane"
+            if allow_fixed_ready_geometry_only
+            else "direct_held_top_minus_box_height_to_stack_plane"
+        )
         if len(held_top_z) < required_direct_frames:
             reasons.append(
                 continuity_rejection or "insufficient_contiguous_held_top_frames"
@@ -1843,7 +2113,9 @@ class RBY1PalletController:
                     stack_top_z, stack_top_uncertainty, strict=True
                 )
             )
-            clearance = held_lower - self.config.maximum_box_height_m - stack_upper
+            clearance = held_lower - stack_upper
+            if not allow_fixed_ready_geometry_only:
+                clearance -= self.config.maximum_box_height_m
             if clearance < self.config.minimum_clearance_m:
                 reasons.append("insufficient_vertical_clearance")
 
@@ -1860,6 +2132,11 @@ class RBY1PalletController:
             held_top_std_m=held_std,
             held_top_downward_drift_m=held_drift,
             clearance_lower_bound_m=clearance,
+            force_torque_verified=force_torque_verified,
+            clearance_source=clearance_source,
+            fixed_ready_geometry_only_authorized=(
+                allow_fixed_ready_geometry_only
+            ),
         )
         with self._condition:
             self._grip_result = result
@@ -2556,13 +2833,22 @@ class RBY1PalletController:
             grip_result = self._grip_result
         if handoff is None:
             raise CommandOwnershipError(
-                "nonzero mobility requires same-process GripHandoff provenance"
+                "nonzero mobility requires same-process loaded-ready or "
+                "GripHandoff provenance"
             )
         if grip_result is None or not grip_result.passed:
             reasons = () if grip_result is None else grip_result.reasons
             raise CombinedStreamError(
                 "nonzero mobility requires fresh measured grip/clearance evidence; "
                 f"reasons={reasons}"
+            )
+        if (
+            grip_result.fixed_ready_geometry_only_authorized
+            and not isinstance(handoff, LoadedSlot1ReadyBootstrap)
+        ):
+            raise CommandOwnershipError(
+                "fixed-ready geometry-only evidence is valid only for the local "
+                "loaded slot-1 ready bootstrap"
             )
         if (
             now_s - grip_result.evaluated_monotonic_s
@@ -2749,6 +3035,7 @@ __all__ = [
     "HandoffPendingError",
     "HARD_MAX_ANGULAR_SPEED_RADPS",
     "HARD_MAX_LINEAR_SPEED_MPS",
+    "LoadedSlot1ReadyBootstrap",
     "MeasuredRobotState",
     "MeasuredStateError",
     "MobilityCommand",

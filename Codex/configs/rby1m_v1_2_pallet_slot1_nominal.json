@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "slot1_ready_one_shot_available_mobile_actuation_uncommissioned",
+  "status": "loaded_slot1_ready_mvp_alignment_available_with_explicit_overrides",
   "robot": {
     "model": "M",
     "version": "1.2",
@@ -60,7 +60,7 @@
     "slot1_long_axis": "u_right",
     "axis_branch": "image_right",
     "acquisition": {
-      "budget_m": 0.0,
+      "budget_m": 0.15,
       "step_m": 0.010,
       "speed_mps": 0.030,
       "stationary_frames": 5,
@@ -95,6 +95,7 @@
     "center_offset_source": "operator_eye_arrived_pallet_1_arrived_mean_slot_target_minus_ready_eef_midpoint",
     "center_offset_status": "nominal_unverified_not_external_ground_truth",
     "center_offset_observed_target_std_xy_m": [0.001779, 0.002159],
+    "fixed_ready_box_bottom_uncertainty_m": 0.015,
     "long_axis_from_eef_line_offset_deg": 0.0,
     "maximum_dual_eef_box_center_disagreement_m": 0.015,
     "maximum_dual_eef_box_yaw_disagreement_deg": 2.0,
@@ -103,7 +104,7 @@
     "maximum_downward_drift_m": 0.005,
     "nominal_ready_right_eef_base_xyz_m": [1.00046, -0.16948, 0.73157],
     "nominal_ready_left_eef_base_xyz_m": [1.00046, 0.16948, 0.73157],
-    "nominal_ready_proxy_usage": "replay_and_non_actuating_dry_run_only"
+    "nominal_ready_proxy_usage": "replay_dry_run_and_explicit_fixed_ready_geometry_mvp"
   },
   "perception": {
     "min_depth_m": 0.20,
@@ -158,13 +159,14 @@
   },
   "safety": {
     "actuation_commissioned": false,
-    "ownership_bridge": "unimplemented_fail_closed",
+    "commissioning_mode": "explicit_loaded_ready_fixed_geometry_mvp",
+    "ownership_bridge": "same_process_loaded_ready_measurement_bootstrap",
     "minimum_clearance_m": 0.050,
     "state_fresh_after_s": 0.15,
     "grip_continuity_dwell_s": 0.50,
     "persistent_hold_states": ["ACQUIRE_STACK", "PERCEPTION_HOLD", "FAULT_HOLD", "ARRIVED_HOLD", "SHUTDOWN_PENDING_HOLD"],
-    "live_request_flags": ["--auto-palletize-slot1", "--allow-nominal-registration"],
-    "flags_authorize_motion": false,
+    "live_request_flags": ["--ensure-slot1-ready", "--auto-palletize-slot1", "--allow-nominal-registration", "--allow-geometry-only-grip-check"],
+    "flags_authorize_motion": true,
     "terminal_action": "zero_mobility_body_hold_only",
     "forbidden_actions": ["descent", "contact", "release", "gripper", "slide", "power_off"]
   },
@@ -178,6 +180,7 @@
     "maximum_force_n": null,
     "maximum_torque_nm": null,
     "maximum_force_jump_n": null,
+    "fixed_ready_geometry_only_commissioning_enabled": true,
     "unconfigured_force_torque_policy": "nonzero_mobility_fail_closed"
   },
   "mobility_frame": {

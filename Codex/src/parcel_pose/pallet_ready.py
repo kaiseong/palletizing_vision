@@ -326,6 +326,7 @@ def ensure_slot1_ready_from_config(
     *,
     address: str,
     power: str,
+    prepare_for_stream: bool = False,
     sdk_module: Any | None = None,
     robot: Any | None = None,
 ) -> bool:
@@ -348,6 +349,8 @@ def ensure_slot1_ready_from_config(
         raise ValueError("address must be a non-empty string")
     if not isinstance(power, str) or not power.strip():
         raise ValueError("power must be a non-empty device pattern")
+    if not isinstance(prepare_for_stream, bool):
+        raise TypeError("prepare_for_stream must be a boolean")
 
     config = PalletControlConfig.from_root_config(
         root_config,
@@ -387,6 +390,12 @@ def ensure_slot1_ready_from_config(
                 f"robot joint model is {reported_model!r}, expected Model M"
             )
 
+        # Loaded execution opens a combined stream immediately after this
+        # helper returns, so it prepares power/servos/control manager even when
+        # the posture already matches.  Perception-only callers preserve the
+        # previous zero-side-effect skip behavior.
+        if prepare_for_stream:
+            _prepare_robot(owned_robot, power)
         before = _read_ready_measurement(owned_robot, model, config.ready_pose)
         if before.within(config.ready_tolerance_rad):
             print(
@@ -398,7 +407,8 @@ def ensure_slot1_ready_from_config(
             )
             return False
 
-        _prepare_robot(owned_robot, power)
+        if not prepare_for_stream:
+            _prepare_robot(owned_robot, power)
         minimum_time_s = max(5.0, config.ready_transition_minimum_time_s)
         print(
             "[pallet] slot-1 ready transition required "
