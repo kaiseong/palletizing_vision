@@ -1,7 +1,8 @@
 # D435 재녹화 가이드
 
-이 문서는 RB-Y1 로봇 PC의 Python 3.12 환경에서 Codex pose estimator용
-RGB-D 데이터를 녹화하는 절차를 정리한다.
+이 문서는 RB-Y1 로봇 PC의 Python 3.12 환경에서 box-picking 및
+palletizing용 RGB-D 데이터를 녹화하는 절차를 정리한다. 녹화 진입점은
+공통 recorder인 `Common/record.py`다.
 
 기존 `recordings/box_*` 데이터는 `1280x720` RGB 좌표계에 정합된
 `float32 meter` Depth다. 시각화와 난이도 높은 장면 점검에는 계속 쓸 수
@@ -24,7 +25,7 @@ RGB-D 데이터를 녹화하는 절차를 정리한다.
 ## 1. 실행 환경 확인
 
 ```bash
-cd /home/kgs/workspace/Palletizing/Codex
+cd /home/kgs/workspace/Palletizing
 
 python3.12 --version
 python3.12 -c 'import cv2; print("opencv", cv2.__version__)'
@@ -42,10 +43,10 @@ python3.12 -m pip install -e .
 박스, 팔, 손, 공구를 모두 치우고 책상만 보이는 상태에서 10초 녹화한다.
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli record \
-  --output ../recordings/codex_640x480 \
+python3.12 Common/record.py \
+  --output recordings/codex_640x480 \
   --session-name empty_table --duration-sec 10 \
-  --robot-state-json configs/rby1m_v1_2_fixed_pose.json
+  --robot-state-json Common/configs/rby1m_v1_2_fixed_pose.json
 ```
 
 기본 config가 `640x480 @ 30 FPS`를 적용하고, `--output`이 저장 위치를
@@ -58,11 +59,11 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli record \
 책상 평면 캘리브레이션:
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli calibrate-plane \
-  --session ../recordings/codex_640x480/empty_table \
-  --config configs/d435_rby1_nominal.json \
-  --robot-state-json configs/rby1m_v1_2_fixed_pose.json \
-  --output ../out/calibrations/table_plane.json
+PYTHONPATH=Common/src:Box_picking/src python3.12 -m parcel_pose_picking.cli calibrate-plane \
+  --session recordings/codex_640x480/empty_table \
+  --config Box_picking/configs/d435_rby1_nominal.json \
+  --robot-state-json Common/configs/rby1m_v1_2_fixed_pose.json \
+  --output out/calibrations/table_plane.json
 ```
 
 품질 기준을 통과하지 못하면 calibration 파일은 생성되지 않는다. 이 경우
@@ -73,10 +74,10 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli calibrate-plane \
 한 pose마다 박스를 완전히 멈춘 뒤 10초 녹화한다.
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli record \
-  --output ../recordings/codex_640x480 \
+python3.12 Common/record.py \
+  --output recordings/codex_640x480 \
   --session-name box_0 --duration-sec 10 \
-  --robot-state-json configs/rby1m_v1_2_fixed_pose.json
+  --robot-state-json Common/configs/rby1m_v1_2_fixed_pose.json
 ```
 
 다른 pose는 `--session-name`만 바꿔 같은 명령을 반복한다. 필요할 때만
@@ -143,20 +144,20 @@ stationary burst에는 사용하지 않는다. 초기 visual servo는 stop-and-o
 각 세션이 끝날 때마다 manifest, checksum, RGB/Depth frame 쌍을 검사한다.
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli replay \
-  --session ../recordings/codex_640x480/static_center_yaw_000
+PYTHONPATH=Common/src:Box_picking/src python3.12 -m parcel_pose_picking.cli replay \
+  --session recordings/codex_640x480/static_center_yaw_000
 ```
 
 캘리브레이션 후 pose 결과 생성:
 
 ```bash
-PYTHONPATH=src python3.12 -m parcel_pose.cli replay \
-  --session ../recordings/codex_640x480/static_center_yaw_000 \
-  --calibration ../out/calibrations/table_plane.json \
-  --config configs/d435_rby1_nominal.json \
+PYTHONPATH=Common/src:Box_picking/src python3.12 -m parcel_pose_picking.cli replay \
+  --session recordings/codex_640x480/static_center_yaw_000 \
+  --calibration out/calibrations/table_plane.json \
+  --config Box_picking/configs/d435_rby1_nominal.json \
   --burst-size 5 \
   --burst-min-valid 3 \
-  --output-jsonl ../out/results/static_center_yaw_000.jsonl
+  --output-jsonl out/results/static_center_yaw_000.jsonl
 ```
 
 ## 6. Base 좌표 출력 조건
@@ -168,7 +169,7 @@ PYTHONPATH=src python3.12 -m parcel_pose.cli replay \
 
 현재 확정된 RB-Y1 M v1.2 고정 자세(torso
 `[0,55,-59.988,6.532,0,0] deg`, head `[0,49.846] deg`)의 SDK FK 결과는
-`Codex/configs/rby1m_v1_2_fixed_pose.json`에 있다. 이 FK를 사용해도 nominal
+`Common/configs/rby1m_v1_2_fixed_pose.json`에 있다. 이 FK를 사용해도 nominal
 head-camera mount가 독립 검증되기 전까지 base pose는
 `nominal_unverified`로 취급한다.
 
