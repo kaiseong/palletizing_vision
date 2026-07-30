@@ -118,6 +118,13 @@ def _finite_vector(value: Sequence[float], length: int, name: str) -> tuple[floa
     return tuple(float(item) for item in array)
 
 
+def _finite_float_nonnegative(value: float, name: str) -> float:
+    result = float(value)
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError(f"{name} must be finite and non-negative")
+    return result
+
+
 def _positive(value: float, name: str) -> float:
     value = float(value)
     if not math.isfinite(value) or value <= 0.0:
@@ -286,10 +293,11 @@ class PalletControlConfig:
     placement_angular_velocity_limit_radps: float = 0.20
     placement_linear_acceleration_limit_mps2: float = 0.08
     placement_angular_acceleration_limit_radps2: float = 0.30
-    # Preserve the same 150 mm inward Cartesian target offset used by the
-    # box-pick lift command.  It is a compliant target error, not a requested
-    # physical penetration into the carton.
-    placement_squeeze_offset_m: float = 0.150
+    # Operator-requested 2026-07-30: hold the slot-1 ready posture unchanged
+    # while the base drives, so the loaded hold commands the measured wrists with
+    # no inward offset.  Raising this restores the box-pick style compliant
+    # squeeze (a target error, not a requested penetration into the carton).
+    placement_squeeze_offset_m: float = 0.0
     # Slot-1 release opens along base Y only.  The commanded travel per hand is
     # exactly this spread because the loaded-hold squeeze cancels out, so a
     # small value keeps both arms far from the reach singularity.
@@ -655,7 +663,6 @@ class PalletControlConfig:
             "placement_angular_velocity_limit_radps",
             "placement_linear_acceleration_limit_mps2",
             "placement_angular_acceleration_limit_radps2",
-            "placement_squeeze_offset_m",
             "placement_release_spread_m",
             "placement_max_release_spread_m",
             "placement_release_axis_max_deviation_rad",
@@ -742,7 +749,12 @@ class PalletControlConfig:
             raise ValueError(
                 "placement angular acceleration cannot exceed 0.50 rad/s^2"
             )
-        if self.placement_squeeze_offset_m > 0.150 + 1e-12:
+        squeeze = _finite_float_nonnegative(
+            self.placement_squeeze_offset_m,
+            "placement_squeeze_offset_m",
+        )
+        object.__setattr__(self, "placement_squeeze_offset_m", squeeze)
+        if squeeze > 0.150 + 1e-12:
             raise ValueError("placement squeeze offset cannot exceed 150 mm")
         if self.placement_release_spread_m > self.placement_max_release_spread_m:
             raise ValueError("placement release spread cannot exceed its max bound")

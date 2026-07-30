@@ -193,7 +193,7 @@
     "maximum_release_gap_m": 0.170,
     "release_axis_max_deviation_deg": 10.0,
     "alignment_hold_before_place_s": 1.0,
-    "squeeze_offset_m": 0.150,
+    "squeeze_offset_m": 0.0,
     "release_spread_m": 0.030,
     "maximum_release_spread_m": 0.040,
     "joint_stiffness_nm_per_rad": [150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0],

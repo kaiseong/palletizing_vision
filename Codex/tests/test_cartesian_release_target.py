@@ -55,11 +55,24 @@ def test_loaded_hold_axis_points_from_left_to_right_hand() -> None:
     assert target.inter_eef_axis_base == pytest.approx((0.0, -1.0, 0.0))
 
 
-def test_loaded_hold_commands_an_inward_squeeze_on_both_hands() -> None:
+def test_loaded_hold_holds_the_measured_wrists_unchanged() -> None:
+    """The commissioned slot-1 hold commands no inward offset at all."""
+
     controller = offline_controller()
-    squeeze = controller.config.placement_squeeze_offset_m
+    assert controller.config.placement_squeeze_offset_m == 0.0
     target = loaded_hold_target(controller, measured_state())
-    # Each commanded hand target sits `squeeze` inside the measured hand.
+    assert target.right_T_base_eef[1, 3] == pytest.approx(RIGHT_EEF_XYZ[1])
+    assert target.left_T_base_eef[1, 3] == pytest.approx(LEFT_EEF_XYZ[1])
+    assert separation(target) == pytest.approx(EEF_SEPARATION_M)
+    assert target.squeeze_offset_m == 0.0
+
+
+def test_loaded_hold_still_supports_a_configured_squeeze() -> None:
+    """Restoring the box-pick style squeeze stays a configuration change."""
+
+    controller = offline_controller()
+    squeeze = 0.150
+    target = loaded_hold_target(controller, measured_state(), squeeze_offset_m=squeeze)
     assert target.right_T_base_eef[1, 3] == pytest.approx(RIGHT_EEF_XYZ[1] + squeeze)
     assert target.left_T_base_eef[1, 3] == pytest.approx(LEFT_EEF_XYZ[1] - squeeze)
     assert separation(target) == pytest.approx(abs(EEF_SEPARATION_M - 2.0 * squeeze))
