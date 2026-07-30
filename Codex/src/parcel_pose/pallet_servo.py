@@ -661,13 +661,31 @@ class PalletSlot1Servo:
         filtered_distance = float(np.linalg.norm(filtered.error_xy))
         max_distance = max(raw_distance, filtered_distance)
         if max_distance > self.config.max_correction_m:
-            return self.fault("correction_limit_exceeded", now)
+            # Carry the numbers: a bare reason cannot distinguish "the base is
+            # parked too far" from "the fallback feature was misidentified", and
+            # the operator cannot see the alignment error anywhere else.
+            return self.fault(
+                "correction_limit_exceeded"
+                f" ({max_distance * 1000.0:.0f}mm >"
+                f" {self.config.max_correction_m * 1000.0:.0f}mm,"
+                f" dx={sample.error_xy[0] * 1000.0:+.0f}mm"
+                f" dy={sample.error_xy[1] * 1000.0:+.0f}mm)",
+                now,
+            )
         if (
             not self._motion_started
             and max(abs(sample.yaw_error_rad), abs(filtered.yaw_error_rad))
             > self.config.start_yaw_limit_rad
         ):
-            return self.fault("start_yaw_limit_exceeded", now)
+            worst_yaw = max(
+                abs(sample.yaw_error_rad), abs(filtered.yaw_error_rad)
+            )
+            return self.fault(
+                "start_yaw_limit_exceeded"
+                f" ({math.degrees(worst_yaw):.1f}deg >"
+                f" {math.degrees(self.config.start_yaw_limit_rad):.1f}deg)",
+                now,
+            )
 
         inside_inner = self._inside_arrival(sample, filtered, inner=True)
         inside_outer = self._inside_arrival(sample, filtered, inner=False)

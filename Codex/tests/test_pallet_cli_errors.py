@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import pathlib
 
 import pytest
@@ -124,3 +125,45 @@ def test_preflight_creates_the_artifact_directory_and_leaves_no_probe(tmp_path) 
     assert target.parent.is_dir()
     assert not target.exists(), "preflight must not create the artifact itself"
     assert list(target.parent.iterdir()) == [], "the write probe must be removed"
+
+
+# --------------------------------------------------------------------------- #
+# alignment faults must state the measurement that tripped them
+# --------------------------------------------------------------------------- #
+def test_correction_limit_fault_reports_the_measured_error() -> None:
+    """A bare reason cannot tell a far-parked base from a misidentified feature."""
+
+    from parcel_pose.pallet_servo import (
+        PalletServoConfig,
+        PalletServoObservation,
+        PalletServoState,
+        PalletSlot1Servo,
+    )
+
+    config = PalletServoConfig()
+    servo = PalletSlot1Servo(config)
+    now = 100.0
+    servo.start(now)
+    far = float(config.max_correction_m) + 0.16
+    reason = ""
+    for index in range(config.filter_window + 2):
+        moment = now + 0.05 * (index + 1)
+        reason = servo.update(
+            PalletServoObservation(
+                timestamp_s=moment,
+                current_observed_feature_center_base=(0.865 + far, 0.139523),
+                current_observed_feature_yaw_base_rad=math.radians(-90.0),
+                demonstrated_body_reference_center_base=(0.865, 0.139523),
+                demonstrated_body_reference_yaw_base_rad=math.radians(-90.0),
+                axis_branch=config.expected_axis_branch,
+                reference_source="fixed_outer_l_corner",
+            ),
+            moment,
+        ).reason
+        if reason.startswith("correction_limit_exceeded"):
+            break
+    assert servo.state is PalletServoState.FAULT_HOLD
+    assert reason.startswith("correction_limit_exceeded"), reason
+    assert f"{far * 1000.0:.0f}mm" in reason, reason
+    assert f"{config.max_correction_m * 1000.0:.0f}mm" in reason, reason
+    assert "dx=" in reason and "dy=" in reason, reason
