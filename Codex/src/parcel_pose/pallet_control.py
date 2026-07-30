@@ -243,6 +243,52 @@ class ReadyPose:
 
 
 @dataclass(frozen=True, slots=True)
+class PlacePose:
+    """Operator-demonstrated joint posture that lowers the carried carton.
+
+    Slot-1 placement no longer commands a base-Z descent.  The operator jogs the
+    robot to the posture that seats the carton and hands the joint values over;
+    the controller turns them into Cartesian EEF targets with forward kinematics,
+    because the combined stream is bound to Cartesian arm controllers from its
+    first packet and would silently ignore joint targets for the arms.
+
+    The head is deliberately absent: it holds the ready pose throughout.
+    """
+
+    torso_rad: tuple[float, ...]
+    right_arm_rad: tuple[float, ...]
+    left_arm_rad: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "torso_rad", _finite_vector(self.torso_rad, 6, "torso_rad")
+        )
+        object.__setattr__(
+            self,
+            "right_arm_rad",
+            _finite_vector(self.right_arm_rad, 7, "right_arm_rad"),
+        )
+        object.__setattr__(
+            self, "left_arm_rad", _finite_vector(self.left_arm_rad, 7, "left_arm_rad")
+        )
+
+    @classmethod
+    def from_degrees(cls, value: Mapping[str, Any]) -> "PlacePose":
+        def radians(name: str, length: int) -> tuple[float, ...]:
+            raw = value.get(name)
+            if raw is None:
+                raise ValueError(f"place pose requires {name!r}")
+            degrees = _finite_vector(raw, length, f"place_pose_deg.{name}")
+            return tuple(math.radians(item) for item in degrees)
+
+        return cls(
+            torso_rad=radians("torso", 6),
+            right_arm_rad=radians("right_arm", 7),
+            left_arm_rad=radians("left_arm", 7),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PalletControlConfig:
     address: str = "192.168.30.1:50051"
     priority: int = 10
@@ -298,6 +344,12 @@ class PalletControlConfig:
     # no inward offset.  Raising this restores the box-pick style compliant
     # squeeze (a target error, not a requested penetration into the carton).
     placement_squeeze_offset_m: float = 0.0
+    # Demonstrated placement posture and how long the arms may take to reach it.
+    # The trajectory is paced by per-target velocity limits, not by minimum_time,
+    # because a streamed packet must not restart a multi-second trajectory at
+    # 20 Hz.  ``None`` keeps the legacy base-Z descent behaviour.
+    place_pose: "PlacePose | None" = None
+    placement_place_pose_duration_s: float = 1.0
     # Slot-1 release opens along base Y only.  The commanded travel per hand is
     # exactly this spread because the loaded-hold squeeze cancels out, so a
     # small value keeps both arms far from the reach singularity.
@@ -566,6 +618,17 @@ class PalletControlConfig:
                     defaults.placement_squeeze_offset_m,
                 )
             ),
+            place_pose=(
+                None
+                if placement.get("place_pose_deg") is None
+                else PlacePose.from_degrees(placement["place_pose_deg"])
+            ),
+            placement_place_pose_duration_s=float(
+                placement.get(
+                    "place_pose_duration_s",
+                    defaults.placement_place_pose_duration_s,
+                )
+            ),
             placement_release_spread_m=float(
                 placement.get(
                     "release_spread_m",
@@ -749,6 +812,18 @@ class PalletControlConfig:
             raise ValueError(
                 "placement angular acceleration cannot exceed 0.50 rad/s^2"
             )
+        if self.place_pose is not None and not isinstance(self.place_pose, PlacePose):
+            raise ValueError("place_pose must be a PlacePose")
+        object.__setattr__(
+            self,
+            "placement_place_pose_duration_s",
+            _positive(
+                self.placement_place_pose_duration_s,
+                "placement_place_pose_duration_s",
+            ),
+        )
+        if self.placement_place_pose_duration_s > 5.0 + 1e-12:
+            raise ValueError("place pose duration cannot exceed 5 seconds")
         squeeze = _finite_float_nonnegative(
             self.placement_squeeze_offset_m,
             "placement_squeeze_offset_m",
@@ -847,6 +922,9 @@ class CartesianArmTarget:
     release_spread_m: float = 0.0
     release_axis_deviation_rad: float = 0.0
     descent_plan_id: str | None = None
+    target_source: str = "measured_eef"
+    linear_velocity_limit_mps: float | None = None
+    angular_velocity_limit_radps: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, ArmStreamMode):
@@ -907,6 +985,11 @@ class CartesianArmTarget:
                 "release_axis_deviation_rad must be finite and non-negative"
             )
         object.__setattr__(self, "release_axis_deviation_rad", deviation)
+        object.__setattr__(self, "target_source", str(self.target_source).strip() or "measured_eef")
+        for name in ("linear_velocity_limit_mps", "angular_velocity_limit_radps"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _positive(value, name))
         if self.descent_plan_id is not None:
             plan_id = str(self.descent_plan_id).strip()
             if not plan_id:
@@ -2277,12 +2360,20 @@ class RBY1PalletController:
                 )
         state = self.get_measured_state()
         self._validate_cartesian_state(state)
-        target = self._make_lowering_target_from_loaded_hold(
-            state,
-            loaded_target=loaded_target,
-            descent_plan=descent_plan,
-            requested_squeeze_offset_m=requested_squeeze,
-        )
+        if self.config.place_pose is not None:
+            target = self._make_place_pose_target(
+                state,
+                loaded_target=loaded_target,
+                descent_plan=descent_plan,
+                place_pose=self.config.place_pose,
+            )
+        else:
+            target = self._make_lowering_target_from_loaded_hold(
+                state,
+                loaded_target=loaded_target,
+                descent_plan=descent_plan,
+                requested_squeeze_offset_m=requested_squeeze,
+            )
         with self._condition:
             self._require_cartesian_entry_locked()
             if self._cartesian_arm_target is not loaded_target:
@@ -2363,6 +2454,131 @@ class RBY1PalletController:
             squeeze_offset_m=adopted_squeeze,
             release_spread_m=loaded_target.release_spread_m,
             descent_plan_id=descent_plan.plan_id,
+        )
+
+    def _kinematics_at_place_pose(
+        self,
+        state: MeasuredRobotState,
+        place_pose: PlacePose,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Forward kinematics of the demonstrated posture.
+
+        The measured joint vector supplies every joint the posture does not name
+        (the wheels and the head), so only the torso and both arms are replaced.
+        Returns ``(T_base_torso, T_base_right_eef, T_base_left_eef)`` at that
+        posture, which is what the Cartesian arm targets must be expressed
+        against.
+        """
+
+        position = np.array(state.position_rad, dtype=np.float64, copy=True)
+        for name, target in (
+            ("torso", place_pose.torso_rad),
+            ("right_arm", place_pose.right_arm_rad),
+            ("left_arm", place_pose.left_arm_rad),
+        ):
+            indices = self._indices.get(name)
+            if indices is None:
+                raise MeasuredStateError(
+                    f"place pose requires measured {name} joint indices"
+                )
+            position[indices] = np.asarray(target, dtype=np.float64)
+        velocity = np.zeros_like(position)
+        try:
+            T_torso, _T_head, T_right, T_left, _twist = (
+                self._compute_measured_kinematics(position, velocity)
+            )
+        except Exception as exc:
+            with self._condition:
+                self._placement_fail_closed_locked("place_pose_kinematics_unavailable")
+            raise MeasuredStateError(
+                f"cannot compute forward kinematics at the place pose: {exc}"
+            ) from exc
+        return T_torso, T_right, T_left
+
+    def _make_place_pose_target(
+        self,
+        state: MeasuredRobotState,
+        *,
+        loaded_target: CartesianArmTarget,
+        descent_plan: PlacementDescentPlan,
+        place_pose: PlacePose,
+    ) -> CartesianArmTarget:
+        """Command the demonstrated placement posture as Cartesian EEF targets.
+
+        The arms are bound to Cartesian impedance by the first stream packet, so
+        a joint target for them would be accepted and ignored.  The posture is
+        therefore converted with forward kinematics and paced by per-target
+        velocity limits sized to cover the required travel in
+        ``placement_place_pose_duration_s``.
+        """
+
+        self._validate_cartesian_state(state)
+        if state.T_base_right_eef is None or state.T_base_left_eef is None:
+            raise MeasuredStateError("EEF FK unexpectedly missing")
+        if descent_plan.target_source != "demonstrated_place_pose":
+            with self._condition:
+                self._placement_fail_closed_locked("place_pose_plan_source_mismatch")
+            raise CombinedStreamError(
+                "a demonstrated place pose requires a plan frozen for it; the plan "
+                f"declares {descent_plan.target_source!r}"
+            )
+        self._validate_descent_plan_matches_state(descent_plan, state)
+        T_base_torso_place, right_base, left_base = self._kinematics_at_place_pose(
+            state, place_pose
+        )
+        right_travel = float(
+            np.linalg.norm(right_base[:3, 3] - state.T_base_right_eef[:3, 3])
+        )
+        left_travel = float(
+            np.linalg.norm(left_base[:3, 3] - state.T_base_left_eef[:3, 3])
+        )
+        travel = max(right_travel, left_travel)
+        duration = self.config.placement_place_pose_duration_s
+        # Pace the move so it spans the requested duration, but never exceed the
+        # reviewed placement ceiling.
+        linear_limit = min(
+            self.config.placement_linear_velocity_limit_mps,
+            max(travel / duration, 1e-4),
+        )
+        rotation_error = max(
+            _rotation_error_rad(state.T_base_right_eef, right_base),
+            _rotation_error_rad(state.T_base_left_eef, left_base),
+        )
+        angular_limit = min(
+            self.config.placement_angular_velocity_limit_radps,
+            max(rotation_error / duration, 1e-4),
+        )
+        axis = right_base[:3, 3] - left_base[:3, 3]
+        axis_norm = float(np.linalg.norm(axis))
+        if not math.isfinite(axis_norm) or axis_norm < 0.10:
+            with self._condition:
+                self._placement_fail_closed_locked("place_pose_inter_eef_axis_invalid")
+            raise MeasuredStateError("place pose inter-EEF axis is invalid")
+        T_torso_base = np.linalg.inv(T_base_torso_place)
+        right_nullspace = _finite_vector(
+            place_pose.right_arm_rad, 7, "place_pose_right_arm_rad"
+        )
+        left_nullspace = _finite_vector(
+            place_pose.left_arm_rad, 7, "place_pose_left_arm_rad"
+        )
+        return CartesianArmTarget(
+            mode=ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING,
+            right_T_torso_eef=T_torso_base @ right_base,
+            left_T_torso_eef=T_torso_base @ left_base,
+            right_T_base_eef=right_base,
+            left_T_base_eef=left_base,
+            right_nullspace_joint_rad=right_nullspace,
+            left_nullspace_joint_rad=left_nullspace,
+            inter_eef_axis_base=tuple(float(value) for value in axis / axis_norm),
+            created_monotonic_s=self._clock(),
+            source_state_sequence=state.sequence,
+            lowering_distance_m=travel,
+            squeeze_offset_m=loaded_target.squeeze_offset_m,
+            release_spread_m=loaded_target.release_spread_m,
+            descent_plan_id=descent_plan.plan_id,
+            target_source="demonstrated_place_pose",
+            linear_velocity_limit_mps=linear_limit,
+            angular_velocity_limit_radps=angular_limit,
         )
 
     def _validate_descent_plan(self, descent_plan: PlacementDescentPlan) -> None:
@@ -3507,13 +3723,16 @@ class RBY1PalletController:
                 f"{math.degrees(max_deviation_rad):.2f} deg"
             )
         outward = release_axis * float(release_spread_m)
+        # Open from whatever the acknowledged lowering command asked for.  With a
+        # demonstrated place posture that is the posture itself, so the frozen
+        # plan's base-Z targets no longer describe where the hands are going.
         right_base = np.array(
-            descent_plan.right_target_base,
+            lowering_target.right_T_base_eef,
             dtype=np.float64,
             copy=True,
         )
         left_base = np.array(
-            descent_plan.left_target_base,
+            lowering_target.left_T_base_eef,
             dtype=np.float64,
             copy=True,
         )
@@ -3537,6 +3756,7 @@ class RBY1PalletController:
             release_spread_m=float(release_spread_m),
             descent_plan_id=descent_plan.plan_id,
             release_axis_deviation_rad=deviation_rad,
+            target_source=lowering_target.target_source,
         )
 
     def _make_measured_cartesian_hold_target(
@@ -3628,6 +3848,8 @@ class RBY1PalletController:
             link_name: str,
             target: np.ndarray,
             nullspace_joint_rad: tuple[float, ...],
+            linear_velocity_limit: float,
+            angular_velocity_limit: float,
         ) -> Any:
             # Match box-pick lift: controller defaults own per-joint saturation.
             cartesian_builder = getattr(
@@ -3646,8 +3868,8 @@ class RBY1PalletController:
                     TORSO_REFERENCE_LINK,
                     link_name,
                     np.asarray(target, dtype=np.float64),
-                    self.config.placement_linear_velocity_limit_mps,
-                    self.config.placement_angular_velocity_limit_radps,
+                    linear_velocity_limit,
+                    angular_velocity_limit,
                     self.config.placement_linear_acceleration_limit_mps2,
                     self.config.placement_angular_acceleration_limit_radps2,
                 )
@@ -3681,15 +3903,29 @@ class RBY1PalletController:
             right_arm = arm(right_joint_target)
             left_arm = arm(left_joint_target)
         else:
+            linear_limit = (
+                self.config.placement_linear_velocity_limit_mps
+                if cartesian_target.linear_velocity_limit_mps is None
+                else cartesian_target.linear_velocity_limit_mps
+            )
+            angular_limit = (
+                self.config.placement_angular_velocity_limit_radps
+                if cartesian_target.angular_velocity_limit_radps is None
+                else cartesian_target.angular_velocity_limit_radps
+            )
             right_arm = cartesian_arm(
                 RIGHT_EEF_LINK,
                 cartesian_target.right_T_torso_eef,
                 cartesian_target.right_nullspace_joint_rad,
+                linear_limit,
+                angular_limit,
             )
             left_arm = cartesian_arm(
                 LEFT_EEF_LINK,
                 cartesian_target.left_T_torso_eef,
                 cartesian_target.left_nullspace_joint_rad,
+                linear_limit,
+                angular_limit,
             )
 
         body = (
@@ -3966,6 +4202,7 @@ __all__ = [
     "MobilityCommand",
     "PalletControlConfig",
     "PalletControlError",
+    "PlacePose",
     "PlacementTelemetry",
     "RBY1PalletController",
     "ReadyPose",

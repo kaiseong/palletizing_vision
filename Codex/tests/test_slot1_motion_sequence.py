@@ -132,32 +132,40 @@ def config_torso_origin() -> tuple[float, float, float]:
     return (0.0, 0.0, 0.90)
 
 
-def test_arm_target_is_constant_from_ready_until_release(root_config) -> None:
-    """Nothing moves the arms between the ready posture and the opening."""
+def test_arm_target_is_constant_from_ready_until_the_place_pose(root_config) -> None:
+    """Nothing moves the arms while the base drives; only placement does."""
 
-    (controller, robot, config, _plan, _delta, _lowering,
-     lowering_packet, release, release_packet) = drive_to_release(root_config)
+    (controller, robot, config, _plan, _delta, lowering,
+     lowering_packet, _release, release_packet) = drive_to_release(root_config)
     try:
         first = robot.packets[0]
-        # Every packet up to and including the lowering hold repeats packet 0.
-        release_index = next(
+        # Find the first packet that differs from packet 0: it must be the
+        # placement posture, never something during the approach.
+        moved = next(
             i for i, p in enumerate(robot.packets)
-            if p.eef_separation_m() is not None
-            and abs(p.eef_separation_m() - first.eef_separation_m()) > 1e-9
+            if p.right_arm is not None
+            and not np.allclose(p.right_arm.transform, first.right_arm.transform)
         )
-        for index, packet in enumerate(robot.packets[:release_index]):
+        for index, packet in enumerate(robot.packets[:moved]):
             np.testing.assert_allclose(
                 packet.right_arm.transform, first.right_arm.transform, atol=1e-12,
-                err_msg=f"packet {index} moved the right arm before release",
+                err_msg=f"packet {index} moved the right arm before placement",
             )
             np.testing.assert_allclose(
                 packet.left_arm.transform, first.left_arm.transform, atol=1e-12,
-                err_msg=f"packet {index} moved the left arm before release",
+                err_msg=f"packet {index} moved the left arm before placement",
             )
-        # The only arm motion in the whole sequence is the opening.
-        spread = config.placement_release_spread_m
-        assert release_packet.eef_separation_m() == pytest.approx(
-            MEASURED_SEPARATION_M + 2.0 * spread, abs=1e-6
+        # Exactly two arm motions in the whole sequence: the posture, then the
+        # opening.
+        distinct = []
+        for packet in robot.packets:
+            if packet.right_arm is None:
+                continue
+            key = np.round(packet.right_arm.transform[:3, 3], 9).tobytes()
+            if not distinct or distinct[-1] != key:
+                distinct.append(key)
+        assert len(distinct) == 3, (
+            f"expected ready -> place pose -> open, saw {len(distinct)} arm targets"
         )
     finally:
         teardown(controller)
@@ -252,6 +260,11 @@ def placement_plan(root_config: dict, *, gap_m: float = 0.159):
         stack_plane_z_base_m=stack_top,
         stack_plane_uncertainty_m=sigma,
         plan_id="sim-slot1-plan",
+        target_source=(
+            "demonstrated_place_pose"
+            if PalletControlConfig.from_root_config(root_config).place_pose is not None
+            else "base_z_descent"
+        ),
     ), delta
 
 
@@ -269,47 +282,51 @@ def drive_to_release(root_config: dict):
     return controller, robot, config, plan, delta, lowering, lowering_packet, release, release_packet
 
 
-def test_lowering_commands_no_vertical_motion(root_config) -> None:
+def test_lowering_moves_to_the_place_pose_not_by_a_base_z_delta(root_config) -> None:
+    """The descent plan asks for no base-Z delta; the posture owns the motion."""
+
     (controller, robot, config, plan, delta, lowering,
      lowering_packet, _release, _release_packet) = drive_to_release(root_config)
     try:
-        assert delta == 0.0, "the commissioned descent cap is zero"
-        assert lowering.mode is ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING
-        # The lowering packet must equal the loaded hold: same squeeze, same z.
-        first = robot.packets[0]
+        assert delta == 0.0, "no base-Z descent is planned"
+        assert plan.target_source == "demonstrated_place_pose"
         np.testing.assert_allclose(
-            lowering_packet.right_arm.transform,
-            first.right_arm.transform,
-            atol=1e-12,
+            plan.right_target_base[:3, 3], plan.right_eef_base[:3, 3], atol=1e-12
         )
+        # The commanded arm target is the posture, which does lower the wrists.
+        first = robot.packets[0]
+        drop = first.right_arm.transform[2, 3] - lowering_packet.right_arm.transform[2, 3]
+        assert drop > 0.0, "the demonstrated posture must lower the carton"
+        assert lowering.lowering_distance_m == pytest.approx(abs(drop), rel=1e-6)
         assert lowering_packet.mobility_velocity == (0.0, 0.0, 0.0)
     finally:
         teardown(controller)
 
 
 def test_release_opens_along_torso_y_only(root_config) -> None:
-    (controller, robot, config, plan, _delta, _lowering,
+    (controller, robot, config, _plan, _delta, lowering,
      lowering_packet, release, release_packet) = drive_to_release(root_config)
     try:
         spread = config.placement_release_spread_m
         assert release.mode is ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE
         assert release.release_spread_m == pytest.approx(spread)
         assert release.release_axis_deviation_rad == pytest.approx(0.0, abs=1e-9)
-
-        # Commanded targets are in the torso frame; compare against the plan.
-        right_base = release.right_T_base_eef[:3, 3]
-        left_base = release.left_T_base_eef[:3, 3]
-        np.testing.assert_allclose(right_base[[0, 2]], np.asarray(RIGHT_EEF)[[0, 2]])
-        np.testing.assert_allclose(left_base[[0, 2]], np.asarray(LEFT_EEF)[[0, 2]])
-        assert right_base[1] == pytest.approx(RIGHT_EEF[1] - spread)
-        assert left_base[1] == pytest.approx(LEFT_EEF[1] + spread)
-
-        # The squeeze is gone, so the hands travel exactly one spread each.
         assert release.squeeze_offset_m == 0.0
+
+        # Opening starts from the acknowledged place posture, on Y only.
+        for axis in (0, 2):
+            assert release.right_T_base_eef[axis, 3] == pytest.approx(
+                lowering.right_T_base_eef[axis, 3], abs=1e-12
+            )
+            assert release.left_T_base_eef[axis, 3] == pytest.approx(
+                lowering.left_T_base_eef[axis, 3], abs=1e-12
+            )
+        assert release.right_T_base_eef[1, 3] == pytest.approx(
+            lowering.right_T_base_eef[1, 3] - spread
+        )
         opened = release_packet.eef_separation_m()
-        held = lowering_packet.eef_separation_m()
-        assert opened > held
-        assert opened == pytest.approx(MEASURED_SEPARATION_M + 2.0 * spread, abs=1e-6)
+        assert opened == pytest.approx(lowering_packet.eef_separation_m() + 2.0 * spread,
+                                       abs=1e-6)
     finally:
         teardown(controller)
 
@@ -474,3 +491,96 @@ def test_strided_ray_grid_matches_a_full_resolution_grid_bit_for_bit() -> None:
 
     actual = PalletStackEstimator()._ray_coefficients(intrinsics, matrix, 2)
     np.testing.assert_array_equal(actual, reference)
+
+
+# --------------------------------------------------------------------------- #
+# demonstrated placement posture
+# --------------------------------------------------------------------------- #
+def test_place_pose_is_commanded_as_cartesian_targets(root_config) -> None:
+    """The arms are bound to Cartesian impedance, so a joint posture must be FK'd."""
+
+    from parcel_pose.pallet_control import PalletControlConfig
+
+    config = PalletControlConfig.from_root_config(root_config)
+    assert config.place_pose is not None, "the shipped config demonstrates a posture"
+    # The demonstrated torso equals the ready torso, so only the arms move.
+    np.testing.assert_allclose(
+        config.place_pose.torso_rad, config.ready_pose.torso_rad, atol=1e-3
+    )
+    assert config.place_pose.right_arm_rad != config.ready_pose.right_arm_rad
+
+    (controller, robot, config, _plan, _delta, lowering,
+     lowering_packet, _release, _release_packet) = drive_to_release(root_config)
+    try:
+        assert lowering.target_source == "demonstrated_place_pose"
+        assert lowering.mode is ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING
+        # The commanded nullspace posture is the demonstrated arm joints.
+        np.testing.assert_allclose(
+            lowering.right_nullspace_joint_rad, config.place_pose.right_arm_rad
+        )
+        # The arms actually moved: the lowering packet differs from packet 0.
+        first = robot.packets[0]
+        assert not np.allclose(
+            lowering_packet.right_arm.transform, first.right_arm.transform
+        )
+    finally:
+        teardown(controller)
+
+
+def test_place_pose_travel_is_paced_over_the_configured_duration(root_config) -> None:
+    (controller, robot, config, _plan, _delta, lowering,
+     _lowering_packet, _release, _release_packet) = drive_to_release(root_config)
+    try:
+        duration = config.placement_place_pose_duration_s
+        assert duration == pytest.approx(1.0)
+        expected = min(
+            config.placement_linear_velocity_limit_mps,
+            max(lowering.lowering_distance_m / duration, 1e-4),
+        )
+        assert lowering.linear_velocity_limit_mps == pytest.approx(expected)
+        assert (
+            lowering.linear_velocity_limit_mps
+            <= config.placement_linear_velocity_limit_mps
+        ), "the reviewed placement ceiling still bounds the pacing"
+    finally:
+        teardown(controller)
+
+
+def test_release_opens_from_the_place_pose_not_the_frozen_plan(root_config) -> None:
+    (controller, robot, config, _plan, _delta, lowering,
+     _lowering_packet, release, release_packet) = drive_to_release(root_config)
+    try:
+        spread = config.placement_release_spread_m
+        assert spread == pytest.approx(0.030)
+        assert release.target_source == "demonstrated_place_pose"
+        # Base X and Z stay exactly at the place posture; only Y opens.
+        for axis in (0, 2):
+            assert release.right_T_base_eef[axis, 3] == pytest.approx(
+                lowering.right_T_base_eef[axis, 3], abs=1e-12
+            )
+        assert release.right_T_base_eef[1, 3] == pytest.approx(
+            lowering.right_T_base_eef[1, 3] - spread
+        )
+        assert release.left_T_base_eef[1, 3] == pytest.approx(
+            lowering.left_T_base_eef[1, 3] + spread
+        )
+        assert release_packet.eef_separation_m() == pytest.approx(
+            MEASURED_SEPARATION_M + 2.0 * spread, abs=1e-6
+        )
+    finally:
+        teardown(controller)
+
+
+def test_place_pose_plan_rejects_a_base_z_descent(root_config) -> None:
+    from parcel_pose.pallet_place import PlacementDescentPlan
+
+    plan, _delta = placement_plan(root_config)
+    fields = {
+        name: getattr(plan, name)
+        for name in plan.__dataclass_fields__
+        if name != "target_source"
+    }
+    fields["target_source"] = "demonstrated_place_pose"
+    fields["planned_delta_z_m"] = 0.020
+    with pytest.raises(ValueError, match="cannot also request a base-Z descent"):
+        PlacementDescentPlan(**fields)

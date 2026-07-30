@@ -397,17 +397,28 @@ class FakeRobot:
         )
 
     # --- fk provider ------------------------------------------------------- #
+    # A crude but joint-dependent surrogate: each arm EEF moves by
+    # ``place_pose_gain`` metres per radian of joint-0 change away from the ready
+    # pose.  Real FK lives in the SDK; this only has to prove the controller
+    # converts a posture into a Cartesian target and paces it.
+    place_pose_gain: tuple[float, float, float] = (0.0, 0.0, -0.30)
+
     def fk_provider(self, position: np.ndarray, velocity: np.ndarray) -> Any:
         def transform(xyz):
             matrix = np.eye(4, dtype=np.float64)
             matrix[:3, 3] = np.asarray(xyz, dtype=np.float64)
             return matrix
 
+        offset = np.zeros(3, dtype=np.float64)
+        pose = self.ready_pose
+        if pose is not None:
+            delta = float(position[RIGHT_ARM_IDX][0] - pose.right_arm_rad[0])
+            offset = delta * np.asarray(self.place_pose_gain, dtype=np.float64)
         return {
             "T_base_torso": transform(self.torso_xyz),
             "T_base_head": transform((0.10, 0.0, 1.20)),
-            "T_base_right_eef": transform(self.right_eef_xyz),
-            "T_base_left_eef": transform(self.left_eef_xyz),
+            "T_base_right_eef": transform(np.asarray(self.right_eef_xyz) + offset),
+            "T_base_left_eef": transform(np.asarray(self.left_eef_xyz) + offset),
             "base_twist_w_vx_vy": (0.0, 0.0, 0.0),
         }
 

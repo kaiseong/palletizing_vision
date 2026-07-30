@@ -1422,6 +1422,9 @@ def _placement_input(
         descent_plan_source=(
             "bilateral_eef_fk_box_bottom_minus_metric_stack_plane"
         ),
+        demonstrated_place_pose=bool(
+            getattr(getattr(controller, "config", None), "place_pose", None) is not None
+        ),
     )
     diagnostics = {
         "gap_prediction": gap_diagnostics,

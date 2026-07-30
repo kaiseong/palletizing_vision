@@ -107,6 +107,10 @@ class PlacementConfig:
     release_target_dwell_s: float = 0.35
     feedback_stale_s: float = 0.25
     lower_z_tolerance_m: float = 0.008
+    # Tolerances for the demonstrated place posture.  The posture moves the wrists
+    # in all three axes, so a single z tolerance is not the right check.
+    place_pose_tolerance_m: float = 0.015
+    place_pose_rotation_tolerance_rad: float = math.radians(4.0)
     lower_midpoint_xy_drift_m: float = 0.015
     lower_rotation_tolerance_rad: float = math.radians(3.0)
     release_target_translation_tolerance_m: float = 0.012
@@ -128,6 +132,8 @@ class PlacementConfig:
             "release_timeout_s",
             "feedback_stale_s",
             "lower_z_tolerance_m",
+            "place_pose_tolerance_m",
+            "place_pose_rotation_tolerance_rad",
             "lower_midpoint_xy_drift_m",
             "lower_rotation_tolerance_rad",
             "release_target_translation_tolerance_m",
@@ -200,6 +206,8 @@ class PlacementConfig:
             "release_axis_max_deviation_deg",
             "alignment_hold_before_place_s",
             "squeeze_offset_m",
+            "place_pose_duration_s",
+            "place_pose_deg",
             "release_spread_m",
             "maximum_release_spread_m",
             "joint_stiffness_nm_per_rad",
@@ -377,6 +385,12 @@ class PlacementDescentPlan:
     valid: bool
     rejection_reason: str | None
     source: str
+    # "base_z_descent": targets are the measured wrists lowered by
+    # planned_delta_z_m.  "demonstrated_place_pose": the controller replaces them
+    # with the forward kinematics of an operator-demonstrated posture, so the
+    # base-Z derivation below does not apply and the geometry checks compare
+    # against the acknowledged controller target instead.
+    target_source: str = "base_z_descent"
 
     def __post_init__(self) -> None:
         plan_id = str(self.plan_id).strip()
@@ -440,6 +454,21 @@ class PlacementDescentPlan:
             "left_target_base",
             _readonly_transform(self.left_target_base, "left_target_base"),
         )
+        object.__setattr__(
+            self, "target_source", str(self.target_source).strip() or "base_z_descent"
+        )
+        if self.target_source not in ("base_z_descent", "demonstrated_place_pose"):
+            raise ValueError(f"unknown target_source {self.target_source!r}")
+        if self.target_source == "demonstrated_place_pose":
+            if self.planned_delta_z_m != 0.0:
+                raise ValueError(
+                    "a demonstrated place pose cannot also request a base-Z descent"
+                )
+            object.__setattr__(self, "rejection_reason", None)
+            object.__setattr__(self, "valid", bool(self.valid))
+            if not self.valid:
+                raise ValueError("PlacementDescentPlan must be valid")
+            return
         expected_right_target = np.array(self.right_eef_base, dtype=np.float64, copy=True)
         expected_left_target = np.array(self.left_eef_base, dtype=np.float64, copy=True)
         expected_right_target[2, 3] -= self.planned_delta_z_m
@@ -496,6 +525,9 @@ class PlacementInput:
     bilateral_eef_timestamp_s: float | None = None
     bilateral_eef_state_sequence: int | None = None
     descent_plan_source: str = "vision_eef_fk"
+    # True when the controller will replace the base-Z targets with the forward
+    # kinematics of an operator-demonstrated placement posture.
+    demonstrated_place_pose: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "now_s", _finite(self.now_s, "now_s"))
@@ -933,6 +965,27 @@ class Slot1PlacementSequencer:
         plan = self._descent_plan
         if plan is None or not plan.valid:
             return False
+        if plan.target_source == "demonstrated_place_pose":
+            # The posture owns where the hands go, so the only admissible
+            # evidence is the acknowledged controller target.
+            if sample.right_target_base is None or sample.left_target_base is None:
+                return False
+            return bool(
+                np.linalg.norm(
+                    sample.right_eef_base[:3, 3] - sample.right_target_base[:3, 3]
+                )
+                <= self.config.place_pose_tolerance_m
+                and np.linalg.norm(
+                    sample.left_eef_base[:3, 3] - sample.left_target_base[:3, 3]
+                )
+                <= self.config.place_pose_tolerance_m
+                and _rotation_error_rad(
+                    sample.right_eef_base, sample.right_target_base
+                )
+                <= self.config.place_pose_rotation_tolerance_rad
+                and _rotation_error_rad(sample.left_eef_base, sample.left_target_base)
+                <= self.config.place_pose_rotation_tolerance_rad
+            )
         expected_right_z = float(plan.right_target_base[2, 3])
         expected_left_z = float(plan.left_target_base[2, 3])
         z_ok = bool(
@@ -1277,6 +1330,11 @@ class Slot1PlacementSequencer:
                 valid=True,
                 rejection_reason=None,
                 source=sample.descent_plan_source,
+                target_source=(
+                    "demonstrated_place_pose"
+                    if sample.demonstrated_place_pose
+                    else "base_z_descent"
+                ),
             ),
             None,
         )
