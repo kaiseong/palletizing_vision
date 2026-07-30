@@ -97,10 +97,7 @@ def test_existing_telemetry_is_refused_before_any_robot_contact(tmp_path) -> Non
                 config,
                 execute=True,
                 ensure_slot1_ready=True,
-                allow_nominal_registration=True,
-                allow_geometry_only_grip_check=True,
                 auto_place_slot1=True,
-                allow_vision_geometry_release=True,
                 log_jsonl=existing,
             )
     finally:

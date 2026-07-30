@@ -152,53 +152,15 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--output-mp4", type=Path)
     live.add_argument("--log-jsonl", type=Path)
     live.add_argument(
-        "--ensure-slot1-ready",
+        "--execute",
         action="store_true",
         help=(
-            "connect to RB-Y1 and, only when needed, send one 5-second "
-            "all-joint Position command to the configured slot-1 ready pose "
-            "before opening the camera"
-        ),
-    )
-    live.add_argument(
-        "--auto-palletize-slot1",
-        action="store_true",
-        help=(
-            "start the supervised loaded-box slot-1 base alignment; requires "
-            "--ensure-slot1-ready and the explicit calibration/safety acknowledgements"
-        ),
-    )
-    live.add_argument(
-        "--auto-place-slot1",
-        action="store_true",
-        help=(
-            "after slot-1 ARRIVED_HOLD, freeze a metric descent plan, lower both "
-            "Cartesian EEFs, and run the optional release sequence; requires "
-            "--auto-palletize-slot1 and placement.enabled=true in the config"
-        ),
-    )
-    live.add_argument(
-        "--allow-nominal-registration",
-        action="store_true",
-        help="explicitly accept the nominal_unverified camera/base registration",
-    )
-    live.add_argument(
-        "--allow-geometry-only-grip-check",
-        action="store_true",
-        help=(
-            "commissioning-only: acknowledge fixed-ready FK/EEF geometry, measured "
-            "joint continuity, and depth clearance as the loaded-demo interlock; "
-            "F/T is not a gate; "
-            "the loaded config must enable the same reviewed commissioning policy"
-        ),
-    )
-    live.add_argument(
-        "--allow-vision-geometry-release",
-        action="store_true",
-        help=(
-            "commissioning-only: allow release when bilateral EEF/FK box-bottom "
-            "and metric stack-plane bounds produce a valid frozen descent plan; "
-            "placement does not read F/T"
+            "run the loaded slot-1 sequence on the robot: verify the ready "
+            "posture, align the base on vision, then seat the carton and "
+            "withdraw the hands. Without it this command is perception only "
+            "and never connects to the robot. The reviewed config must enable "
+            "grip_interlock.fixed_ready_geometry_only_commissioning_enabled, "
+            "placement.enabled and placement.vision_geometry_release_enabled"
         ),
     )
     live.add_argument(
@@ -288,52 +250,22 @@ def _run_evaluate(args: argparse.Namespace) -> int:
 
 
 def _run_live(args: argparse.Namespace) -> int:
-    if args.allow_nominal_registration and not args.auto_palletize_slot1:
-        raise ValueError("--allow-nominal-registration requires --auto-palletize-slot1")
-    if args.allow_geometry_only_grip_check and not args.auto_palletize_slot1:
-        raise ValueError(
-            "--allow-geometry-only-grip-check requires --auto-palletize-slot1"
-        )
-    if args.auto_palletize_slot1 and not args.ensure_slot1_ready:
-        raise ValueError(
-            "loaded slot-1 alignment requires --ensure-slot1-ready so the configured "
-            "held-box posture is verified before the combined command stream starts"
-        )
-    if args.auto_place_slot1 and not args.auto_palletize_slot1:
-        raise ValueError("--auto-place-slot1 requires --auto-palletize-slot1")
-    if args.allow_vision_geometry_release and not args.auto_place_slot1:
-        raise ValueError(
-            "--allow-vision-geometry-release requires --auto-place-slot1"
-        )
-    if args.auto_place_slot1 and not args.allow_vision_geometry_release:
-        raise ValueError(
-            "--auto-place-slot1 requires --allow-vision-geometry-release; "
-            "omit --auto-place-slot1 for alignment-only commissioning"
-        )
-    if args.ensure_slot1_ready and not args.auto_palletize_slot1:
-        print(
-            "[pallet] mobile base disabled: --ensure-slot1-ready only verifies or "
-            "restores the fixed posture; add --auto-palletize-slot1 and the required "
-            "calibration/grip acknowledgements to enable alignment",
-            file=sys.stderr,
-            flush=True,
-        )
+    """Perception by default; ``--execute`` runs the loaded slot-1 sequence.
+
+    Commissioning acknowledgements moved into the reviewed config.  Five flags
+    never stopped an unsafe run, they only produced runs that failed on a wrong
+    combination, so motion is now gated by the config policy and one flag.
+    """
+
     config = _load_config(args.config)
     from .pallet_runtime import run_pallet_live
 
     return int(
         run_pallet_live(
             config,
-            execute=bool(args.auto_palletize_slot1),
-            allow_nominal_registration=bool(args.allow_nominal_registration),
-            allow_geometry_only_grip_check=bool(
-                args.allow_geometry_only_grip_check
-            ),
-            auto_place_slot1=bool(args.auto_place_slot1),
-            allow_vision_geometry_release=bool(
-                args.allow_vision_geometry_release
-            ),
-            ensure_slot1_ready=bool(args.ensure_slot1_ready),
+            execute=bool(args.execute),
+            auto_place_slot1=bool(args.execute),
+            ensure_slot1_ready=bool(args.execute),
             robot_address=str(args.robot_address),
             robot_power=str(args.robot_power),
             warmup_frames=int(args.warmup_frames),

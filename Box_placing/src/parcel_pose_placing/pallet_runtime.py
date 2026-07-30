@@ -2506,10 +2506,7 @@ def run_pallet_live(
     root_config: Mapping[str, Any],
     *,
     execute: bool = False,
-    allow_nominal_registration: bool = False,
-    allow_geometry_only_grip_check: bool = False,
     auto_place_slot1: bool = False,
-    allow_vision_geometry_release: bool = False,
     ensure_slot1_ready: bool = False,
     robot_address: str = "192.168.30.1:50051",
     robot_power: str = ".*",
@@ -2541,28 +2538,26 @@ def run_pallet_live(
         raise ValueError("loaded slot-1 execution requires ensure_slot1_ready=True")
     if auto_place_slot1 and not execute:
         raise ValueError("slot-1 placement requires execute=True")
-    if allow_vision_geometry_release and not auto_place_slot1:
-        raise ValueError(
-            "allow_vision_geometry_release is valid only with auto_place_slot1=True"
-        )
-    if auto_place_slot1 and not allow_vision_geometry_release:
-        raise ValueError(
-            "slot-1 placement requires allow_vision_geometry_release=True; "
-            "omit auto_place_slot1 for alignment-only commissioning"
-        )
 
     # Before anything reaches the robot: a stranded carried load is far worse
     # than a rejected command line.
     _preflight_output_paths(log_jsonl, output_mp4)
 
+    # Commissioning policy lives in the reviewed config, not on the command line.
+    # Five acknowledgement flags never blocked an unsafe run; they only produced
+    # runs that failed on a wrong flag combination.  The config still has to
+    # enable each capability, so an unreviewed config cannot move the robot.
     calibration = _section(root_config, "calibration")
-    absolute_registration = bool(calibration.get("absolute_base_validated", False))
-    if execute and not absolute_registration and not allow_nominal_registration:
-        raise RuntimeError(
-            "base registration is nominal_unverified; explicit "
-            "allow_nominal_registration=True is required for robot motion"
+    if execute and not bool(calibration.get("absolute_base_validated", False)):
+        # Not a blocker: the empirical registration is what every commissioning
+        # run used.  The operator still has to see it named once per run.
+        print(
+            "warning: camera/base registration is nominal_unverified; base "
+            "coordinates carry the empirical correction from "
+            f"{calibration.get('base_translation_correction_source', 'an operator alignment')}",
+            file=sys.stderr,
+            flush=True,
         )
-
     grip_config = _section(root_config, "grip_interlock")
     geometry_only_policy_enabled = grip_config.get(
         "fixed_ready_geometry_only_commissioning_enabled", False
@@ -2572,19 +2567,11 @@ def run_pallet_live(
             "grip_interlock.fixed_ready_geometry_only_commissioning_enabled must "
             "be a boolean"
         )
-    if allow_geometry_only_grip_check and not geometry_only_policy_enabled:
+    if execute and not geometry_only_policy_enabled:
         raise RuntimeError(
-            "the CLI geometry-only acknowledgement is not enabled by the reviewed "
-            "grip-interlock commissioning policy"
-        )
-    if execute and not allow_geometry_only_grip_check:
-        raise RuntimeError(
-            "loaded slot-1 motion requires allow_geometry_only_grip_check=True "
-            "to acknowledge the reviewed fixed-ready FK/EEF clearance model"
-        )
-    if not execute and allow_geometry_only_grip_check:
-        raise ValueError(
-            "allow_geometry_only_grip_check is valid only with execute=True"
+            "loaded slot-1 motion requires "
+            "grip_interlock.fixed_ready_geometry_only_commissioning_enabled=true "
+            "in the reviewed config"
         )
     placement_section = _section(root_config, "placement")
     placement_config_enabled = bool(placement_section.get("enabled", False))
@@ -2595,10 +2582,10 @@ def run_pallet_live(
         raise RuntimeError(
             "slot-1 placement requires placement.enabled=true in the reviewed config"
         )
-    if allow_vision_geometry_release and not vision_release_policy_enabled:
+    if auto_place_slot1 and not vision_release_policy_enabled:
         raise RuntimeError(
-            "vision/geometry release requires "
-            "placement.vision_geometry_release_enabled=true"
+            "slot-1 placement requires "
+            "placement.vision_geometry_release_enabled=true in the reviewed config"
         )
     if not execute and controller is not None:
         raise ValueError("controller is valid only with execute=True")
@@ -2884,7 +2871,7 @@ def run_pallet_live(
                         grip_result = controller.evaluate_grip_and_clearance_dwell(
                             list(scene_window),
                             allow_fixed_ready_geometry_only=(
-                                allow_geometry_only_grip_check
+                                geometry_only_policy_enabled
                             ),
                         )
                         motion_interlocks_ok = bool(
@@ -3181,7 +3168,7 @@ def run_pallet_live(
                         decision=decision,
                         zero_acknowledged=_zero_command_acknowledged(controller),
                         stationary=stationary,
-                        allow_vision_geometry_release=allow_vision_geometry_release,
+                        allow_vision_geometry_release=vision_release_policy_enabled,
                     )
                     placement_output = placement_sequencer.update(sample)
                     fault_dispatch = _dispatch_placement_fault_hold_if_needed(
