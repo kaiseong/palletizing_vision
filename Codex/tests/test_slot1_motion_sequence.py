@@ -407,3 +407,70 @@ def test_timeline(root_config, capsys) -> None:
         assert controller.phase is ControllerPhase.STEADY_HOLD
     finally:
         teardown(controller)
+
+
+# --------------------------------------------------------------------------- #
+# perception hot path: the ray grid must survive a per-frame transform change
+# --------------------------------------------------------------------------- #
+def test_ray_grid_is_cached_across_measured_transform_changes() -> None:
+    """The live path feeds a new measured T_base_depth every frame.
+
+    Keying the finished coefficients on that transform missed the cache on every
+    frame and rebuilt a full-resolution array, which cost about 7.6 ms per frame
+    on the development host.  Only the pixel-ray grid may be cached.
+    """
+
+    from parcel_pose.models import CameraIntrinsics
+    from parcel_pose.pallet_geometry import PalletStackEstimator
+
+    estimator = PalletStackEstimator()
+    intrinsics = CameraIntrinsics(
+        width=640, height=480, fx=380.0, fy=380.0, cx=320.0, cy=240.0
+    )
+
+    def transform(x: float) -> np.ndarray:
+        matrix = np.eye(4, dtype=np.float64)
+        matrix[:3, 3] = (x, 0.0, 1.2)
+        return matrix
+
+    first = estimator._ray_coefficients(intrinsics, transform(0.10), 2)
+    grid = estimator._ray_x
+    second = estimator._ray_coefficients(intrinsics, transform(0.11), 2)
+
+    assert estimator._ray_x is grid, "the ray grid was rebuilt for a new transform"
+    assert first.shape == (240, 320, 3), "the grid must be built at stride resolution"
+    # A different rotation must still change the coefficients.
+    rotated = transform(0.10)
+    rotated[:3, :3] = np.asarray(
+        ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)), dtype=np.float64
+    )
+    third = estimator._ray_coefficients(intrinsics, rotated, 2)
+    assert not np.allclose(third, second)
+
+
+def test_strided_ray_grid_matches_a_full_resolution_grid_bit_for_bit() -> None:
+    """Striding after the combine and combining after the stride must agree."""
+
+    from parcel_pose.models import CameraIntrinsics
+    from parcel_pose.pallet_geometry import PalletStackEstimator
+
+    intrinsics = CameraIntrinsics(
+        width=640, height=480, fx=381.5, fy=381.5, cx=319.5, cy=239.5
+    )
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, :3] = np.asarray(
+        ((0.86, -0.30, -0.43), (-0.03, 0.85, 0.51), (0.52, -0.42, 0.73)),
+        dtype=np.float64,
+    )
+    rows, cols = np.indices((480, 640), dtype=np.float32)
+    ray_x = (cols - np.float32(intrinsics.cx)) / np.float32(intrinsics.fx)
+    ray_y = (rows - np.float32(intrinsics.cy)) / np.float32(intrinsics.fy)
+    rotation = np.asarray(matrix[:3, :3], dtype=np.float32)
+    reference = (
+        ray_x[..., None] * rotation[:, 0]
+        + ray_y[..., None] * rotation[:, 1]
+        + rotation[:, 2]
+    )[::2, ::2]
+
+    actual = PalletStackEstimator()._ray_coefficients(intrinsics, matrix, 2)
+    np.testing.assert_array_equal(actual, reference)

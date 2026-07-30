@@ -1007,8 +1007,9 @@ class PalletStackEstimator:
     def __init__(self, config: PalletEstimatorConfig | None = None) -> None:
         self.config = PalletEstimatorConfig() if config is None else config
         self.last_evidence: PalletFrameEvidence | None = None
-        self._ray_cache_key: tuple[Any, ...] | None = None
-        self._base_ray_coefficients: Float32Array | None = None
+        self._ray_grid_key: tuple[Any, ...] | None = None
+        self._ray_x: Float32Array | None = None
+        self._ray_y: Float32Array | None = None
         self._previous_valid_frame_id: int | None = None
         self._previous_valid_timestamp_s: float | None = None
         self._previous_valid_center: FloatArray | None = None
@@ -1017,7 +1018,18 @@ class PalletStackEstimator:
         self,
         intrinsics: CameraIntrinsics,
         T_base_depth: FloatArray,
+        stride: int,
     ) -> Float32Array:
+        """Base-frame ray directions for the strided depth grid.
+
+        Only the pixel-ray grid is cacheable: ``T_base_depth`` comes from the
+        measured head FK and therefore changes on every live frame, so keying
+        the finished coefficients on it missed the cache every time and rebuilt a
+        full-resolution array.  The grid is built once at the strided resolution
+        instead, which is bit-identical to striding a full-resolution grid
+        because every operation here is element-wise.
+        """
+
         key = (
             intrinsics.width,
             intrinsics.height,
@@ -1025,23 +1037,30 @@ class PalletStackEstimator:
             intrinsics.fy,
             intrinsics.cx,
             intrinsics.cy,
-            *T_base_depth[:3, :].reshape(-1).tolist(),
+            int(stride),
         )
-        if key == self._ray_cache_key and self._base_ray_coefficients is not None:
-            return self._base_ray_coefficients
-        rows, cols = np.indices((intrinsics.height, intrinsics.width), dtype=np.float32)
-        ray_x = (cols - np.float32(intrinsics.cx)) / np.float32(intrinsics.fx)
-        ray_y = (rows - np.float32(intrinsics.cy)) / np.float32(intrinsics.fy)
+        if key != self._ray_grid_key or self._ray_x is None or self._ray_y is None:
+            rows, cols = np.indices(
+                (intrinsics.height, intrinsics.width), dtype=np.float32
+            )
+            sampled = np.s_[::stride, ::stride]
+            ray_x = np.ascontiguousarray(
+                ((cols - np.float32(intrinsics.cx)) / np.float32(intrinsics.fx))[sampled]
+            )
+            ray_y = np.ascontiguousarray(
+                ((rows - np.float32(intrinsics.cy)) / np.float32(intrinsics.fy))[sampled]
+            )
+            ray_x.setflags(write=False)
+            ray_y.setflags(write=False)
+            self._ray_grid_key = key
+            self._ray_x = ray_x
+            self._ray_y = ray_y
         transform32 = np.asarray(T_base_depth[:3, :3], dtype=np.float32)
-        coefficients = (
-            ray_x[..., None] * transform32[:, 0]
-            + ray_y[..., None] * transform32[:, 1]
+        return (
+            self._ray_x[..., None] * transform32[:, 0]
+            + self._ray_y[..., None] * transform32[:, 1]
             + transform32[:, 2]
         )
-        coefficients.setflags(write=False)
-        self._ray_cache_key = key
-        self._base_ray_coefficients = coefficients
-        return coefficients
 
     def _failure(
         self,
@@ -1163,7 +1182,7 @@ class PalletStackEstimator:
         stride = config.depth_pixel_stride
         sampled = np.s_[::stride, ::stride]
         depth = depth[sampled]
-        coefficients = self._ray_coefficients(depth_intrinsics, transform)[sampled]
+        coefficients = self._ray_coefficients(depth_intrinsics, transform, stride)
         translation_base = np.asarray(transform[:3, 3], dtype=np.float32)
         points_base = depth[..., None] * coefficients + translation_base
         # Intrinsics and ``transform`` are finite-validated.  Any overflowed
