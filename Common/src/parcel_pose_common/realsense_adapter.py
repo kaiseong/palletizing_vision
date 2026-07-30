@@ -34,8 +34,8 @@ def load_realsense_sdk() -> Any:
         raise RealSenseUnavailableError(
             "pyrealsense2 is unavailable; install the RealSense SDK Python binding "
             "for Python 3.12 and connect the D435 over USB 3 before using live/record. "
-            "On JetPack/aarch64, run scripts/build_jetson_pyrealsense2.sh from the "
-            f"Codex directory. Underlying import error: {detail}"
+            "On JetPack/aarch64, run Common/scripts/build_jetson_pyrealsense2.sh "
+            f"from the repository root. Underlying import error: {detail}"
         ) from exc
 
 

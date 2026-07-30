@@ -9,7 +9,9 @@ from typing import Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_OUTPUT = PROJECT_ROOT.parent / "recordings" / "codex_640x480"
+REPO_ROOT = PROJECT_ROOT.parent
+DEFAULT_OUTPUT = REPO_ROOT / "recordings" / "codex_640x480"
+DEFAULT_CONFIG = REPO_ROOT / "Box_picking" / "configs" / "d435_rby1_nominal.json"
 
 
 def _has_option(argv: Sequence[str], name: str) -> bool:
@@ -43,11 +45,13 @@ def _reexec_active_conda_python() -> None:
 
 
 def _run_parcel_pose(argv: Sequence[str]) -> int:
-    source_root = PROJECT_ROOT / "src"
-    sys.path.insert(0, str(source_root))
-    from parcel_pose.cli import main as parcel_pose_main
+    for source_root in (REPO_ROOT / "Common" / "src",):
+        source_entry = str(source_root)
+        if source_entry not in sys.path:
+            sys.path.insert(0, source_entry)
+    from parcel_pose_common.record_cli import main as record_main
 
-    return int(parcel_pose_main(argv))
+    return int(record_main(argv[1:], default_config=DEFAULT_CONFIG))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

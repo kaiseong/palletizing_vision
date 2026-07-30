@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parcel-pose"
+version = "0.1.0"
+description = "RB-Y1 parcel picking, pallet placing, and shared recording utilities"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+vision = ["opencv-python-headless>=4.10"]
+live = ["pyrealsense2>=2.58.1; platform_machine != 'aarch64'"]
+
+[project.scripts]
+box-picking = "parcel_pose_picking.cli:main"
+pallet = "parcel_pose_placing.pallet_cli:main"
+
+[tool.setuptools]
+packages = ["parcel_pose_common", "parcel_pose_picking", "parcel_pose_placing"]
+package-dir = { "parcel_pose_common" = "Common/src/parcel_pose_common", "parcel_pose_picking" = "Box_picking/src/parcel_pose_picking", "parcel_pose_placing" = "Box_placing/src/parcel_pose_placing" }
+
+[tool.pytest.ini_options]
+testpaths = ["Box_picking/tests", "Box_placing/tests", "Common/tests"]
+pythonpath = ["Common/src", "Box_picking/src", "Box_picking/tests", "Box_placing/src", "Box_placing/tests"]
+addopts = "-q"
