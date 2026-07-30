@@ -17,7 +17,7 @@ def _default_config_path() -> Path:
     return (
         Path(__file__).resolve().parents[2]
         / "configs"
-        / "rby1m_v1_2_pallet_slot1_nominal.json"
+        / "placing_config.json"
     )
 
 

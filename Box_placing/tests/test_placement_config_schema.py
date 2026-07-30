@@ -14,7 +14,7 @@ from parcel_pose_placing.pallet_place import PlacementConfig
 CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
     / "configs"
-    / "rby1m_v1_2_pallet_slot1_nominal.json"
+    / "placing_config.json"
 )
 
 

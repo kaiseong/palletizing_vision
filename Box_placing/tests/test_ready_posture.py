@@ -24,7 +24,7 @@ MIRROR = (1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0)
 ROOT_CONFIG_PATH = (
     pathlib.Path(__file__).resolve().parents[1]
     / "configs"
-    / "rby1m_v1_2_pallet_slot1_nominal.json"
+    / "placing_config.json"
 )
 
 

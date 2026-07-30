@@ -17,7 +17,7 @@ from parcel_pose_placing.pallet_models import (
 ROOT_CONFIG_PATH = (
     pathlib.Path(__file__).resolve().parents[1]
     / "configs"
-    / "rby1m_v1_2_pallet_slot1_nominal.json"
+    / "placing_config.json"
 )
 
 

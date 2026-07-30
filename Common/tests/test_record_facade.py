@@ -37,6 +37,6 @@ def test_record_facade_uses_box_picking_config_by_default(monkeypatch) -> None:
                 "--duration-sec",
                 "0",
             ],
-            REPO_ROOT / "Box_picking" / "configs" / "d435_rby1_nominal.json",
+            REPO_ROOT / "Box_picking" / "configs" / "picking_config.json",
         )
     ]

@@ -15,11 +15,11 @@ def _repo_root() -> Path:
 
 
 def _default_config_path() -> Path:
-    return _repo_root() / "Box_picking" / "configs" / "d435_rby1_nominal.json"
+    return _repo_root() / "Box_picking" / "configs" / "picking_config.json"
 
 
 def _default_calibration_path() -> Path:
-    return _repo_root() / "Box_picking" / "configs" / "rby1m_v1_2_fixed_table_nominal.json"
+    return _repo_root() / "Box_picking" / "configs" / "picking_calibration.json"
 
 
 def build_parser() -> argparse.ArgumentParser:

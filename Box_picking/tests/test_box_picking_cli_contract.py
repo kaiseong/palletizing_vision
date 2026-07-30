@@ -37,10 +37,10 @@ def test_parser_defaults_to_auto_pick_without_public_ack_flags() -> None:
     assert args.log_jsonl is None
     assert args.robot_address == "192.168.30.1:50051"
     assert args.robot_power == ".*"
-    assert args.config == REPO_ROOT / "Box_picking" / "configs" / "d435_rby1_nominal.json"
+    assert args.config == REPO_ROOT / "Box_picking" / "configs" / "picking_config.json"
     assert (
         args.calibration
-        == REPO_ROOT / "Box_picking" / "configs" / "rby1m_v1_2_fixed_table_nominal.json"
+        == REPO_ROOT / "Box_picking" / "configs" / "picking_calibration.json"
     )
     assert not hasattr(args, "auto_grab")
     assert not hasattr(args, "allow_nominal_registration")
@@ -61,7 +61,7 @@ def test_non_live_diagnostic_subcommands_are_preserved() -> None:
 
     replay = parser.parse_args(["replay", "--session", "session", "--jsonl"])
     assert replay.subcommand == "replay"
-    assert replay.config == REPO_ROOT / "Box_picking" / "configs" / "d435_rby1_nominal.json"
+    assert replay.config == REPO_ROOT / "Box_picking" / "configs" / "picking_config.json"
     assert replay.calibration is None
     assert replay.jsonl is True
 

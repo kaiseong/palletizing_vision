@@ -76,7 +76,7 @@ def test_existing_telemetry_is_refused_before_any_robot_contact(tmp_path) -> Non
         (
             pathlib.Path(__file__).resolve().parents[1]
             / "configs"
-            / "rby1m_v1_2_pallet_slot1_nominal.json"
+            / "placing_config.json"
         ).read_text(encoding="utf-8")
     )
     existing = tmp_path / "live.jsonl"

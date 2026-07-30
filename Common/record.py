@@ -11,7 +11,7 @@ from typing import Sequence
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_ROOT.parent
 DEFAULT_OUTPUT = REPO_ROOT / "recordings" / "codex_640x480"
-DEFAULT_CONFIG = REPO_ROOT / "Box_picking" / "configs" / "d435_rby1_nominal.json"
+DEFAULT_CONFIG = REPO_ROOT / "Box_picking" / "configs" / "picking_config.json"
 
 
 def _has_option(argv: Sequence[str], name: str) -> bool:

@@ -46,7 +46,7 @@ python3.12 -m pip install -e .
 python3.12 Common/record.py \
   --output recordings/codex_640x480 \
   --session-name empty_table --duration-sec 10 \
-  --robot-state-json Common/configs/rby1m_v1_2_fixed_pose.json
+  --robot-state-json Common/configs/robot_fixed_pose_snapshot.json
 ```
 
 기본 config가 `640x480 @ 30 FPS`를 적용하고, `--output`이 저장 위치를
@@ -61,8 +61,8 @@ python3.12 Common/record.py \
 ```bash
 PYTHONPATH=Common/src:Box_picking/src python3.12 -m parcel_pose_picking.cli calibrate-plane \
   --session recordings/codex_640x480/empty_table \
-  --config Box_picking/configs/d435_rby1_nominal.json \
-  --robot-state-json Common/configs/rby1m_v1_2_fixed_pose.json \
+  --config Box_picking/configs/picking_config.json \
+  --robot-state-json Common/configs/robot_fixed_pose_snapshot.json \
   --output out/calibrations/table_plane.json
 ```
 
@@ -77,7 +77,7 @@ PYTHONPATH=Common/src:Box_picking/src python3.12 -m parcel_pose_picking.cli cali
 python3.12 Common/record.py \
   --output recordings/codex_640x480 \
   --session-name box_0 --duration-sec 10 \
-  --robot-state-json Common/configs/rby1m_v1_2_fixed_pose.json
+  --robot-state-json Common/configs/robot_fixed_pose_snapshot.json
 ```
 
 다른 pose는 `--session-name`만 바꿔 같은 명령을 반복한다. 필요할 때만
@@ -154,7 +154,7 @@ PYTHONPATH=Common/src:Box_picking/src python3.12 -m parcel_pose_picking.cli repl
 PYTHONPATH=Common/src:Box_picking/src python3.12 -m parcel_pose_picking.cli replay \
   --session recordings/codex_640x480/static_center_yaw_000 \
   --calibration out/calibrations/table_plane.json \
-  --config Box_picking/configs/d435_rby1_nominal.json \
+  --config Box_picking/configs/picking_config.json \
   --burst-size 5 \
   --burst-min-valid 3 \
   --output-jsonl out/results/static_center_yaw_000.jsonl
@@ -169,7 +169,7 @@ PYTHONPATH=Common/src:Box_picking/src python3.12 -m parcel_pose_picking.cli repl
 
 현재 확정된 RB-Y1 M v1.2 고정 자세(torso
 `[0,55,-59.988,6.532,0,0] deg`, head `[0,49.846] deg`)의 SDK FK 결과는
-`Common/configs/rby1m_v1_2_fixed_pose.json`에 있다. 이 FK를 사용해도 nominal
+`Common/configs/robot_fixed_pose_snapshot.json`에 있다. 이 FK를 사용해도 nominal
 head-camera mount가 독립 검증되기 전까지 base pose는
 `nominal_unverified`로 취급한다.
 

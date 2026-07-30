@@ -31,7 +31,7 @@ from _factories import descent_plan
 CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
     / "configs"
-    / "rby1m_v1_2_pallet_slot1_nominal.json"
+    / "placing_config.json"
 )
 # The measured slot-1 ready pose from the physical logs.
 RIGHT_EEF = (1.00046, -0.16948, 0.73157)
