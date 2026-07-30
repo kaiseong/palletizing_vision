@@ -9,8 +9,11 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from parcel_pose_common.models import CameraIntrinsics
-from .pallet_acquisition import HoleGateStatus, LCornerGateStatus
+from .pallet_acquisition import AcquisitionOutput, HoleGateStatus, LCornerGateStatus
+from .pallet_place import PlacementOutput
+from .pallet_servo import PalletServoOutput
 from .pallet_models import (
+    PalletGeometry,
     PalletFrameEvidence,
     PalletSceneObservation,
     Slot1HoleReference,
@@ -530,4 +533,316 @@ def draw_pallet_overlay(
     return output
 
 
-__all__ = ["draw_pallet_overlay"]
+def project_base_points(
+    points_base: Any,
+    T_base_depth: np.ndarray,
+    intrinsics: CameraIntrinsics,
+) -> np.ndarray:
+    points = np.asarray(points_base, dtype=np.float64)
+    points_depth = transform_points(points, invert_transform(T_base_depth))
+    return project_points_to_pixels(points_depth, intrinsics)
+
+
+def draw_live_overlay(
+    image_bgr: np.ndarray,
+    scene: PalletSceneObservation,
+    evidence: Any,
+    held: Any,  # HeldPoseProxy; imported lazily to avoid a runtime import cycle
+    servo_output: PalletServoOutput,
+    T_base_depth: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    hole_reference: Slot1HoleReference,
+    geometry: PalletGeometry,
+    *,
+    execute: bool,
+    acquisition: AcquisitionOutput | None = None,
+    l_gate: LCornerGateStatus | None = None,
+    hole_gate: HoleGateStatus | None = None,
+    stationary_source: str = "unknown",
+    motion_interlock_reason: str = "",
+    dispatch_result: str = "not_dispatched",
+    placement: PlacementOutput | None = None,
+    placement_runtime: Mapping[str, Any] | None = None,
+) -> np.ndarray:
+    try:
+        import cv2  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError("OpenCV is required for pallet live visualization") from exc
+
+    output = np.asarray(image_bgr, dtype=np.uint8).copy()
+    height, width = output.shape[:2]
+    corners = getattr(evidence, "opening_corners_base", None)
+    if corners is not None:
+        pixels = project_base_points(corners, T_base_depth, intrinsics)
+        if np.all(np.isfinite(pixels)):
+            polygon = np.rint(pixels).astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(output, [polygon], True, (0, 255, 255), 2, cv2.LINE_AA)
+
+    for endpoint_name, color in (
+        ("l_corner_front_endpoints_base", (0, 180, 255)),
+        ("l_corner_side_endpoints_base", (255, 180, 0)),
+    ):
+        endpoints = getattr(evidence, endpoint_name, None)
+        if endpoints is None:
+            continue
+        pixels = project_base_points(endpoints, T_base_depth, intrinsics)
+        if np.all(np.isfinite(pixels)):
+            first, second = (tuple(np.rint(point).astype(int)) for point in pixels)
+            cv2.line(output, first, second, color, 3, cv2.LINE_AA)
+    l_corner = getattr(evidence, "l_corner_corner_base", None)
+    if l_corner is not None:
+        corner_px = project_base_points(
+            np.asarray(l_corner).reshape(1, 3), T_base_depth, intrinsics
+        )[0]
+        if np.all(np.isfinite(corner_px)):
+            point = tuple(np.rint(corner_px).astype(int))
+            cv2.drawMarker(output, point, (0, 80, 255), cv2.MARKER_CROSS, 18, 2)
+
+    stack = scene.stack
+    if stack.valid and stack.slot1_target_base is not None:
+        target_px = project_base_points(
+            np.asarray(stack.slot1_target_base).reshape(1, 3),
+            T_base_depth,
+            intrinsics,
+        )[0]
+        if np.all(np.isfinite(target_px)):
+            point = tuple(np.rint(target_px).astype(int))
+            if 0 <= point[0] < width and 0 <= point[1] < height:
+                cv2.drawMarker(output, point, (255, 150, 30), cv2.MARKER_CROSS, 16, 1)
+                cv2.putText(
+                    output,
+                    "geometric slot1",
+                    (point[0] + 6, point[1] + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.38,
+                    (255, 150, 30),
+                    1,
+                    cv2.LINE_AA,
+                )
+    coarse = scene.coarse
+    proxy_center = (
+        None
+        if coarse is None
+        else coarse.fixed_outer_center_base(geometry.outer_size_m)
+    )
+    if stack.valid and stack.center_base is not None:
+        feature_center = np.asarray(stack.center_base)
+        feature_u = stack.u_right_base
+        feature_v = stack.v_far_base
+        feature_label = "complete hole"
+    elif proxy_center is not None and coarse is not None:
+        feature_center = np.asarray(proxy_center)
+        feature_u = coarse.u_right_base
+        feature_v = coarse.v_far_base
+        feature_label = "L-corner proxy"
+    else:
+        feature_center = None
+        feature_u = None
+        feature_v = None
+        feature_label = ""
+
+    if feature_center is not None and feature_u is not None and feature_v is not None:
+        axes = np.vstack(
+            (
+                feature_center,
+                feature_center + 0.12 * np.asarray(feature_u),
+                feature_center + 0.12 * np.asarray(feature_v),
+            )
+        )
+        pixels = project_base_points(axes, T_base_depth, intrinsics)
+        if np.all(np.isfinite(pixels)):
+            p0, pu, pv = (tuple(np.rint(point).astype(int)) for point in pixels)
+            cv2.arrowedLine(output, p0, pu, (0, 220, 0), 2, cv2.LINE_AA)
+            cv2.arrowedLine(output, p0, pv, (220, 100, 0), 2, cv2.LINE_AA)
+
+    if feature_center is not None:
+        feature_points = np.asarray(
+            (
+                feature_center,
+                (
+                    hole_reference.center_base_xy_m[0],
+                    hole_reference.center_base_xy_m[1],
+                    feature_center[2],
+                ),
+            ),
+            dtype=np.float64,
+        )
+        feature_pixels = project_base_points(
+            feature_points,
+            T_base_depth,
+            intrinsics,
+        )
+        if np.all(np.isfinite(feature_pixels)):
+            current_point, reference_point = (
+                tuple(np.rint(point).astype(int)) for point in feature_pixels
+            )
+            cv2.drawMarker(
+                output,
+                current_point,
+                (0, 255, 255),
+                cv2.MARKER_TILTED_CROSS,
+                18,
+                2,
+            )
+            cv2.putText(
+                output,
+                feature_label,
+                (current_point[0] + 6, current_point[1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.drawMarker(
+                output,
+                reference_point,
+                (255, 40, 210),
+                cv2.MARKER_CROSS,
+                20,
+                2,
+            )
+            cv2.line(
+                output,
+                current_point,
+                reference_point,
+                (255, 40, 210),
+                1,
+                cv2.LINE_AA,
+            )
+
+    held_px = project_base_points(
+        np.asarray(held.center_base_xyz_m).reshape(1, 3),
+        T_base_depth,
+        intrinsics,
+    )[0]
+    if np.all(np.isfinite(held_px)):
+        point = tuple(np.rint(held_px).astype(int))
+        if 0 <= point[0] < width and 0 <= point[1] < height:
+            cv2.drawMarker(
+                output, point, (255, 255, 255), cv2.MARKER_TILTED_CROSS, 16, 2
+            )
+
+    diagnostics = servo_output.diagnostics
+    raw_error = diagnostics.get("raw_error_xy_m")
+    raw_yaw = diagnostics.get("raw_yaw_error_rad")
+    if isinstance(raw_error, (tuple, list)) and len(raw_error) == 2:
+        error_line = f"error x/y: {raw_error[0]:+.3f} {raw_error[1]:+.3f} m"
+    else:
+        error_line = "error x/y: -- -- m"
+    yaw_line = (
+        "yaw error: -- deg"
+        if raw_yaw is None
+        else f"yaw error: {math.degrees(float(raw_yaw)):+.2f} deg"
+    )
+    mode = "ACTUATION-ENABLED" if execute else "DRY-RUN / NO ROBOT COMMANDS"
+    owner = str(diagnostics.get("controller_owner", "fine_slot1_servo"))
+    gate_line = (
+        "gates: --"
+        if l_gate is None or hole_gate is None
+        else (
+            f"gates L={l_gate.stationary_frames}/5"
+            f"({'OK' if l_gate.stable else 'wait'}) "
+            f"proxy={'OK' if l_gate.metric_proxy_stable else 'wait'} "
+            f"hole={hole_gate.stationary_frames}"
+            f"({'OK' if hole_gate.dwell_complete else 'wait'})"
+        )
+    )
+    acquisition_line = (
+        "acquisition: inactive"
+        if acquisition is None
+        else (
+            f"acquisition: {acquisition.state.value} "
+            f"budget={acquisition.remaining_budget_m:.3f}m"
+        )
+    )
+    if placement is None:
+        placement_line = "placement: inactive"
+        placement_gap_line = "placement gap: --"
+        placement_open_line = "placement open: --"
+    else:
+        gap = placement.diagnostics.get("predicted_box_bottom_gap_m")
+        uncertainty = placement.diagnostics.get("predicted_box_bottom_gap_uncertainty_m")
+        placement_line = (
+            f"placement: {placement.state.value} request={placement.request.value} "
+            f"{placement.reason}"
+        )
+        placement_gap_line = (
+            "placement gap: --"
+            if gap is None or uncertainty is None
+            else f"placement gap: {float(gap):+.3f} +/- {float(uncertainty):.3f} m"
+        )
+        plan = placement.descent_plan
+        controller_telemetry = (
+            placement_runtime.get("placement_telemetry")
+            if isinstance(placement_runtime, Mapping)
+            else None
+        )
+        if not isinstance(controller_telemetry, Mapping):
+            controller_telemetry = {}
+        deviation_rad = controller_telemetry.get("release_axis_deviation_rad")
+        spread_m = controller_telemetry.get("release_spread_m")
+        placement_open_line = (
+            "placement open: descent="
+            + ("--" if plan is None else f"{1000.0 * plan.planned_delta_z_m:.0f}mm")
+            + " spread="
+            + ("--" if spread_m is None else f"{1000.0 * float(spread_m):.0f}mm")
+            + " dev="
+            + (
+                "--"
+                if deviation_rad is None
+                else f"{math.degrees(float(deviation_rad)):.1f}deg"
+            )
+        )
+    lines = (
+        f"PALLET SLOT 1: {mode}",
+        f"owner: {owner}  servo: {servo_output.state.value}",
+        "vision: feature="
+        f"{diagnostics.get('observed_feature_source', 'unavailable')} "
+        f"stationary={stationary_source}",
+        gate_line,
+        acquisition_line,
+        placement_line,
+        placement_gap_line,
+        placement_open_line,
+        f"dispatch: {dispatch_result}",
+        "motion interlock: " + (motion_interlock_reason or "PASS"),
+        error_line,
+        yaw_line,
+        f"proposed vx/vy/wz: {servo_output.vx_mps:+.3f} {servo_output.vy_mps:+.3f} {servo_output.wz_radps:+.3f}",
+        f"held proxy: {held.source}",
+        (
+            "hole reference: "
+            f"x={hole_reference.center_base_xy_m[0]:+.3f} "
+            f"y={hole_reference.center_base_xy_m[1]:+.3f} "
+            f"yaw={math.degrees(hole_reference.yaw_base_rad):+.2f}deg"
+        ),
+        f"calibration: {stack.calibration_status}",
+        "reason: " + (servo_output.reason or "--"),
+    )
+    for index, line in enumerate(lines):
+        y = 24 + 22 * index
+        cv2.putText(
+            output,
+            line,
+            (10, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.50,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            output,
+            line,
+            (10, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.50,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+    return output
+
+
+__all__ = ["draw_pallet_overlay", "draw_live_overlay", "project_base_points"]
