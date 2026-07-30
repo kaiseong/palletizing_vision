@@ -260,6 +260,19 @@ class _RobotCommand:
                 float(c.mobility.linear[1]),
                 float(c.mobility.angular),
             )
+        if packet.minimum_time_s is None and c.mobility is not None:
+            # A mobility-only packet carries its timing on the SE(2) command.
+            packet.minimum_time_s = c.mobility.minimum_time_s
+            if c.mobility.header is not None:
+                packet.control_hold_time_s = c.mobility.header.hold_time_s
+        if packet.minimum_time_s is None and body is not None:
+            for side in ("right", "left"):
+                command = getattr(body, f"{side}_arm")
+                if command is not None and command.minimum_time_s is not None:
+                    packet.minimum_time_s = command.minimum_time_s
+                    if command.header is not None:
+                        packet.control_hold_time_s = command.header.hold_time_s
+                    break
         return packet
 
 
@@ -292,6 +305,29 @@ def running_feedback(*, status: int = 2, finish_code: int = 0) -> _Node:
     feedback.status = status
     feedback.finish_code = finish_code
     return feedback
+
+
+class OneShotHandler:
+    """Handler returned by ``FakeRobot.send_command`` for a one-shot command."""
+
+    def __init__(self, *, finish_code: int, completes: bool, malformed: bool) -> None:
+        self._finish_code = finish_code
+        self._completes = completes
+        self._malformed = malformed
+        self.cancelled = False
+
+    def wait_for(self, timeout_ms: int) -> bool:
+        return self._completes
+
+    def get(self) -> Any:
+        if self._malformed:
+            return object()
+        feedback = _Node()
+        feedback.finish_code = self._finish_code
+        return feedback
+
+    def cancel(self) -> None:
+        self.cancelled = True
 
 
 # --------------------------------------------------------------------------- #
@@ -328,6 +364,14 @@ class FakeRobot:
     ready_pose: Any = None
     packets: list[Packet] = field(default_factory=list)
     streams: list[FakeStream] = field(default_factory=list)
+    # One-shot commands recorded separately from stream packets: the stream owns
+    # mobility only, so every arm move arrives here.
+    one_shot_packets: list[Packet] = field(default_factory=list)
+    one_shot_handlers: list[Any] = field(default_factory=list)
+    one_shot_finish_code: int = 0
+    one_shot_completes: bool = True
+    one_shot_malformed: bool = False
+    one_shot_raises: bool = False
     _connected: bool = False
     _callback: Any = None
     _thread: Any = None
@@ -428,6 +472,19 @@ class FakeRobot:
             "base_twist_w_vx_vy": (0.0, 0.0, 0.0),
         }
 
+    # --- one-shot ---------------------------------------------------------- #
+    def send_command(self, command: _RobotCommand, timeout_ms: int | None = None):
+        if self.one_shot_raises:
+            raise RuntimeError("simulated RB-Y1 refusal of a one-shot command")
+        self.one_shot_packets.append(command.to_packet())
+        handler = OneShotHandler(
+            finish_code=self.one_shot_finish_code,
+            completes=self.one_shot_completes,
+            malformed=self.one_shot_malformed,
+        )
+        self.one_shot_handlers.append(handler)
+        return handler
+
     # --- stream ------------------------------------------------------------ #
     def create_command_stream(self, priority: int = 0) -> FakeStream:
         stream = FakeStream(self.packets)
@@ -452,3 +509,9 @@ class FakeSdk:
     BodyComponentBasedCommandBuilder = _Body
     ComponentBasedCommandBuilder = _Component
     RobotCommandBuilder = _RobotCommand
+
+    class RobotCommandFeedback:
+        class FinishCode:
+            Ok = 0
+            Cancelled = 1
+            Rejected = 2

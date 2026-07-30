@@ -223,6 +223,7 @@ class PlacementConfig:
             "place_pose_deg",
             "retreat_pose_deg",
             "retreat_pose_duration_s",
+            "arm_send_once_timeout_s",
             "place_pose_tolerance_m",
             "place_pose_hold_tolerance_m",
             "release_spread_m",

@@ -366,6 +366,9 @@ class PalletControlConfig:
     # outward spread instead.
     retreat_pose: "PlacePose | None" = None
     placement_retreat_pose_duration_s: float = 1.0
+    # How long to wait for a one-shot arm command to report Ok.  A posture move
+    # is paced over a second, so this must cover that plus controller latency.
+    arm_send_once_timeout_s: float = 8.0
     # Slot-1 release opens along base Y only.  The commanded travel per hand is
     # exactly this spread because the loaded-hold squeeze cancels out, so a
     # small value keeps both arms far from the reach singularity.
@@ -656,6 +659,12 @@ class PalletControlConfig:
                     defaults.placement_retreat_pose_duration_s,
                 )
             ),
+            arm_send_once_timeout_s=float(
+                placement.get(
+                    "arm_send_once_timeout_s",
+                    defaults.arm_send_once_timeout_s,
+                )
+            ),
             placement_release_spread_m=float(
                 placement.get(
                     "release_spread_m",
@@ -856,6 +865,21 @@ class PalletControlConfig:
         )
         if self.placement_retreat_pose_duration_s > 5.0 + 1e-12:
             raise ValueError("retreat pose duration cannot exceed 5 seconds")
+        object.__setattr__(
+            self,
+            "arm_send_once_timeout_s",
+            _positive(self.arm_send_once_timeout_s, "arm_send_once_timeout_s"),
+        )
+        longest_posture_s = max(
+            self.placement_place_pose_duration_s,
+            self.placement_retreat_pose_duration_s,
+        )
+        if self.arm_send_once_timeout_s < longest_posture_s + 1e-12:
+            raise ValueError(
+                "arm_send_once_timeout_s must cover the longest commanded posture"
+            )
+        if self.arm_send_once_timeout_s > 30.0 + 1e-12:
+            raise ValueError("arm_send_once_timeout_s cannot exceed 30 seconds")
         object.__setattr__(
             self,
             "placement_place_pose_duration_s",
@@ -1981,8 +2005,7 @@ class RBY1PalletController:
             self._transition_id = command_id
             self._phase = ControllerPhase.PALLET_READY_TRANSITION
 
-        command = self._build_combined_command(
-            ZERO_MOBILITY,
+        command, _ready_body_target_token = self._build_ready_transition_command(
             minimum_time_s=minimum_time_s,
         )
         with self._condition:
@@ -2326,6 +2349,114 @@ class RBY1PalletController:
             self._proposal_generation += 1
             self._condition.notify_all()
 
+    def _dispatch_arm_posture(
+        self,
+        target: CartesianArmTarget,
+        *,
+        duration_s: float,
+        label: str,
+    ) -> None:
+        """Send one arm posture and mark it acknowledged only on Ok feedback.
+
+        ``minimum_time`` can be the whole posture duration here.  A streamed
+        packet could not do that: it would restart a multi-second trajectory on
+        every 20 Hz update, which is why the streamed path was capped at 0.10 s.
+        """
+
+        command = self._build_arm_posture_command(target, minimum_time_s=duration_s)
+        self._send_arm_command_once(command, label=label)
+        with self._condition:
+            self._last_acknowledged_body_target_token = self._body_target_token
+            self._condition.notify_all()
+
+    def _send_arm_command_once(self, command: Any, *, label: str) -> None:
+        """Issue one arm command outside the stream and require Ok feedback.
+
+        The stream owns mobility only, so the arms are commanded one shot at a
+        time and the Ok feedback is the completion signal.  Whether the RB-Y1
+        accepts a one-shot command while a mobility stream is open is not
+        something this repository has ever exercised, so a rejection must name
+        that possibility instead of surfacing as an unexplained hold.
+        """
+
+        robot = self._robot
+        send_command = getattr(robot, "send_command", None)
+        if not callable(send_command):
+            raise CombinedStreamError("robot does not provide send_command()")
+        timeout_ms = int(round(self.config.arm_send_once_timeout_s * 1000.0))
+        stream_open = self._stream is not None
+        try:
+            handler = send_command(command)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            with self._condition:
+                self._placement_fail_closed_locked(
+                    "arm_send_once_rejected_while_stream_open"
+                    if stream_open
+                    else "arm_send_once_rejected"
+                )
+            raise CombinedStreamError(
+                f"{label}: the RB-Y1 refused a one-shot arm command"
+                + (
+                    " while the mobility stream was open; this build assumes the "
+                    "two can coexist because the stream carries no body command"
+                    if stream_open
+                    else ""
+                )
+                + f": {exc}"
+            ) from exc
+        if handler is None:
+            with self._condition:
+                self._placement_fail_closed_locked("arm_send_once_no_handler")
+            raise CombinedStreamError(
+                f"{label}: send_command() returned no handler"
+            )
+        wait_for = getattr(handler, "wait_for", None)
+        get_feedback = getattr(handler, "get", None)
+        if not callable(wait_for) or not callable(get_feedback):
+            with self._condition:
+                self._placement_fail_closed_locked("arm_send_once_handler_malformed")
+            raise CombinedStreamError(
+                f"{label}: one-shot handler lacks wait_for() or get()"
+            )
+        try:
+            completed = wait_for(timeout_ms)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            with self._condition:
+                self._placement_fail_closed_locked("arm_send_once_wait_failed")
+            raise CombinedStreamError(f"{label}: waiting for feedback failed: {exc}")                from exc
+        if completed is False:
+            with self._condition:
+                self._placement_fail_closed_locked("arm_send_once_timeout")
+            raise CombinedStreamError(
+                f"{label}: no feedback within {timeout_ms} ms"
+            )
+        feedback = get_feedback()
+        try:
+            expected = self._sdk.RobotCommandFeedback.FinishCode.Ok
+            actual = feedback.finish_code
+        except AttributeError as exc:
+            with self._condition:
+                self._placement_fail_closed_locked("arm_send_once_feedback_malformed")
+            raise CombinedStreamError(
+                f"{label}: malformed finish feedback"
+            ) from exc
+        if actual != expected:
+            with self._condition:
+                self._placement_fail_closed_locked("arm_send_once_not_ok")
+            raise CombinedStreamError(
+                f"{label}: finished with {actual!r} instead of Ok"
+                + (
+                    "; a mobility stream was open, which this build assumes is "
+                    "compatible with one-shot arm commands"
+                    if stream_open
+                    else ""
+                )
+            )
+
     def get_measured_state(
         self,
         *,
@@ -2441,6 +2572,11 @@ class RBY1PalletController:
             self._proposal_generation += 1
             self._body_target_token = self._make_body_target_token()
             self._condition.notify_all()
+        self._dispatch_arm_posture(
+            target,
+            duration_s=self.config.placement_place_pose_duration_s,
+            label="slot-1 placement posture",
+        )
         return target
 
     def _make_lowering_target_from_loaded_hold(
@@ -2795,6 +2931,11 @@ class RBY1PalletController:
             self._proposal_generation += 1
             self._body_target_token = self._make_body_target_token()
             self._condition.notify_all()
+        self._dispatch_arm_posture(
+            target,
+            duration_s=self.config.placement_retreat_pose_duration_s,
+            label="slot-1 retreat posture",
+        )
         return target
 
     def fail_closed_cartesian_placement_hold(
@@ -3531,10 +3672,9 @@ class RBY1PalletController:
                         ControllerPhase.FAULT_HOLD,
                     )
                 selected = ZERO_MOBILITY if stale or force_zero else proposal
-                command, built_body_target_token = self._build_combined_command(
+                command = self._build_mobility_command(
                     selected,
                     minimum_time_s=self.config.steady_minimum_time_s,
-                    return_body_target_token=True,
                 )
                 with self._condition:
                     self._command_sequence += 1
@@ -3557,9 +3697,8 @@ class RBY1PalletController:
                     if ack.running:
                         self._steady_running_count += 1
                         self._last_acknowledged_command_sequence = command_sequence
-                        self._last_acknowledged_body_target_token = (
-                            built_body_target_token
-                        )
+                        # The stream no longer carries a body command, so an arm
+                        # target is acknowledged by its own one-shot feedback.
                         self._last_sent_mobility = selected
                         if not stale or proposal.is_zero:
                             self._sent_generation = max(
@@ -3894,168 +4033,246 @@ class RBY1PalletController:
     ) -> np.ndarray | None:
         return state.T_base_torso
 
-    def _build_combined_command(
+    # ------------------------------------------------------------------ #
+    # command builders
+    # ------------------------------------------------------------------ #
+    # The stream carries mobility only.  Torso, both arms and the head are
+    # commanded one shot at a time and hold their last target, which is how
+    # box-pick already drives the base while a Cartesian grip holds a carton.
+    def _command_header(self) -> Any:
+        return self._sdk.CommandHeaderBuilder().set_control_hold_time(
+            self.config.control_hold_time_s
+        )
+
+    def _joint_position_command(
         self,
-        mobility: MobilityCommand,
+        position: tuple[float, ...],
         *,
         minimum_time_s: float,
-        return_body_target_token: bool = False,
     ) -> Any:
-        if self._sdk is None:
-            raise CombinedStreamError("RB-Y1 SDK is not loaded")
-        pose = self.config.ready_pose
-        with self._condition:
-            arm_mode = self._arm_stream_mode
-            cartesian_target = self._cartesian_arm_target
-            right_joint_target = self._active_right_arm_target_rad
-            left_joint_target = self._active_left_arm_target_rad
-            body_target_token = self._body_target_token
-
-        def header() -> Any:
-            return self._sdk.CommandHeaderBuilder().set_control_hold_time(
-                self.config.control_hold_time_s
-            )
-
-        torso = (
+        return (
             self._sdk.JointPositionCommandBuilder()
-            .set_command_header(header())
+            .set_command_header(self._command_header())
             .set_minimum_time(minimum_time_s)
-            .set_position(np.asarray(pose.torso_rad, dtype=np.float64))
+            .set_position(np.asarray(position, dtype=np.float64))
         )
-        head = (
-            self._sdk.JointPositionCommandBuilder()
-            .set_command_header(header())
+
+    def _joint_impedance_arm_command(
+        self,
+        target: tuple[float, ...],
+        *,
+        minimum_time_s: float,
+    ) -> Any:
+        # Match box-pick: omit the override so controller defaults remain active.
+        return (
+            self._sdk.JointImpedanceControlCommandBuilder()
+            .set_command_header(self._command_header())
             .set_minimum_time(minimum_time_s)
-            .set_position(np.asarray(pose.head_rad, dtype=np.float64))
+            .set_position(np.asarray(target, dtype=np.float64))
+            .set_stiffness(np.asarray(ARM_STIFFNESS, dtype=np.float64))
         )
 
-        def arm(target: tuple[float, ...]) -> Any:
-            # Match box-pick: omit the override so controller defaults remain active.
-            return (
-                self._sdk.JointImpedanceControlCommandBuilder()
-                .set_command_header(header())
-                .set_minimum_time(minimum_time_s)
-                .set_position(np.asarray(target, dtype=np.float64))
-                .set_stiffness(np.asarray(ARM_STIFFNESS, dtype=np.float64))
-            )
-
-        def cartesian_arm(
-            link_name: str,
-            target: np.ndarray,
-            nullspace_joint_rad: tuple[float, ...],
-            linear_velocity_limit: float,
-            angular_velocity_limit: float,
-        ) -> Any:
-            # Match box-pick lift: controller defaults own per-joint saturation.
-            cartesian_builder = getattr(
-                self._sdk,
-                "CartesianImpedanceControlCommandBuilder",
-                None,
-            )
-            if not callable(cartesian_builder):
-                raise CombinedStreamError(
-                    "RB-Y1 SDK does not provide Cartesian impedance commands"
-                )
-            builder = (
-                cartesian_builder()
-                .set_command_header(header())
-                .add_target(
-                    TORSO_REFERENCE_LINK,
-                    link_name,
-                    np.asarray(target, dtype=np.float64),
-                    linear_velocity_limit,
-                    angular_velocity_limit,
-                    self.config.placement_linear_acceleration_limit_mps2,
-                    self.config.placement_angular_acceleration_limit_radps2,
-                )
-                .set_joint_stiffness(
-                    np.asarray(self.config.placement_joint_stiffness, dtype=np.float64)
-                )
-                .set_joint_damping_ratio(self.config.placement_joint_damping_ratio)
-                .set_minimum_time(minimum_time_s)
-            )
-            set_nullspace = getattr(builder, "set_nullspace_joint_target", None)
-            if not callable(set_nullspace):
-                raise CombinedStreamError(
-                    "RB-Y1 Cartesian impedance builder lacks nullspace hold"
-                )
-            builder = set_nullspace(
-                np.asarray(nullspace_joint_rad, dtype=np.float64),
-                np.asarray(
-                    self.config.placement_nullspace_weight,
-                    dtype=np.float64,
-                ),
-                self.config.placement_nullspace_kp,
-                self.config.placement_nullspace_kd,
-                self.config.placement_nullspace_cost_weight,
-            )
-            set_reset_reference = getattr(builder, "set_reset_reference", None)
-            if callable(set_reset_reference):
-                builder = set_reset_reference(False)
-            return builder
-
-        if arm_mode is ArmStreamMode.JOINT_READY_HOLD or cartesian_target is None:
-            right_arm = arm(right_joint_target)
-            left_arm = arm(left_joint_target)
-        else:
-            linear_limit = (
-                self.config.placement_linear_velocity_limit_mps
-                if cartesian_target.linear_velocity_limit_mps is None
-                else cartesian_target.linear_velocity_limit_mps
-            )
-            angular_limit = (
-                self.config.placement_angular_velocity_limit_radps
-                if cartesian_target.angular_velocity_limit_radps is None
-                else cartesian_target.angular_velocity_limit_radps
-            )
-            right_arm = cartesian_arm(
-                RIGHT_EEF_LINK,
-                cartesian_target.right_T_torso_eef,
-                cartesian_target.right_nullspace_joint_rad,
-                linear_limit,
-                angular_limit,
-            )
-            left_arm = cartesian_arm(
-                LEFT_EEF_LINK,
-                cartesian_target.left_T_torso_eef,
-                cartesian_target.left_nullspace_joint_rad,
-                linear_limit,
-                angular_limit,
-            )
-
-        body = (
-            self._sdk.BodyComponentBasedCommandBuilder()
-            .set_torso_command(torso)
-            .set_right_arm_command(right_arm)
-            .set_left_arm_command(left_arm)
+    def _cartesian_arm_command(
+        self,
+        link_name: str,
+        target: np.ndarray,
+        nullspace_joint_rad: tuple[float, ...],
+        linear_velocity_limit: float,
+        angular_velocity_limit: float,
+        *,
+        minimum_time_s: float,
+    ) -> Any:
+        # Match box-pick lift: controller defaults own per-joint saturation.
+        cartesian_builder = getattr(
+            self._sdk,
+            "CartesianImpedanceControlCommandBuilder",
+            None,
         )
-        se2 = (
+        if not callable(cartesian_builder):
+            raise CombinedStreamError(
+                "RB-Y1 SDK does not provide Cartesian impedance commands"
+            )
+        builder = (
+            cartesian_builder()
+            .set_command_header(self._command_header())
+            .add_target(
+                TORSO_REFERENCE_LINK,
+                link_name,
+                np.asarray(target, dtype=np.float64),
+                linear_velocity_limit,
+                angular_velocity_limit,
+                self.config.placement_linear_acceleration_limit_mps2,
+                self.config.placement_angular_acceleration_limit_radps2,
+            )
+            .set_joint_stiffness(
+                np.asarray(self.config.placement_joint_stiffness, dtype=np.float64)
+            )
+            .set_joint_damping_ratio(self.config.placement_joint_damping_ratio)
+            .set_minimum_time(minimum_time_s)
+        )
+        set_nullspace = getattr(builder, "set_nullspace_joint_target", None)
+        if not callable(set_nullspace):
+            raise CombinedStreamError(
+                "RB-Y1 Cartesian impedance builder lacks nullspace hold"
+            )
+        builder = set_nullspace(
+            np.asarray(nullspace_joint_rad, dtype=np.float64),
+            np.asarray(self.config.placement_nullspace_weight, dtype=np.float64),
+            self.config.placement_nullspace_kp,
+            self.config.placement_nullspace_kd,
+            self.config.placement_nullspace_cost_weight,
+        )
+        set_reset_reference = getattr(builder, "set_reset_reference", None)
+        if callable(set_reset_reference):
+            builder = set_reset_reference(False)
+        return builder
+
+    def _se2_command(self, mobility: MobilityCommand, *, minimum_time_s: float) -> Any:
+        return (
             self._sdk.SE2VelocityCommandBuilder()
-            .set_command_header(header())
+            .set_command_header(self._command_header())
             .set_minimum_time(minimum_time_s)
             .set_velocity(
                 np.asarray((mobility.vx_mps, mobility.vy_mps), dtype=np.float64),
                 float(mobility.wz_radps),
             )
             .set_acceleration_limit(
-                np.full(
-                    2,
-                    self.config.linear_acceleration_limit_mps2,
-                    dtype=np.float64,
-                ),
+                np.full(2, self.config.linear_acceleration_limit_mps2, dtype=np.float64),
                 self.config.angular_acceleration_limit_radps2,
+            )
+        )
+
+    def _build_mobility_command(
+        self,
+        mobility: MobilityCommand,
+        *,
+        minimum_time_s: float,
+    ) -> Any:
+        """One streamed packet: SE(2) mobility and nothing else.
+
+        Omitting the body is what allows the arms to be commanded one shot at a
+        time.  RB-Y1 binds a controller per component on the first packet, so a
+        stream that never carries a body command never binds the arms.
+        """
+
+        if self._sdk is None:
+            raise CombinedStreamError("RB-Y1 SDK is not loaded")
+        component = self._sdk.ComponentBasedCommandBuilder().set_mobility_command(
+            self._se2_command(mobility, minimum_time_s=minimum_time_s)
+        )
+        return self._sdk.RobotCommandBuilder().set_command(component)
+
+    def _build_ready_transition_command(
+        self,
+        *,
+        minimum_time_s: float,
+    ) -> tuple[Any, str]:
+        """The single all-joint Position move onto the approved ready posture."""
+
+        if self._sdk is None:
+            raise CombinedStreamError("RB-Y1 SDK is not loaded")
+        pose = self.config.ready_pose
+        with self._condition:
+            right_joint_target = self._active_right_arm_target_rad
+            left_joint_target = self._active_left_arm_target_rad
+            body_target_token = self._body_target_token
+        body = (
+            self._sdk.BodyComponentBasedCommandBuilder()
+            .set_torso_command(
+                self._joint_position_command(
+                    pose.torso_rad, minimum_time_s=minimum_time_s
+                )
+            )
+            .set_right_arm_command(
+                self._joint_impedance_arm_command(
+                    right_joint_target, minimum_time_s=minimum_time_s
+                )
+            )
+            .set_left_arm_command(
+                self._joint_impedance_arm_command(
+                    left_joint_target, minimum_time_s=minimum_time_s
+                )
             )
         )
         component = (
             self._sdk.ComponentBasedCommandBuilder()
-            .set_mobility_command(se2)
+            .set_mobility_command(
+                self._se2_command(ZERO_MOBILITY, minimum_time_s=minimum_time_s)
+            )
             .set_body_command(body)
-            .set_head_command(head)
+            .set_head_command(
+                self._joint_position_command(
+                    pose.head_rad, minimum_time_s=minimum_time_s
+                )
+            )
         )
         command = self._sdk.RobotCommandBuilder().set_command(component)
-        if return_body_target_token:
-            return command, body_target_token
-        return command
+        return command, body_target_token
+
+    def _build_arm_posture_command(
+        self,
+        cartesian_target: CartesianArmTarget,
+        *,
+        minimum_time_s: float,
+    ) -> Any:
+        """One-shot Cartesian impedance move for both arms.
+
+        Torso and head are re-commanded at the ready posture so they are held
+        explicitly for the duration of the arm move; the camera pose must not
+        drift while placement is judged from depth.
+        """
+
+        if self._sdk is None:
+            raise CombinedStreamError("RB-Y1 SDK is not loaded")
+        pose = self.config.ready_pose
+        linear_limit = (
+            self.config.placement_linear_velocity_limit_mps
+            if cartesian_target.linear_velocity_limit_mps is None
+            else cartesian_target.linear_velocity_limit_mps
+        )
+        angular_limit = (
+            self.config.placement_angular_velocity_limit_radps
+            if cartesian_target.angular_velocity_limit_radps is None
+            else cartesian_target.angular_velocity_limit_radps
+        )
+        body = (
+            self._sdk.BodyComponentBasedCommandBuilder()
+            .set_torso_command(
+                self._joint_position_command(
+                    pose.torso_rad, minimum_time_s=minimum_time_s
+                )
+            )
+            .set_right_arm_command(
+                self._cartesian_arm_command(
+                    RIGHT_EEF_LINK,
+                    cartesian_target.right_T_torso_eef,
+                    cartesian_target.right_nullspace_joint_rad,
+                    linear_limit,
+                    angular_limit,
+                    minimum_time_s=minimum_time_s,
+                )
+            )
+            .set_left_arm_command(
+                self._cartesian_arm_command(
+                    LEFT_EEF_LINK,
+                    cartesian_target.left_T_torso_eef,
+                    cartesian_target.left_nullspace_joint_rad,
+                    linear_limit,
+                    angular_limit,
+                    minimum_time_s=minimum_time_s,
+                )
+            )
+        )
+        component = (
+            self._sdk.ComponentBasedCommandBuilder()
+            .set_body_command(body)
+            .set_head_command(
+                self._joint_position_command(
+                    pose.head_rad, minimum_time_s=minimum_time_s
+                )
+            )
+        )
+        return self._sdk.RobotCommandBuilder().set_command(component)
 
     def _normalize_mobility(self, mobility: MobilityCommand | Any) -> MobilityCommand:
         if isinstance(mobility, MobilityCommand):
@@ -4218,7 +4435,7 @@ class RBY1PalletController:
                 self.send_zero_mobility_hold(latch=True)
                 return
             if self._stream is not None:
-                command = self._build_combined_command(
+                command = self._build_mobility_command(
                     ZERO_MOBILITY,
                     minimum_time_s=self.config.steady_minimum_time_s,
                 )

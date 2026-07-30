@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from parcel_pose.pallet_control import (
+    CombinedStreamError,
     ArmStreamMode,
     ControllerPhase,
     PalletControlConfig,
@@ -76,18 +77,16 @@ def teardown(controller: RBY1PalletController) -> None:
 # --------------------------------------------------------------------------- #
 # stage 1: ready transition, the first packet that binds controller types
 # --------------------------------------------------------------------------- #
-def test_first_packet_binds_cartesian_arms_and_zero_mobility(root_config) -> None:
+def test_the_ready_transition_carries_the_body_and_zero_mobility(root_config) -> None:
+    """The one all-joint Position move is the only body command in the stream."""
+
     controller, robot, config = build(root_config)
     try:
         first = robot.packets[0]
-        assert first.arm_mode == "CARTESIAN", (
-            "RB-Y1 binds controller types on the first packet; a joint-impedance "
-            "first packet would accept later Cartesian targets without moving"
+        assert first.arm_mode == "JOINT", (
+            "the ready transition is a joint Position move; Cartesian binding is "
+            "no longer needed because the stream never carries the arms again"
         )
-        assert first.right_arm.reference_link == "link_torso_5"
-        assert first.left_arm.reference_link == "link_torso_5"
-        assert first.right_arm.link == "ee_right"
-        assert first.left_arm.link == "ee_left"
         assert first.mobility_velocity == (0.0, 0.0, 0.0)
         assert first.minimum_time_s == pytest.approx(
             config.ready_transition_minimum_time_s
@@ -95,6 +94,32 @@ def test_first_packet_binds_cartesian_arms_and_zero_mobility(root_config) -> Non
         assert first.control_hold_time_s == pytest.approx(config.control_hold_time_s)
         np.testing.assert_allclose(first.torso_position, config.ready_pose.torso_rad)
         np.testing.assert_allclose(first.head_position, config.ready_pose.head_rad)
+        np.testing.assert_allclose(
+            first.right_arm_joint_position, config.ready_pose.right_arm_rad
+        )
+        np.testing.assert_allclose(
+            first.left_arm_joint_position, config.ready_pose.left_arm_rad
+        )
+    finally:
+        teardown(controller)
+
+
+def test_every_streamed_packet_after_the_ready_move_is_mobility_only(
+    root_config,
+) -> None:
+    """Omitting the body is what leaves the arms free for one-shot commands."""
+
+    controller, robot, config = build(root_config)
+    try:
+        _wait_for_packets(robot, 3)
+        streamed = robot.packets[1:]
+        assert streamed, "the steady pump never sent a packet"
+        for index, packet in enumerate(streamed, start=1):
+            assert packet.right_arm is None, f"packet {index} carried a right arm"
+            assert packet.left_arm is None, f"packet {index} carried a left arm"
+            assert packet.torso_position is None, f"packet {index} carried a torso"
+            assert packet.head_position is None, f"packet {index} carried a head"
+            assert packet.mobility_velocity is not None
     finally:
         teardown(controller)
 
@@ -107,20 +132,17 @@ def test_ready_one_shot_minimum_time_is_three_seconds(root_config) -> None:
 # --------------------------------------------------------------------------- #
 # stage 2: the loaded hold squeeze
 # --------------------------------------------------------------------------- #
-def test_loaded_hold_commands_the_ready_posture_unchanged(root_config) -> None:
-    """No inward offset: the first packet asks for the measured wrists."""
+def test_the_ready_move_asks_for_the_approved_posture_only(root_config) -> None:
+    """No inward squeeze: the hands are commanded exactly where the posture says."""
 
     controller, robot, config = build(root_config)
     try:
-        assert config.placement_squeeze_offset_m == 0.0
         packet = robot.packets[0]
-        assert packet.eef_separation_m() == pytest.approx(
-            MEASURED_SEPARATION_M, abs=1e-6
+        np.testing.assert_allclose(
+            packet.right_arm_joint_position, config.ready_pose.right_arm_rad, atol=1e-12
         )
         np.testing.assert_allclose(
-            packet.right_arm.transform[:3, 3],
-            np.asarray(RIGHT_EEF) - np.asarray(config_torso_origin()),
-            atol=1e-9,
+            packet.left_arm_joint_position, config.ready_pose.left_arm_rad, atol=1e-12
         )
     finally:
         teardown(controller)
@@ -132,52 +154,43 @@ def config_torso_origin() -> tuple[float, float, float]:
     return (0.0, 0.0, 0.90)
 
 
-def test_arm_target_is_constant_from_ready_until_the_place_pose(root_config) -> None:
-    """Nothing moves the arms while the base drives; only placement does."""
+def test_the_arms_are_commanded_exactly_twice_and_only_by_one_shot(
+    root_config,
+) -> None:
+    """Ready move, place posture, retreat posture: three arm commands, in order."""
 
     (controller, robot, config, _plan, _delta, lowering,
-     lowering_packet, _release, release_packet) = drive_to_release(root_config)
+     _lowering_packet, release, _release_packet) = drive_to_release(root_config)
     try:
-        first = robot.packets[0]
-        # Find the first packet that differs from packet 0: it must be the
-        # placement posture, never something during the approach.
-        moved = next(
-            i for i, p in enumerate(robot.packets)
-            if p.right_arm is not None
-            and not np.allclose(p.right_arm.transform, first.right_arm.transform)
+        # The ready move goes through the stream; the two postures do not.
+        assert len(robot.one_shot_packets) == 2, (
+            f"expected place and retreat, saw {len(robot.one_shot_packets)}"
         )
-        for index, packet in enumerate(robot.packets[:moved]):
+        place_packet, retreat_packet = robot.one_shot_packets
+        assert place_packet.arm_mode == "CARTESIAN"
+        assert retreat_packet.arm_mode == "CARTESIAN"
+        # Neither one-shot may command the base.
+        assert place_packet.mobility_velocity is None
+        assert retreat_packet.mobility_velocity is None
+        # Torso and head are re-commanded at the ready posture, so the camera
+        # cannot drift while placement is judged from depth.
+        for packet in (place_packet, retreat_packet):
             np.testing.assert_allclose(
-                packet.right_arm.transform, first.right_arm.transform, atol=1e-12,
-                err_msg=f"packet {index} moved the right arm before placement",
+                packet.torso_position, config.ready_pose.torso_rad, atol=1e-12
             )
             np.testing.assert_allclose(
-                packet.left_arm.transform, first.left_arm.transform, atol=1e-12,
-                err_msg=f"packet {index} moved the left arm before placement",
+                packet.head_position, config.ready_pose.head_rad, atol=1e-12
             )
-        # Exactly two arm motions in the whole sequence: the posture, then the
-        # opening.
-        distinct = []
-        for packet in robot.packets:
-            if packet.right_arm is None:
-                continue
-            key = np.round(packet.right_arm.transform[:3, 3], 9).tobytes()
-            if not distinct or distinct[-1] != key:
-                distinct.append(key)
-        # ready -> place posture -> retreat posture, when both are demonstrated.
-        expected = 2
-        if config.retreat_pose is not None or config.placement_release_spread_m > 0.0:
-            expected = 3
-        assert len(distinct) == expected, (
-            f"expected {expected} arm targets, saw {len(distinct)}"
+        # The two postures differ from each other.
+        assert not np.allclose(
+            place_packet.right_arm.transform, retreat_packet.right_arm.transform
         )
+        assert lowering.mode is ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING
+        assert release.mode is ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE
     finally:
         teardown(controller)
 
 
-# --------------------------------------------------------------------------- #
-# stage 3: base motion while the hold is streamed
-# --------------------------------------------------------------------------- #
 def test_base_velocity_reaches_the_stream_without_disturbing_the_arms(
     root_config,
 ) -> None:
@@ -185,7 +198,6 @@ def test_base_velocity_reaches_the_stream_without_disturbing_the_arms(
     try:
         controller.reverify_wheel_stop_after_stream_start(timeout_s=2.0)
         before = len(robot.packets)
-        arm_before = robot.packets[-1].right_arm.transform.copy()
 
         # Grip evidence is required before any nonzero mobility, so assert the
         # gate first and then bypass it the way the runtime does.
@@ -203,10 +215,8 @@ def test_base_velocity_reaches_the_stream_without_disturbing_the_arms(
         moving = [p for p in robot.packets[before:] if p.mobility_velocity != (0.0, 0.0, 0.0)]
         assert moving, "a nonzero proposal never reached the stream"
         assert moving[-1].mobility_velocity == pytest.approx((0.02, 0.0, 0.0))
-        # The arm target must not drift while the base drives.
-        np.testing.assert_allclose(
-            moving[-1].right_arm.transform, arm_before, atol=1e-12
-        )
+        # There is no arm command to disturb: the stream carries mobility only.
+        assert all(packet.right_arm is None for packet in robot.packets[before:])
         assert moving[-1].minimum_time_s == pytest.approx(config.steady_minimum_time_s)
     finally:
         teardown(controller)
@@ -278,11 +288,9 @@ def drive_to_release(root_config: dict):
     controller.send_zero_mobility_hold(latch=True)
     plan, delta = placement_plan(root_config)
     lowering = controller.start_cartesian_lowering_hold(descent_plan=plan)
-    _wait_for_packets(robot, len(robot.packets) + 2)
-    lowering_packet = robot.packets[-1]
+    lowering_packet = robot.one_shot_packets[-1]
     release = controller.start_cartesian_release_hold()
-    _wait_for_packets(robot, len(robot.packets) + 2)
-    release_packet = robot.packets[-1]
+    release_packet = robot.one_shot_packets[-1]
     return controller, robot, config, plan, delta, lowering, lowering_packet, release, release_packet
 
 
@@ -298,13 +306,16 @@ def test_lowering_moves_to_the_place_pose_not_by_a_base_z_delta(root_config) -> 
             plan.right_target_base[:3, 3], plan.right_eef_base[:3, 3], atol=1e-12
         )
         # The commanded arm target is the posture, which does lower the wrists.
-        first = robot.packets[0]
-        drop = first.right_arm.transform[2, 3] - lowering_packet.right_arm.transform[2, 3]
+        drop = float(
+            plan.right_eef_base[2, 3] - lowering.right_T_base_eef[2, 3]
+        )
         assert drop > 0.0, "the demonstrated posture must lower the carton"
         # lowering_distance_m is the full 3D travel, so it can only exceed the
         # vertical component of the move.
         assert lowering.lowering_distance_m >= abs(drop) - 1e-12
-        assert lowering_packet.mobility_velocity == (0.0, 0.0, 0.0)
+        assert lowering_packet.mobility_velocity is None, (
+            "a one-shot arm posture must never command the base"
+        )
     finally:
         teardown(controller)
 
@@ -365,42 +376,51 @@ def test_measured_gap_from_place_07_is_admissible(root_config) -> None:
 # stage 5: printable timeline
 # --------------------------------------------------------------------------- #
 def test_timeline(root_config, capsys) -> None:
-    (controller, robot, config, plan, delta, lowering,
+    """Print the streamed packets and the one-shot arm commands side by side."""
+
+    (controller, robot, config, _plan, delta, lowering,
      lowering_packet, release, release_packet) = drive_to_release(root_config)
     try:
-        rows = []
-        for index, packet in enumerate(robot.packets):
+        def describe(packet) -> tuple[str, ...]:
             sep = packet.eef_separation_m()
-            rows.append(
-                (
-                    index,
-                    packet.arm_mode,
-                    f"{packet.minimum_time_s:.2f}" if packet.minimum_time_s else "-",
-                    "-" if sep is None else f"{1000 * sep:7.1f}",
-                    "-" if packet.right_arm is None
-                    else f"{packet.right_arm.transform[1, 3]:+.4f}",
-                    "-" if packet.right_arm is None
-                    else f"{packet.right_arm.transform[2, 3]:+.4f}",
-                    str(packet.mobility_velocity),
-                )
+            return (
+                packet.arm_mode,
+                f"{packet.minimum_time_s:.2f}" if packet.minimum_time_s else "-",
+                "-" if sep is None else f"{1000 * sep:7.1f}",
+                "-" if packet.right_arm is None
+                else f"{packet.right_arm.transform[1, 3]:+.4f}",
+                "-" if packet.right_arm is None
+                else f"{packet.right_arm.transform[2, 3]:+.4f}",
+                str(packet.mobility_velocity),
             )
+
         with capsys.disabled():
-            print("\n=== 슬롯-1 명령 패킷 타임라인 (가짜 SDK) ===")
+            print("\n=== 슬롯-1 명령 타임라인 (가짜 SDK) ===")
             print(f"측정 손 간격 {1000 * MEASURED_SEPARATION_M:.1f} mm, "
-                  f"압착 {1000 * config.placement_squeeze_offset_m:.0f} mm/손, "
                   f"하강 {1000 * delta:.0f} mm, "
-                  f"개방 {1000 * config.placement_release_spread_m:.0f} mm/손")
+                  f"place {config.placement_place_pose_duration_s:.1f} s, "
+                  f"retreat {config.placement_retreat_pose_duration_s:.1f} s")
             print(f"{'#':>4} {'arm':<10}{'min_t':>6}{'간격mm':>9}"
                   f"{'R_y':>9}{'R_z':>9}  mobility")
-            shown = rows[:3] + [(None,)] + rows[-4:] if len(rows) > 8 else rows
-            for row in shown:
-                if row[0] is None:
+            print("-- 스트림 (mobility 전용, 첫 패킷만 ready Position) --")
+            rows = [describe(p) for p in robot.packets]
+            shown = rows[:2] + [None] + rows[-2:] if len(rows) > 5 else rows
+            for index, row in enumerate(shown):
+                if row is None:
                     print(f"{'...':>4}")
                     continue
-                print(f"{row[0]:>4} {row[1]:<10}{row[2]:>6}{row[3]:>9}"
-                      f"{row[4]:>9}{row[5]:>9}  {row[6]}")
-            print(f"총 패킷 {len(robot.packets)}, phase={controller.phase.value}")
+                print(f"{index:>4} {row[0]:<10}{row[1]:>6}{row[2]:>9}"
+                      f"{row[3]:>9}{row[4]:>9}  {row[5]}")
+            print("-- 원샷 (팔 자세) --")
+            for index, packet in enumerate(robot.one_shot_packets):
+                row = describe(packet)
+                label = ("place", "retreat")[index] if index < 2 else f"#{index}"
+                print(f"{label:>4} {row[0]:<10}{row[1]:>6}{row[2]:>9}"
+                      f"{row[3]:>9}{row[4]:>9}  {row[5]}")
+            print(f"스트림 패킷 {len(robot.packets)}, 원샷 "
+                  f"{len(robot.one_shot_packets)}, phase={controller.phase.value}")
         assert len(robot.packets) >= 3
+        assert len(robot.one_shot_packets) == 2
         assert controller.phase is ControllerPhase.STEADY_HOLD
     finally:
         teardown(controller)
@@ -498,10 +518,17 @@ def test_place_pose_is_commanded_as_cartesian_targets(root_config) -> None:
         np.testing.assert_allclose(
             lowering.right_nullspace_joint_rad, config.place_pose.right_arm_rad
         )
-        # The arms actually moved: the lowering packet differs from packet 0.
-        first = robot.packets[0]
-        assert not np.allclose(
-            lowering_packet.right_arm.transform, first.right_arm.transform
+        # The posture is issued as a Cartesian pose, not the joint values, and
+        # its minimum_time is the whole posture duration -- something a streamed
+        # packet could not ask for.
+        assert lowering_packet.arm_mode == "CARTESIAN"
+        assert lowering_packet.right_arm.reference_link == "link_torso_5"
+        assert lowering_packet.right_arm.link == "ee_right"
+        assert lowering_packet.minimum_time_s == pytest.approx(
+            config.placement_place_pose_duration_s
+        )
+        np.testing.assert_allclose(
+            lowering_packet.right_arm.transform, lowering.right_T_torso_eef, atol=1e-12
         )
     finally:
         teardown(controller)
@@ -564,7 +591,7 @@ def test_retreat_posture_is_a_separate_move_after_the_carton_is_seated(
             release.right_T_base_eef[:3, 3], lowering.right_T_base_eef[:3, 3]
         )
         # Ordering: the seated posture is commanded before the retreat.
-        order = [id(packet) for packet in robot.packets]
+        order = [id(packet) for packet in robot.one_shot_packets]
         assert order.index(id(lowering_packet)) < order.index(id(release_packet))
     finally:
         teardown(controller)
@@ -593,3 +620,73 @@ def test_a_retreat_posture_requires_a_place_posture() -> None:
     )
     with pytest.raises(ValueError, match="retreat posture requires a place posture"):
         PalletControlConfig(retreat_pose=pose)
+
+
+# --------------------------------------------------------------------------- #
+# one-shot arm commands: failures must name the untested assumption
+# --------------------------------------------------------------------------- #
+def _drive_to_lowering(root_config: dict):
+    controller, robot, config = build(root_config)
+    controller.reverify_wheel_stop_after_stream_start(timeout_s=2.0)
+    controller.send_zero_mobility_hold(latch=True)
+    plan, _delta = placement_plan(root_config)
+    return controller, robot, config, plan
+
+
+def test_a_refused_one_shot_names_the_open_mobility_stream(root_config) -> None:
+    """Whether a one-shot coexists with an open stream is untested on hardware.
+
+    If the RB-Y1 refuses it, the operator must be told that is the suspicion
+    rather than being left with an unexplained hold.
+    """
+
+    controller, robot, _config, plan = _drive_to_lowering(root_config)
+    try:
+        robot.one_shot_raises = True
+        with pytest.raises(CombinedStreamError, match="mobility stream was open"):
+            controller.start_cartesian_lowering_hold(descent_plan=plan)
+        assert controller.placement_telemetry().last_reason == (
+            "arm_send_once_rejected_while_stream_open"
+        )
+    finally:
+        teardown(controller)
+
+
+def test_a_non_ok_finish_code_fails_closed(root_config) -> None:
+    controller, robot, _config, plan = _drive_to_lowering(root_config)
+    try:
+        robot.one_shot_finish_code = 2  # Rejected
+        with pytest.raises(CombinedStreamError, match="instead of Ok"):
+            controller.start_cartesian_lowering_hold(descent_plan=plan)
+        assert controller.placement_telemetry().last_reason == (
+            "arm_send_once_not_ok"
+        )
+    finally:
+        teardown(controller)
+
+
+def test_a_one_shot_that_never_reports_fails_closed(root_config) -> None:
+    controller, robot, _config, plan = _drive_to_lowering(root_config)
+    try:
+        robot.one_shot_completes = False
+        with pytest.raises(CombinedStreamError, match="no feedback within"):
+            controller.start_cartesian_lowering_hold(descent_plan=plan)
+        assert controller.placement_telemetry().last_reason == (
+            "arm_send_once_timeout"
+        )
+    finally:
+        teardown(controller)
+
+
+def test_the_one_shot_timeout_covers_the_longest_posture(root_config) -> None:
+    from parcel_pose.pallet_control import PalletControlConfig
+
+    config = PalletControlConfig.from_root_config(root_config)
+    assert config.arm_send_once_timeout_s >= max(
+        config.placement_place_pose_duration_s,
+        config.placement_retreat_pose_duration_s,
+    )
+    with pytest.raises(ValueError, match="must cover the longest commanded posture"):
+        PalletControlConfig(
+            placement_place_pose_duration_s=2.0, arm_send_once_timeout_s=1.0
+        )
