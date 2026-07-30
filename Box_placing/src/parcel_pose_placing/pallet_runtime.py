@@ -61,6 +61,7 @@ from .pallet_place import (
     PlacementState,
     Slot1PlacementSequencer,
 )
+from .pallet_perception import observe_pallet_frame
 from .pallet_telemetry import (
     _placement_telemetry_payload,
     _servo_measurement_source,
@@ -2125,62 +2126,34 @@ def run_pallet_live(
                     frame_received_monotonic_s - validated_frame_age_s
                 )
 
-                if execute:
-                    assert controller is not None
-                    T_base_depth = measured_T_base_from_depth(
-                        root_config, controller.get_measured_T_base_head()
-                    )
-                    right_eef, left_eef = controller.get_measured_eef_transforms()
-                    held_proxy = _fixed_ready_held_pose(
-                        root_config, right_eef, left_eef
-                    )
-
-                depth_m = (
-                    frame.raw_depth_z16.astype(np.float32) * contract.depth_scale_m
+                observed = observe_pallet_frame(
+                    frame,
+                    root_config=root_config,
+                    contract=contract,
+                    estimator=estimator,
+                    controller=controller if execute else None,
+                    calibration_status=calibration_status,
+                    configured_T_base_depth=T_base_depth,
+                    configured_held_proxy=held_proxy,
+                    capture_monotonic_s=frame_source_monotonic_s,
+                    accepted_scene_sequence=accepted_scene_sequence,
+                    maximum_box_height_m=maximum_box_height_m,
+                    box_bottom_uncertainty_m=box_bottom_uncertainty_m,
                 )
+                T_base_depth = observed.T_base_depth
+                held_proxy = observed.held_proxy
+                scene = observed.scene
+                estimator_finished_monotonic_s = observed.estimator_finished_s
+                decision_now_s = observed.decision_now_s
+                frame_result_fresh = observed.result_fresh
+                fresh_scene_sample = observed.scene_sample
+                accepted_scene_sequence = observed.accepted_scene_sequence
+                # The overlay draws on the same colour image the estimator used.
                 color = (
                     frame.color_on_depth_bgr
                     if frame.color_on_depth_bgr is not None
                     else frame.raw_color_bgr
                 )
-                scene = estimator.estimate(
-                    depth_m,
-                    contract.depth_intrinsics,
-                    T_base_depth,
-                    timestamp_s=frame_source_monotonic_s,
-                    frame_id=frame.depth_frame_number,
-                    color_on_depth_bgr=color,
-                    held_box_hint=_held_hint(root_config, held_proxy),
-                    calibration_status=calibration_status,
-                )
-                estimator_finished_monotonic_s = time.monotonic()
-                decision_now_s = time.monotonic()
-                frame_result_fresh = _live_result_fresh(
-                    frame_source_monotonic_s,
-                    decision_now_s,
-                )
-                fresh_scene_sample: dict[str, Any] | None = None
-                if frame_result_fresh:
-                    accepted_scene_sequence += 1
-                    fresh_scene_sample = _controller_scene_sample(
-                        scene,
-                        held_proxy,
-                        frame_id=frame.depth_frame_number,
-                        accepted_observation_sequence=accepted_scene_sequence,
-                        capture_timestamp_s=frame_source_monotonic_s,
-                        accepted_monotonic_s=decision_now_s,
-                        maximum_box_height_m=maximum_box_height_m,
-                        box_bottom_uncertainty_m=box_bottom_uncertainty_m,
-                    )
-                    stack_uncertainty = fresh_scene_sample[
-                        "stack_top_uncertainty_m"
-                    ]
-                    if (
-                        fresh_scene_sample["stack_top_z_base_m"] is None
-                        or stack_uncertainty is None
-                        or not math.isfinite(float(stack_uncertainty))
-                    ):
-                        fresh_scene_sample = None
                 _update_scene_window(
                     scene_window,
                     frame_result_fresh=frame_result_fresh,
