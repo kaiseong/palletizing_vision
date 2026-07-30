@@ -1,4 +1,16 @@
-"""One-command box-picking facade for the RB-Y1 parcel workflow."""
+"""One-command box-picking facade for the RB-Y1 parcel workflow.
+
+TODO(flatten-flow): this file is still only a launcher.  main() should read as the
+whole sequence the way box_pallet.py will, with the vision call as one line:
+
+    rgb, depth, intrinsics = camera.read()
+    x, y, yaw = find_box_pose(rgb, depth, intrinsics, calibration)
+
+The grab condition is that the box centre is inside the tolerance around the
+target x,y in base coordinates; nothing else should gate the motion.  The flow
+currently lives in parcel_pose_picking.realtime.run_live_view together with
+AutoGrabRuntime.
+"""
 
 from __future__ import annotations
 

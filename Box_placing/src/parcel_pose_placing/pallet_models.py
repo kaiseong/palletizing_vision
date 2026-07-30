@@ -1025,6 +1025,10 @@ def slot_config(root_config: Mapping[str, Any], slot: int) -> Mapping[str, Any]:
     Slots are declared with null members until an operator demonstrates them, so
     naming an undemonstrated slot is a configuration error that must surface
     before the robot is touched rather than as a mid-run fault.
+
+    TODO(slots-2-5-6): slots 2, 5 and 6 are declared with every member null.  Each
+    needs an operator demonstration of the hole centre, the ready posture, the
+    placement posture and the retreat posture before it can run.
     """
 
     if not isinstance(root_config, Mapping):

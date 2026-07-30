@@ -1579,6 +1579,10 @@ def evaluate_grip_continuity(
         # Reported, not gated.  The floor protected a computed descent; placement
         # now lowers by a demonstrated posture whose travel the operator fixed, so
         # there is no computed descent left for it to bound.
+        #
+        # TODO(crush-protection): nothing now stops a demonstrated posture pressing
+        # the carton into the stack.  The posture itself is the only bound.  Until a
+        # replacement exists, commission each new slot posture with a dummy carton.
         clearance = box_bottom_lower_bound - stack_top_upper_bound
 
     result = GripContinuityResult(
@@ -2283,6 +2287,13 @@ class RBY1PalletController:
         ``minimum_time`` can be the whole posture duration here.  A streamed
         packet could not do that: it would restart a multi-second trajectory on
         every 20 Hz update, which is why the streamed path was capped at 0.10 s.
+
+        TODO(measure-travel): the real EEF travel of each demonstrated posture is
+        unknown offline because the RB-Y1 dynamics model is unavailable here.  The
+        pacing clamps to placement_linear_velocity_limit_mps, so a posture moving
+        more than 30 mm takes longer than its configured duration.  Read
+        lowering_distance_m from the first successful run and set the durations from
+        it.
         """
 
         command = self._build_arm_posture_command(target, minimum_time_s=duration_s)
@@ -2299,6 +2310,11 @@ class RBY1PalletController:
         accepts a one-shot command while a mobility stream is open is not
         something this repository has ever exercised, so a rejection must name
         that possibility instead of surfacing as an unexplained hold.
+
+        TODO(one-shot-coexistence): unverified on hardware.  If the robot refuses,
+        close the mobility stream after ARRIVED_HOLD and send the arm postures with
+        no stream open; the base is commanded to exact zero from that point on, so
+        nothing needs the stream any more.
         """
 
         robot = self._robot

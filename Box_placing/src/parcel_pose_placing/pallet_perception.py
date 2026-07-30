@@ -6,6 +6,13 @@ camera pose is an explicit input rather than a hidden lookup: live execution
 derives it from measured torso/head forward kinematics every frame, replay uses
 the configured audit transform, and a wrong camera pose is the failure mode most
 easily mistaken for bad perception.
+
+TODO(v2-recordings): ten sessions under recordings/box_* are
+box-perception-recording-v2, which aligns depth onto the colour grid at 1280x720
+while this pipeline works on the raw depth grid.  They cannot be replayed without
+an adapter, and the resampled depth would not support dimension checks even then.
+box_rotation in particular holds 244 frames of a rotating box that would show
+where the yaw estimate becomes ambiguous.
 """
 
 from __future__ import annotations

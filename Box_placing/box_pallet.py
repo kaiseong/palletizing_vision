@@ -4,6 +4,29 @@
 the robot: verify the ready posture, align the base on the pallet hole, seat the
 carton with the demonstrated placement posture, then withdraw the hands.
 ``--slot N`` selects the pallet slot; an undemonstrated slot is refused by name.
+
+TODO(flatten-flow): this file is still only a launcher.  The intent is that main()
+reads as the whole sequence, top to bottom, so a wrong motion is one visible line:
+
+    config = load_placing_config()
+    target_xy, ready, place, retreat = slot_plan(config, slot)
+    robot = connect(config.address)
+    send_once_joint_position(robot, ready, minimum_time_s=3.0)
+    with open_camera(config) as camera, mobility_stream(robot) as base:
+        while True:
+            rgb, depth, intrinsics = camera.read()
+            T_base_depth = camera_pose(robot.measured_head_fk(), config)
+            x, y, yaw = find_pallet_hole(rgb, depth, intrinsics, T_base_depth, slot)
+            ...
+    send_once_cartesian(robot, place, duration_s=1.0)
+    send_once_cartesian(robot, retreat, duration_s=1.0)
+
+Containment, stream-expiry handling, telemetry and the overlay stay in the library
+behind ``mobility_stream``; they are guarantees, not flow.  Blocked on extracting
+two phases still inside pallet_runtime.run_pallet_live: the servo/dispatch block
+(245 lines, no cross-frame state, 19 outputs) and the placement block (163 lines,
+two persistent flags, 9 outputs).  run_pallet_live is deleted once main() owns the
+loop, so there is never a second implementation of the same sequence.
 """
 
 from __future__ import annotations

@@ -66,15 +66,23 @@ class AutoGrabConfig:
             raise ValueError("robot address cannot be empty")
         if not str(self.power).strip():
             raise ValueError("power device pattern cannot be empty")
-        if abs(
-            line_angle_difference_rad(
-                self.servo.target_long_axis_yaw_rad,
-                math.pi / 2.0,
-            )
+        # A vertical box now uses the same grasp motion as a horizontal one, so
+        # both canonical long-axis targets are accepted: 0 and 90 degrees mod 180.
+        #
+        # TODO(vertical-grasp): the packaged grasp posture was demonstrated with
+        # the box horizontal.  The hands close inward by GRAB_DISTANCE along y, so
+        # with the long axis at 0 deg they grip the 253 mm short side instead of
+        # the 400 mm long side.  Measure the achieved hand separation on hardware
+        # and, if it is wrong, demonstrate a separate vertical grasp posture here
+        # rather than reusing START_POSE and MOBILE_READY.
+        target_yaw = self.servo.target_long_axis_yaw_rad
+        if min(
+            abs(line_angle_difference_rad(target_yaw, 0.0)),
+            abs(line_angle_difference_rad(target_yaw, math.pi / 2.0)),
         ) > 1e-9:
             raise ValueError(
-                "the current packaged grasp posture requires horizontal "
-                "long-axis yaw=90 deg mod 180"
+                "the packaged grasp posture requires a canonical long-axis "
+                "target of 0 or 90 deg mod 180"
             )
         if (
             not np.isfinite(self.fixed_posture_tolerance_deg)
