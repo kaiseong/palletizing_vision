@@ -352,7 +352,9 @@ def test_gap_above_the_release_limit_is_refused(root_config) -> None:
             placement_input(now_s=100.0 + index * 0.10, sequence=index + 1, **scene)
         )
     assert output.faulted
-    assert output.reason == "descent_gap_above_release_limit"
+    assert output.reason.startswith("descent_gap_above_release_limit")
+    # The reason must carry the measurement so the operator can act on it.
+    assert "mm >" in output.reason, output.reason
     assert sequencer.state is PlacementState.FAULT_HOLD
 
 

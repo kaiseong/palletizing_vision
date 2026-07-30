@@ -528,6 +528,11 @@ class PlacementInput:
     # True when the controller will replace the base-Z targets with the forward
     # kinematics of an operator-demonstrated placement posture.
     demonstrated_place_pose: bool = False
+    # How far the wrists drop at that posture, from the controller's forward
+    # kinematics.  The release gap must be judged after the posture has lowered
+    # the carton, not before it, otherwise the gate rejects exactly the case the
+    # posture exists to handle.
+    place_pose_vertical_drop_m: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "now_s", _finite(self.now_s, "now_s"))
@@ -1261,8 +1266,22 @@ class Slot1PlacementSequencer:
             box_bottom_z + box_uncertainty
             - (stack_top_z - stack_uncertainty)
         )
+        # The demonstrated posture lowers the carton before release, so the
+        # release ceiling applies to what is left of the gap afterwards.  Every
+        # pre-motion check below still uses the untouched measured gap.
+        place_pose_drop = 0.0
+        release_gap = gap
+        drop_unavailable = False
+        if sample.demonstrated_place_pose:
+            if sample.place_pose_vertical_drop_m is None:
+                drop_unavailable = True
+            else:
+                place_pose_drop = max(0.0, float(sample.place_pose_vertical_drop_m))
+                release_gap = gap - place_pose_drop
         rejection: str | None = None
-        if (
+        if drop_unavailable:
+            rejection = "descent_place_pose_drop_unavailable"
+        elif (
             abs(reported_gap - gap) > 1e-6
             or abs(reported_uncertainty - uncertainty) > 1e-6
         ):
@@ -1293,8 +1312,20 @@ class Slot1PlacementSequencer:
             rejection = "descent_gap_nonpositive"
         elif gap > self.config.maximum_descent_m:
             rejection = "descent_distance_too_large"
-        elif gap > self.config.maximum_release_gap_m:
-            rejection = "descent_gap_above_release_limit"
+        elif release_gap > self.config.maximum_release_gap_m:
+            # Carry the numbers: the operator otherwise cannot tell a carton held
+            # too high from a stack plane read too low.
+            rejection = (
+                "descent_gap_above_release_limit"
+                f" (gap {gap * 1000.0:.0f}mm"
+                + (
+                    ""
+                    if place_pose_drop <= 0.0
+                    else f" - place pose {place_pose_drop * 1000.0:.0f}mm"
+                )
+                + f" = {release_gap * 1000.0:.0f}mm >"
+                f" {self.config.maximum_release_gap_m * 1000.0:.0f}mm)"
+            )
         if rejection is not None:
             return None, rejection
 

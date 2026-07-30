@@ -2495,6 +2495,32 @@ class RBY1PalletController:
             ) from exc
         return T_torso, T_right, T_left
 
+    def place_pose_vertical_drop_m(self) -> float | None:
+        """Forward-kinematics drop of the wrists at the demonstrated posture.
+
+        ``None`` when no posture is configured or the measured state cannot be
+        read, which the placement gate treats as missing evidence rather than as
+        a zero drop.  The smaller of the two arms is returned: the carton bottom
+        cannot descend further than the hand that moves least.
+        """
+
+        place_pose = self.config.place_pose
+        if place_pose is None:
+            return None
+        try:
+            state = self.get_measured_state()
+            if state.T_base_right_eef is None or state.T_base_left_eef is None:
+                return None
+            _T_torso, right_base, left_base = self._kinematics_at_place_pose(
+                state, place_pose
+            )
+        except Exception:
+            return None
+        right_drop = float(state.T_base_right_eef[2, 3] - right_base[2, 3])
+        left_drop = float(state.T_base_left_eef[2, 3] - left_base[2, 3])
+        drop = min(right_drop, left_drop)
+        return drop if math.isfinite(drop) else None
+
     def _make_place_pose_target(
         self,
         state: MeasuredRobotState,
