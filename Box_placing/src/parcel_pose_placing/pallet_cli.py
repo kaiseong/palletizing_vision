@@ -268,10 +268,14 @@ def _run_live(args: argparse.Namespace) -> int:
     """
 
     config = _load_config(args.config)
-    from .pallet_runtime import run_pallet_live
+    place_box = getattr(args, "place_box", None)
+    if place_box is None:  # pragma: no cover - box_pallet.py always supplies it
+        raise RuntimeError(
+            "live runs are owned by box_pallet.py; run it rather than this module"
+        )
 
     return int(
-        run_pallet_live(
+        place_box(
             config,
             execute=bool(args.execute),
             auto_place_slot1=bool(args.execute),
@@ -289,12 +293,13 @@ def _run_live(args: argparse.Namespace) -> int:
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    if not hasattr(args, "handler"):
-        parser.print_help()
-        return 0
+def run_handler(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """Run one parsed subcommand and turn faults into the right exit code.
+
+    Separate from main so box_pallet.py can parse, attach the live sequence it owns,
+    and still get identical error handling.
+    """
+
     try:
         return int(args.handler(args))
     except KeyboardInterrupt:
@@ -309,6 +314,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
         return 2
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not hasattr(args, "handler"):
+        parser.print_help()
+        return 0
+    return run_handler(parser, args)
 
 
 if __name__ == "__main__":

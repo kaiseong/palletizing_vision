@@ -45,25 +45,44 @@ def test_the_drawing_module_cannot_reach_the_control_loop() -> None:
     assert "pallet_runtime" not in source
 
 
-def test_the_control_loop_keeps_shrinking() -> None:
-    """run_pallet_live is the thing that has to get shorter, not the file.
+def test_the_entry_point_owns_the_sequence() -> None:
+    """box_pallet.py has to hold the flow, short enough to read in one screen.
 
-    Extracting a phase adds a dataclass and a signature, so the module grows while
-    the loop shrinks.  Ratchet the loop, which is what somebody has to read to find
-    a wrong motion.
+    Anyone fixing a motion opens this file first, so place_box stays a list of named
+    stages.  Growth here means a stage was inlined instead of named.
     """
 
-    source = (SOURCE_DIR / "pallet_runtime.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    import ast
+
+    entry = pathlib.Path(__file__).resolve().parents[1] / "box_pallet.py"
+    tree = ast.parse(entry.read_text(encoding="utf-8"))
     lengths = {
         node.name: node.end_lineno - node.lineno + 1
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.end_lineno is not None
     }
-    assert "run_pallet_live" in lengths, "run_pallet_live disappeared; update this test"
-    assert lengths["run_pallet_live"] <= 75, (
-        f"run_pallet_live grew back to {lengths['run_pallet_live']} lines; "
-        "extract the next phase instead of adding to the loop"
+    assert "place_box" in lengths, "place_box disappeared from box_pallet.py"
+    assert lengths["place_box"] <= 90, (
+        f"place_box grew to {lengths['place_box']} lines; name the next stage "
+        "instead of inlining it"
+    )
+
+
+def test_the_stages_are_public_so_the_entry_point_can_call_them() -> None:
+    """The four stages are the seam between the entry point and the library."""
+
+    from parcel_pose_placing import pallet_runtime
+
+    for stage in (
+        "resolve_live_plan",
+        "assemble_live_stack",
+        "initial_run_state",
+        "align_and_place",
+    ):
+        assert stage in pallet_runtime.__all__, f"{stage} must be public"
+        assert callable(getattr(pallet_runtime, stage))
+    assert not hasattr(pallet_runtime, "run_pallet_live"), (
+        "the old monolith must not come back alongside place_box"
     )
 
 def test_perception_is_one_call_in_the_control_loop() -> None:

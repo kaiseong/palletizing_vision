@@ -70,6 +70,7 @@ def test_existing_telemetry_is_refused_before_any_robot_contact(tmp_path) -> Non
 
     import json
 
+    from box_pallet import place_box
     from parcel_pose_placing import pallet_runtime
 
     config = json.loads(
@@ -92,7 +93,7 @@ def test_existing_telemetry_is_refused_before_any_robot_contact(tmp_path) -> Non
     pallet_runtime._open_log = forbidden  # type: ignore[assignment]
     try:
         with pytest.raises(FileExistsError, match="refusing to overwrite live"):
-            pallet_runtime.run_pallet_live(
+            place_box(
                 config,
                 execute=True,
                 ensure_slot1_ready=True,

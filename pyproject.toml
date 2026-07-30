@@ -25,5 +25,5 @@ package-dir = { "parcel_pose_common" = "Common/src/parcel_pose_common", "parcel_
 
 [tool.pytest.ini_options]
 testpaths = ["Box_picking/tests", "Box_placing/tests", "Common/tests"]
-pythonpath = ["Common/src", "Box_picking/src", "Box_picking/tests", "Box_placing/src", "Box_placing/tests"]
+pythonpath = ["Common/src", "Box_picking/src", "Box_picking/tests", "Box_placing", "Box_placing/src", "Box_placing/tests"]
 addopts = "-q"

@@ -2419,7 +2419,7 @@ def _advance_placement(
     )
 
 @dataclass(frozen=True)
-class _LivePlan:
+class LivePlan:
     """What a validated live request resolved to."""
 
     camera_config: Any
@@ -2430,7 +2430,7 @@ class _LivePlan:
     vision_release_policy_enabled: Any
 
 
-def _resolve_live_plan(
+def resolve_live_plan(
     *,
     auto_place_slot1: Any,
     controller: Any,
@@ -2443,7 +2443,7 @@ def _resolve_live_plan(
     root_config: Any,
     slot: Any,
     warmup_frames: Any,
-) -> _LivePlan:
+) -> LivePlan:
     """Check the request and the config, then hand back what the run needs.
 
     Pure: every refusal here happens before the camera opens or the robot moves,
@@ -2556,7 +2556,7 @@ def _resolve_live_plan(
         warmup_frames=int(warmup_frames),
     )
 
-    return _LivePlan(
+    return LivePlan(
         camera_config=camera_config,
         fps=fps,
         geometry_only_policy_enabled=geometry_only_policy_enabled,
@@ -2567,7 +2567,7 @@ def _resolve_live_plan(
 
 
 @dataclass(frozen=True)
-class _LiveStack:
+class LiveStack:
     """The estimator, gates, servo and sequencer a live run holds for its whole life."""
 
     acquisition_config: Any
@@ -2584,12 +2584,12 @@ class _LiveStack:
     slot1_hole_reference: Any
 
 
-def _assemble_live_stack(
+def assemble_live_stack(
     *,
     auto_place_slot1: Any,
     root_config: Any,
     selected_slot: Any,
-) -> _LiveStack:
+) -> LiveStack:
     """Build the long-lived objects one run needs, once.
 
     Nothing here depends on a frame, so a wrong gate threshold or a wrong servo
@@ -2652,7 +2652,7 @@ def _assemble_live_stack(
     )
     authority = CoarseFineAuthority()
 
-    return _LiveStack(
+    return LiveStack(
         acquisition_config=acquisition_config,
         acquisition_servo=acquisition_servo,
         authority=authority,
@@ -2674,15 +2674,15 @@ class _LiveOutcome:
 
 
 
-def _align_and_place(
+def align_and_place(
     *,
     controller: Any,
     auto_place_slot1: Any,
     ensure_slot1_ready: Any,
     execute: Any,
-    plan: _LivePlan,
-    state: _RunState,
-    stack: _LiveStack,
+    plan: LivePlan,
+    state: RunState,
+    stack: LiveStack,
     headless: Any,
     log_jsonl: Any,
     max_frames: Any,
@@ -3088,7 +3088,7 @@ def _align_and_place(
 
 
 @dataclass(frozen=True)
-class _RunState:
+class RunState:
     """What the frame loop starts with and keeps updating."""
 
     T_base_depth: Any
@@ -3112,11 +3112,11 @@ class _RunState:
     window_created: Any
 
 
-def _initial_run_state(
+def initial_run_state(
     *,
     plan: Any,
     root_config: Any,
-) -> _RunState:
+) -> RunState:
     """The mutable state one run starts with, stated in one place.
 
     Every field here is updated by the frame loop.  Naming them together is how a
@@ -3185,7 +3185,7 @@ def _initial_run_state(
     )
     containment: ActuationContainmentState | None = None
 
-    return _RunState(
+    return RunState(
         T_base_depth=T_base_depth,
         accepted_scene_sequence=accepted_scene_sequence,
         box_bottom_uncertainty_m=box_bottom_uncertainty_m,
@@ -3208,76 +3208,6 @@ def _initial_run_state(
     )
 
 
-def run_pallet_live(
-    root_config: Mapping[str, Any],
-    *,
-    execute: bool = False,
-    auto_place_slot1: bool = False,
-    ensure_slot1_ready: bool = False,
-    slot: int | None = None,
-    robot_address: str = "192.168.30.1:50051",
-    robot_power: str = ".*",
-    warmup_frames: int = 30,
-    max_frames: int | None = None,
-    headless: bool = False,
-    window_name: str = "RB-Y1 Pallet Slot-1",
-    output_mp4: str | Path | None = None,
-    log_jsonl: str | Path | None = None,
-    controller: _ControllerLike | None = None,
-) -> int:
-    """Run pallet perception, loaded-box slot-1 alignment, and gated placement.
-
-    Execution is a standalone post-pick boundary: the previous process must be
-    stopped, the configured loaded ready posture is verified, and this process
-    becomes the sole combined body/mobility stream owner.
-    """
-
-    plan = _resolve_live_plan(
-        auto_place_slot1=auto_place_slot1,
-        controller=controller,
-        ensure_slot1_ready=ensure_slot1_ready,
-        execute=execute,
-        headless=headless,
-        log_jsonl=log_jsonl,
-        max_frames=max_frames,
-        output_mp4=output_mp4,
-        root_config=root_config,
-        slot=slot,
-        warmup_frames=warmup_frames,
-    )
-
-    # Imports stay below the standalone execute interlock.  In dry-run this is
-    # still pure camera/perception code and cannot import rby1_sdk.
-    stack = _assemble_live_stack(
-        auto_place_slot1=auto_place_slot1,
-        root_config=root_config,
-        selected_slot=plan.selected_slot,
-    )
-    state = _initial_run_state(
-        plan=plan,
-        root_config=root_config,
-    )
-    _align_and_place(
-        controller=controller,
-        auto_place_slot1=auto_place_slot1,
-        ensure_slot1_ready=ensure_slot1_ready,
-        execute=execute,
-        plan=plan,
-        state=state,
-        stack=stack,
-        headless=headless,
-        log_jsonl=log_jsonl,
-        max_frames=max_frames,
-        output_mp4=output_mp4,
-        robot_address=robot_address,
-        robot_power=robot_power,
-        root_config=root_config,
-        window_name=window_name,
-    )
-
-    # Returning zero never implies the robot was disarmed.  The execute path stays
-    # open unless forced cancellation or an acknowledged owner handoff closes it.
-    return 0
 
 
 __all__ = [
@@ -3288,6 +3218,9 @@ __all__ = [
     "ServoObservationBridge",
     "configured_T_base_from_depth",
     "measured_T_base_from_depth",
-    "run_pallet_live",
+    "align_and_place",
+    "assemble_live_stack",
+    "initial_run_state",
+    "resolve_live_plan",
     "validate_live_camera_profile",
 ]

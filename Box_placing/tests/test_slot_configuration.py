@@ -101,19 +101,19 @@ def test_running_an_undemonstrated_slot_is_refused_before_the_sdk_loads() -> Non
 
     import sys
 
-    from parcel_pose_placing.pallet_runtime import run_pallet_live
+    from box_pallet import place_box
 
     before = set(sys.modules)
     with pytest.raises(ValueError, match="slot 5 has no demonstrated hole_reference"):
-        run_pallet_live(root_config(), execute=True, ensure_slot1_ready=True, slot=5)
+        place_box(root_config(), execute=True, ensure_slot1_ready=True, slot=5)
     assert "rby1_sdk" not in set(sys.modules) - before
 
 
 def test_running_an_undeclared_slot_lists_the_declared_ones() -> None:
-    from parcel_pose_placing.pallet_runtime import run_pallet_live
+    from box_pallet import place_box
 
     with pytest.raises(ValueError, match="declared slots are 1, 2, 5, 6"):
-        run_pallet_live(root_config(), slot=3)
+        place_box(root_config(), slot=3)
 
 
 def test_the_refusal_tells_you_what_to_put_where() -> None:
