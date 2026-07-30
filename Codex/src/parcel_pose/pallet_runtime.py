@@ -2082,6 +2082,41 @@ def _open_video(path: Path | None, shape: tuple[int, int], fps: int) -> Any | No
     return writer
 
 
+def _preflight_output_paths(
+    log_jsonl: "str | Path | None",
+    output_mp4: "str | Path | None",
+) -> None:
+    """Reject unusable artifact paths before the robot is ever touched.
+
+    ``_open_log`` runs after the combined stream already owns the arms, so a
+    refusal there strands a carried load in containment and forces an unsafe
+    cancellation; that is how a live run dropped a carton.  The same refusal is
+    cheap to make here, before any SDK import or connection.
+    """
+
+    for label, value in (("live telemetry", log_jsonl), ("overlay video", output_mp4)):
+        if value is None:
+            continue
+        path = Path(value)
+        if path.exists():
+            raise FileExistsError(f"refusing to overwrite {label}: {path}")
+        parent = path.parent
+        if parent.exists() and not parent.is_dir():
+            raise NotADirectoryError(f"{label} parent is not a directory: {parent}")
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise OSError(f"cannot create {label} directory {parent}: {exc}") from exc
+        probe = parent / f".{path.name}.preflight"
+        try:
+            with probe.open("x", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            raise OSError(f"cannot write {label} into {parent}: {exc}") from exc
+        finally:
+            probe.unlink(missing_ok=True)
+
+
 def _open_log(path: Path | None) -> TextIO | None:
     if path is None:
         return None
@@ -2507,6 +2542,10 @@ def run_pallet_live(
             "slot-1 placement requires allow_vision_geometry_release=True; "
             "omit auto_place_slot1 for alignment-only commissioning"
         )
+
+    # Before anything reaches the robot: a stranded carried load is far worse
+    # than a rejected command line.
+    _preflight_output_paths(log_jsonl, output_mp4)
 
     calibration = _section(root_config, "calibration")
     absolute_registration = bool(calibration.get("absolute_base_validated", False))
