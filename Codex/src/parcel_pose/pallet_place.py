@@ -110,6 +110,12 @@ class PlacementConfig:
     # Tolerances for the demonstrated place posture.  The posture moves the wrists
     # in all three axes, so a single z tolerance is not the right check.
     place_pose_tolerance_m: float = 0.015
+    # Entering SEATED and holding it are different questions.  The impedance
+    # settles with a steady-state error that wanders by a few millimetres, so
+    # re-checking the entry threshold every frame turns normal settling into
+    # lowered_geometry_lost_before_release.  The hold band must therefore be
+    # wider than the entry band.
+    place_pose_hold_tolerance_m: float = 0.035
     place_pose_rotation_tolerance_rad: float = math.radians(4.0)
     lower_midpoint_xy_drift_m: float = 0.015
     lower_rotation_tolerance_rad: float = math.radians(3.0)
@@ -133,6 +139,7 @@ class PlacementConfig:
             "feedback_stale_s",
             "lower_z_tolerance_m",
             "place_pose_tolerance_m",
+            "place_pose_hold_tolerance_m",
             "place_pose_rotation_tolerance_rad",
             "lower_midpoint_xy_drift_m",
             "lower_rotation_tolerance_rad",
@@ -171,6 +178,11 @@ class PlacementConfig:
             raise ValueError("descent_fraction cannot exceed 1.0")
         if self.vision_seating_max_uncertainty_m > 0.030 + 1e-12:
             raise ValueError("descent uncertainty limit cannot exceed 30 mm")
+        if self.place_pose_hold_tolerance_m < self.place_pose_tolerance_m - 1e-12:
+            raise ValueError(
+                "place_pose_hold_tolerance_m cannot be tighter than the entry "
+                "tolerance; holding would fail as soon as it is reached"
+            )
         if self.vision_plan_valid_for_s < self.lowering_timeout_s:
             raise ValueError(
                 "vision plan validity must cover the full lowering timeout"
@@ -212,6 +224,7 @@ class PlacementConfig:
             "retreat_pose_deg",
             "retreat_pose_duration_s",
             "place_pose_tolerance_m",
+            "place_pose_hold_tolerance_m",
             "release_spread_m",
             "maximum_release_spread_m",
             "joint_stiffness_nm_per_rad",
@@ -331,6 +344,12 @@ class PlacementConfig:
             ),
             place_pose_tolerance_m=float(
                 raw.get("place_pose_tolerance_m", defaults.place_pose_tolerance_m)
+            ),
+            place_pose_hold_tolerance_m=float(
+                raw.get(
+                    "place_pose_hold_tolerance_m",
+                    defaults.place_pose_hold_tolerance_m,
+                )
             ),
             release_spread_m=float(
                 raw.get("release_spread_m", defaults.release_spread_m)
@@ -855,8 +874,12 @@ class Slot1PlacementSequencer:
     def _update_seated(self, sample: PlacementInput) -> PlacementOutput:
         if sample.controller_arm_mode != LOWERING_MODE or not sample.controller_target_ack:
             return self._fault("lowering_hold_ack_lost_before_release", sample)
-        if not self._lower_geometry_reached(sample):
-            return self._fault("lowered_geometry_lost_before_release", sample)
+        if not self._lower_geometry_reached(sample, hold=True):
+            return self._fault(
+                "lowered_geometry_lost_before_release"
+                + self._place_pose_progress_note(sample, hold=True),
+                sample,
+            )
         if not self._seating_evidence(sample):
             return self._fault("seating_evidence_lost", sample)
         release_evidence_reason = self._release_evidence_fault_reason(sample)
@@ -1013,7 +1036,9 @@ class Slot1PlacementSequencer:
             float(_rotation_error_rad(sample.left_eef_base, sample.left_target_base)),
         )
 
-    def _place_pose_progress_note(self, sample: PlacementInput) -> str:
+    def _place_pose_progress_note(
+        self, sample: PlacementInput, *, hold: bool = False
+    ) -> str:
         """Human-readable residual for the live line; empty when unavailable."""
 
         plan = self._descent_plan
@@ -1023,14 +1048,21 @@ class Slot1PlacementSequencer:
         if residual is None:
             return " (controller target not reported)"
         right_m, left_m, right_rad, left_rad = residual
+        limit = (
+            self.config.place_pose_hold_tolerance_m
+            if hold
+            else self.config.place_pose_tolerance_m
+        )
         return (
             f" (R {right_m * 1000.0:.0f}mm/{math.degrees(right_rad):.1f}deg,"
             f" L {left_m * 1000.0:.0f}mm/{math.degrees(left_rad):.1f}deg,"
-            f" need {self.config.place_pose_tolerance_m * 1000.0:.0f}mm/"
+            f" need {limit * 1000.0:.0f}mm/"
             f"{math.degrees(self.config.place_pose_rotation_tolerance_rad):.0f}deg)"
         )
 
-    def _lower_geometry_reached(self, sample: PlacementInput) -> bool:
+    def _lower_geometry_reached(
+        self, sample: PlacementInput, *, hold: bool = False
+    ) -> bool:
         plan = self._descent_plan
         if plan is None or not plan.valid:
             return False
@@ -1039,8 +1071,13 @@ class Slot1PlacementSequencer:
             if residual is None:
                 return False
             right_m, left_m, right_rad, left_rad = residual
+            limit = (
+                self.config.place_pose_hold_tolerance_m
+                if hold
+                else self.config.place_pose_tolerance_m
+            )
             return bool(
-                max(right_m, left_m) <= self.config.place_pose_tolerance_m
+                max(right_m, left_m) <= limit
                 and max(right_rad, left_rad)
                 <= self.config.place_pose_rotation_tolerance_rad
             )

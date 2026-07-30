@@ -207,6 +207,7 @@
     },
     "retreat_pose_duration_s": 1.0,
     "place_pose_tolerance_m": 0.025,
+    "place_pose_hold_tolerance_m": 0.045,
     "release_spread_m": 0.0,
     "maximum_release_spread_m": 0.040,
     "joint_stiffness_nm_per_rad": [150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0],

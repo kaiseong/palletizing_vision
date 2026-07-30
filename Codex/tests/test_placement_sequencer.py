@@ -327,3 +327,54 @@ def test_lowering_timeout_reports_the_residual_too() -> None:
     assert output.faulted
     assert output.reason.startswith("lowering_or_seating_timeout")
     assert "R 40mm" in output.reason, output.reason
+
+
+def test_seated_holds_through_impedance_settling_but_not_a_real_loss() -> None:
+    """Entering SEATED and holding it are different thresholds.
+
+    place_30 reached the posture, advanced to SEATED, and faulted on the next
+    frame with lowered_geometry_lost_before_release: the impedance residual
+    wandered back across the entry threshold while it settled.
+    """
+
+    config = PlacementConfig(
+        maximum_release_gap_m=GAP_M + 0.010,
+        place_pose_tolerance_m=0.025,
+        place_pose_hold_tolerance_m=0.045,
+    )
+    sequencer = Slot1PlacementSequencer(config)
+    _drive(sequencer, demonstrated_place_pose=True, place_pose_vertical_drop_m=0.030)
+
+    def step(now_s: float, residual_m: float):
+        return sequencer.update(
+            placement_input(
+                now_s=now_s,
+                sequence=9,
+                controller_arm_mode=LOWERING_MODE,
+                demonstrated_place_pose=True,
+                place_pose_vertical_drop_m=0.030,
+                right_target_base=transform(lowered(RIGHT_EEF_XYZ, residual_m)),
+                left_target_base=transform(lowered(LEFT_EEF_XYZ, residual_m)),
+            )
+        )
+
+    # Inside the entry band: LOWERING completes.
+    assert step(101.0, 0.020).reason == "seating_evidence_started"
+    assert sequencer.state is PlacementState.SEATED
+    # Settling past the entry band but inside the hold band must not fault.
+    held = step(101.2, 0.035)
+    assert not held.faulted, held.reason
+    assert held.reason.startswith("seating_evidence"), held.reason
+    # Beyond the hold band it is a real loss.
+    lost = step(101.4, 0.060)
+    assert lost.faulted
+    assert lost.reason.startswith("lowered_geometry_lost_before_release")
+    assert "R 60mm" in lost.reason, lost.reason
+    assert "need 45mm" in lost.reason, lost.reason
+
+
+def test_the_hold_band_cannot_be_tighter_than_the_entry_band() -> None:
+    with pytest.raises(ValueError, match="cannot be tighter than the entry"):
+        PlacementConfig(
+            place_pose_tolerance_m=0.025, place_pose_hold_tolerance_m=0.010
+        )
