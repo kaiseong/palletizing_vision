@@ -39,13 +39,13 @@ EXPECTED_ROBOT_MODEL = "M"
 EXPECTED_ROBOT_VERSION = "1.2"
 
 READY_TORSO_RAD = (0.0, 1.410, -1.514, 0.6295, 0.0, 0.0)
-# Operator-demonstrated slot-1 loading posture.  Supplied in degrees as
-#   right [-63.9, -23.8, -3.6, -59.0, -57.1, 63.4, -14.0]
-# with the left arm mirrored, which negates joints 1, 2, 4 and 6.  The config
-# must carry the same literals; PalletControlConfig refuses a mismatch so an
-# unapproved posture cannot reach the robot.
-READY_RIGHT_ARM_RAD = (-1.1153, -0.4154, -0.0628, -1.0297, -0.9966, 1.1065, -0.2443)
-READY_LEFT_ARM_RAD = (-1.1153, 0.4154, 0.0628, -1.0297, 0.9966, 1.1065, 0.2443)
+# Slot-1 loading posture, reverted at the operator's request to the values that
+# every live run up to place_30 used.  The left arm mirrors the right, which
+# negates joints 1, 2, 4 and 6.  The config must carry the same literals;
+# PalletControlConfig refuses a mismatch so an unapproved posture cannot reach
+# the robot.
+READY_RIGHT_ARM_RAD = (-1.120, -0.383, -0.048, -1.066, -0.824, 1.109, 0.157)
+READY_LEFT_ARM_RAD = (-1.120, 0.383, 0.048, -1.066, 0.824, 1.109, -0.157)
 READY_HEAD_RAD = (0.0, 0.870)
 ARM_STIFFNESS = (150.0,) * 7
 TORQUE_POLICY = "sdk_default"

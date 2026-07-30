@@ -39,10 +39,12 @@ def test_the_ready_arms_are_mirror_images() -> None:
     assert READY_LEFT_ARM_RAD == pytest.approx(expected, abs=1e-12)
 
 
-def test_the_ready_arms_are_the_demonstrated_degrees() -> None:
-    demonstrated_right_deg = (-63.9, -23.8, -3.6, -59.0, -57.1, 63.4, -14.0)
+def test_the_ready_arms_are_the_commissioned_degrees() -> None:
+    """The posture every live run up to place_30 used, restored on request."""
+
+    commissioned_right_deg = (-64.17, -21.94, -2.75, -61.08, -47.21, 63.54, 9.0)
     np.testing.assert_allclose(
-        np.degrees(READY_RIGHT_ARM_RAD), demonstrated_right_deg, atol=0.01
+        np.degrees(READY_RIGHT_ARM_RAD), commissioned_right_deg, atol=0.01
     )
 
 
