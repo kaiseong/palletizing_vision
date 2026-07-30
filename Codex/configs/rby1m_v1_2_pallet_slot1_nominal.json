@@ -165,7 +165,7 @@
     "max_linear_speed_mps": 0.05,
     "max_angular_speed_radps": 0.08,
     "jump_threshold_m": 0.030,
-    "max_correction_m": 0.25,
+    "max_correction_m": null,
     "start_yaw_limit_rad": 0.2617993877991494,
     "stale_after_s": 0.30,
     "arrival_inner_m": 0.010,

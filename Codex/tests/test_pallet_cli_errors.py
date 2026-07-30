@@ -167,3 +167,65 @@ def test_correction_limit_fault_reports_the_measured_error() -> None:
     assert f"{far * 1000.0:.0f}mm" in reason, reason
     assert f"{config.max_correction_m * 1000.0:.0f}mm" in reason, reason
     assert "dx=" in reason and "dy=" in reason, reason
+
+
+def test_correction_ceiling_can_be_disabled_and_the_servo_drives_from_far() -> None:
+    """With the ceiling disabled the base tracks a distant hole estimate."""
+
+    from parcel_pose.pallet_servo import (
+        PalletServoConfig,
+        PalletServoObservation,
+        PalletServoState,
+        PalletSlot1Servo,
+    )
+
+    config = PalletServoConfig(max_correction_m=None)
+    servo = PalletSlot1Servo(config)
+    now = 100.0
+    servo.start(now)
+    far = 0.60  # far beyond the former 250 mm ceiling
+    output = None
+    for index in range(config.filter_window + 2):
+        moment = now + 0.05 * (index + 1)
+        output = servo.update(
+            PalletServoObservation(
+                timestamp_s=moment,
+                current_observed_feature_center_base=(0.865 + far, 0.139523),
+                current_observed_feature_yaw_base_rad=math.radians(-90.0),
+                demonstrated_body_reference_center_base=(0.865, 0.139523),
+                demonstrated_body_reference_yaw_base_rad=math.radians(-90.0),
+                axis_branch=config.expected_axis_branch,
+                reference_source="fixed_outer_l_corner",
+            ),
+            moment,
+        )
+    assert output is not None
+    assert servo.state is not PalletServoState.FAULT_HOLD, output.reason
+    # Motion is still bounded by the speed ceiling, so distance only costs time.
+    speed = math.hypot(output.command.vx_mps, output.command.vy_mps)
+    assert speed > 0.0, output.reason
+    assert speed <= config.max_linear_speed_mps + 1e-9
+
+
+def test_the_shipped_slot1_config_disables_the_correction_ceiling() -> None:
+    import json
+
+    from parcel_pose.pallet_servo import PalletServoConfig
+
+    root = json.loads(
+        (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "configs"
+            / "rby1m_v1_2_pallet_slot1_nominal.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert PalletServoConfig.from_root_config(root).max_correction_m is None
+
+
+def test_the_correction_ceiling_cannot_be_widened_instead_of_disabled() -> None:
+    """Silently raising the ceiling would hide a misread feature; null is explicit."""
+
+    from parcel_pose.pallet_servo import PalletServoConfig
+
+    with pytest.raises(ValueError, match="use null to disable"):
+        PalletServoConfig(max_correction_m=0.60)

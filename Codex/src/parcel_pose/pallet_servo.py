@@ -181,7 +181,13 @@ class PalletServoConfig:
     jump_reseed_frames: int = 3
     stale_after_s: float = 0.30
     timeout_s: float = 30.0
-    max_correction_m: float = 0.25
+    # ``None`` disables the pre-motion correction ceiling, letting the servo
+    # drive to a distant estimate.  The ceiling exists so a misidentified
+    # feature cannot send the base on a large blind correction; disabling it is
+    # an explicit commissioning choice and must be written as ``null`` in the
+    # config.  Speed, acceleration, per-frame jump rejection and the filter
+    # window still bound the motion.
+    max_correction_m: float | None = 0.25
     start_yaw_limit_rad: float = math.radians(15.0)
     arrival_inner_m: float = 0.010
     arrival_outer_m: float = 0.015
@@ -211,7 +217,6 @@ class PalletServoConfig:
             "yaw_jump_threshold_rad",
             "stale_after_s",
             "timeout_s",
-            "max_correction_m",
             "start_yaw_limit_rad",
             "arrival_inner_m",
             "arrival_outer_m",
@@ -253,13 +258,23 @@ class PalletServoConfig:
             raise ValueError("arrival_outer_m must exceed arrival_inner_m")
         if self.arrival_yaw_outer_rad <= self.arrival_yaw_inner_rad:
             raise ValueError("arrival_yaw_outer_rad must exceed arrival_yaw_inner_rad")
+        if self.max_correction_m is not None:
+            object.__setattr__(
+                self,
+                "max_correction_m",
+                _positive(self.max_correction_m, "max_correction_m"),
+            )
+            if self.max_correction_m > 0.25 + 1e-12:
+                raise ValueError(
+                    "max_correction_m cannot exceed 250 mm; use null to disable the "
+                    "ceiling instead of widening it"
+                )
         hard_upper_bounds = {
             "max_linear_speed_mps": MAX_ALLOWED_LINEAR_SPEED_MPS,
             "max_angular_speed_radps": MAX_ALLOWED_ANGULAR_SPEED_RADPS,
             "jump_threshold_m": 0.030,
             "yaw_jump_threshold_rad": math.radians(15.0),
             "stale_after_s": 0.30,
-            "max_correction_m": 0.25,
             "start_yaw_limit_rad": math.radians(15.0),
             "arrival_inner_m": 0.010,
             "arrival_outer_m": 0.015,
@@ -660,14 +675,15 @@ class PalletSlot1Servo:
         raw_distance = float(np.linalg.norm(sample.error_xy))
         filtered_distance = float(np.linalg.norm(filtered.error_xy))
         max_distance = max(raw_distance, filtered_distance)
-        if max_distance > self.config.max_correction_m:
+        correction_ceiling = self.config.max_correction_m
+        if correction_ceiling is not None and max_distance > correction_ceiling:
             # Carry the numbers: a bare reason cannot distinguish "the base is
             # parked too far" from "the fallback feature was misidentified", and
             # the operator cannot see the alignment error anywhere else.
             return self.fault(
                 "correction_limit_exceeded"
                 f" ({max_distance * 1000.0:.0f}mm >"
-                f" {self.config.max_correction_m * 1000.0:.0f}mm,"
+                f" {correction_ceiling * 1000.0:.0f}mm,"
                 f" dx={sample.error_xy[0] * 1000.0:+.0f}mm"
                 f" dy={sample.error_xy[1] * 1000.0:+.0f}mm)",
                 now,
