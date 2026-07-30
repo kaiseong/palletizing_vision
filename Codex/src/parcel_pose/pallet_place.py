@@ -209,6 +209,8 @@ class PlacementConfig:
             "squeeze_offset_m",
             "place_pose_duration_s",
             "place_pose_deg",
+            "retreat_pose_deg",
+            "retreat_pose_duration_s",
             "place_pose_tolerance_m",
             "release_spread_m",
             "maximum_release_spread_m",
@@ -538,6 +540,10 @@ class PlacementInput:
     # the carton, not before it, otherwise the gate rejects exactly the case the
     # posture exists to handle.
     place_pose_vertical_drop_m: float | None = None
+    # True when the release stage commands a demonstrated retreat posture instead
+    # of opening the hands outward.  The separation-increase check then does not
+    # apply: the hands withdraw rather than spread.
+    demonstrated_retreat_pose: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "now_s", _finite(self.now_s, "now_s"))
@@ -897,7 +903,12 @@ class Slot1PlacementSequencer:
             return self._output(
                 sample,
                 PlacementRequest.HOLD_CURRENT,
-                "waiting_for_release_target",
+                "waiting_for_release_target"
+                + (
+                    self._place_pose_progress_note(sample)
+                    if sample.demonstrated_retreat_pose
+                    else ""
+                ),
                 release_authorized=True,
             )
         if self._release_target_started_s is None:
@@ -1076,6 +1087,19 @@ class Slot1PlacementSequencer:
     def _release_target_reached(self, sample: PlacementInput) -> bool:
         if sample.right_target_base is None or sample.left_target_base is None:
             return False
+        if sample.demonstrated_retreat_pose:
+            # A retreat posture withdraws the hands, so requiring the separation
+            # to grow would reject it.  The admissible evidence is the same as
+            # for the placement posture: the acknowledged controller target.
+            residual = self._place_pose_residual(sample)
+            if residual is None:
+                return False
+            right_m, left_m, right_rad, left_rad = residual
+            return bool(
+                max(right_m, left_m) <= self.config.place_pose_tolerance_m
+                and max(right_rad, left_rad)
+                <= self.config.place_pose_rotation_tolerance_rad
+            )
         target_reached = bool(
             np.linalg.norm(
                 sample.right_eef_base[:3, 3] - sample.right_target_base[:3, 3]

@@ -1425,6 +1425,10 @@ def _placement_input(
         demonstrated_place_pose=bool(
             getattr(getattr(controller, "config", None), "place_pose", None) is not None
         ),
+        demonstrated_retreat_pose=bool(
+            getattr(getattr(controller, "config", None), "retreat_pose", None)
+            is not None
+        ),
         place_pose_vertical_drop_m=(
             drop_probe()
             if callable(drop_probe := getattr(controller, "place_pose_vertical_drop_m", None))

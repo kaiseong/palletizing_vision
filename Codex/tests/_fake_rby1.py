@@ -412,8 +412,14 @@ class FakeRobot:
         offset = np.zeros(3, dtype=np.float64)
         pose = self.ready_pose
         if pose is not None:
-            delta = float(position[RIGHT_ARM_IDX][0] - pose.right_arm_rad[0])
-            offset = delta * np.asarray(self.place_pose_gain, dtype=np.float64)
+            joints = position[RIGHT_ARM_IDX]
+            delta = float(joints[0] - pose.right_arm_rad[0])
+            # Joint 3 separates the place posture from the retreat posture, so the
+            # surrogate must respond to it or both would land on the same pose.
+            elbow = float(joints[3] - pose.right_arm_rad[3])
+            offset = delta * np.asarray(
+                self.place_pose_gain, dtype=np.float64
+            ) + elbow * np.asarray((-0.20, 0.0, -0.15), dtype=np.float64)
         return {
             "T_base_torso": transform(self.torso_xyz),
             "T_base_head": transform((0.10, 0.0, 1.20)),

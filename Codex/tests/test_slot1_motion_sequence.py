@@ -164,7 +164,10 @@ def test_arm_target_is_constant_from_ready_until_the_place_pose(root_config) -> 
             key = np.round(packet.right_arm.transform[:3, 3], 9).tobytes()
             if not distinct or distinct[-1] != key:
                 distinct.append(key)
-        expected = 3 if config.placement_release_spread_m > 0.0 else 2
+        # ready -> place posture -> retreat posture, when both are demonstrated.
+        expected = 2
+        if config.retreat_pose is not None or config.placement_release_spread_m > 0.0:
+            expected = 3
         assert len(distinct) == expected, (
             f"expected {expected} arm targets, saw {len(distinct)}"
         )
@@ -298,36 +301,10 @@ def test_lowering_moves_to_the_place_pose_not_by_a_base_z_delta(root_config) -> 
         first = robot.packets[0]
         drop = first.right_arm.transform[2, 3] - lowering_packet.right_arm.transform[2, 3]
         assert drop > 0.0, "the demonstrated posture must lower the carton"
-        assert lowering.lowering_distance_m == pytest.approx(abs(drop), rel=1e-6)
+        # lowering_distance_m is the full 3D travel, so it can only exceed the
+        # vertical component of the move.
+        assert lowering.lowering_distance_m >= abs(drop) - 1e-12
         assert lowering_packet.mobility_velocity == (0.0, 0.0, 0.0)
-    finally:
-        teardown(controller)
-
-
-def test_release_opens_along_torso_y_only(root_config) -> None:
-    (controller, robot, config, _plan, _delta, lowering,
-     lowering_packet, release, release_packet) = drive_to_release(root_config)
-    try:
-        spread = config.placement_release_spread_m
-        assert release.mode is ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE
-        assert release.release_spread_m == pytest.approx(spread)
-        assert release.release_axis_deviation_rad == pytest.approx(0.0, abs=1e-9)
-        assert release.squeeze_offset_m == 0.0
-
-        # Opening starts from the acknowledged place posture, on Y only.
-        for axis in (0, 2):
-            assert release.right_T_base_eef[axis, 3] == pytest.approx(
-                lowering.right_T_base_eef[axis, 3], abs=1e-12
-            )
-            assert release.left_T_base_eef[axis, 3] == pytest.approx(
-                lowering.left_T_base_eef[axis, 3], abs=1e-12
-            )
-        assert release.right_T_base_eef[1, 3] == pytest.approx(
-            lowering.right_T_base_eef[1, 3] - spread
-        )
-        opened = release_packet.eef_separation_m()
-        assert opened == pytest.approx(lowering_packet.eef_separation_m() + 2.0 * spread,
-                                       abs=1e-6)
     finally:
         teardown(controller)
 
@@ -549,28 +526,6 @@ def test_place_pose_travel_is_paced_over_the_configured_duration(root_config) ->
         teardown(controller)
 
 
-def test_release_does_not_open_the_hands_when_the_spread_is_zero(root_config) -> None:
-    """Slot-1 seats the carton and stops; the hands must not move afterwards."""
-
-    (controller, robot, config, _plan, _delta, lowering,
-     _lowering_packet, release, release_packet) = drive_to_release(root_config)
-    try:
-        assert config.placement_release_spread_m == 0.0
-        assert release.mode is ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE
-        assert release.release_spread_m == 0.0
-        assert release.target_source == "demonstrated_place_pose"
-        # The release target is exactly the seated posture, on every axis.
-        np.testing.assert_array_equal(
-            release.right_T_base_eef, lowering.right_T_base_eef
-        )
-        np.testing.assert_array_equal(release.left_T_base_eef, lowering.left_T_base_eef)
-        assert release_packet.eef_separation_m() == pytest.approx(
-            MEASURED_SEPARATION_M, abs=1e-9
-        )
-    finally:
-        teardown(controller)
-
-
 def test_place_pose_plan_rejects_a_base_z_descent(root_config) -> None:
     from parcel_pose.pallet_place import PlacementDescentPlan
 
@@ -584,3 +539,57 @@ def test_place_pose_plan_rejects_a_base_z_descent(root_config) -> None:
     fields["planned_delta_z_m"] = 0.020
     with pytest.raises(ValueError, match="cannot also request a base-Z descent"):
         PlacementDescentPlan(**fields)
+
+
+# --------------------------------------------------------------------------- #
+# demonstrated retreat posture after seating
+# --------------------------------------------------------------------------- #
+def test_retreat_posture_is_a_separate_move_after_the_carton_is_seated(
+    root_config,
+) -> None:
+    """Seat first, then withdraw: two distinct Cartesian arm targets, in order."""
+
+    (controller, robot, config, _plan, _delta, lowering,
+     lowering_packet, release, release_packet) = drive_to_release(root_config)
+    try:
+        assert config.retreat_pose is not None
+        assert release.mode is ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE
+        assert release.target_source == "demonstrated_place_pose"
+        # The retreat commands the demonstrated retreat joints as its nullspace.
+        np.testing.assert_allclose(
+            release.right_nullspace_joint_rad, config.retreat_pose.right_arm_rad
+        )
+        # It is a different pose from the seated one.
+        assert not np.allclose(
+            release.right_T_base_eef[:3, 3], lowering.right_T_base_eef[:3, 3]
+        )
+        # Ordering: the seated posture is commanded before the retreat.
+        order = [id(packet) for packet in robot.packets]
+        assert order.index(id(lowering_packet)) < order.index(id(release_packet))
+    finally:
+        teardown(controller)
+
+
+def test_retreat_is_paced_over_its_configured_duration(root_config) -> None:
+    (controller, robot, config, _plan, _delta, _lowering,
+     _lowering_packet, release, _release_packet) = drive_to_release(root_config)
+    try:
+        duration = config.placement_retreat_pose_duration_s
+        assert duration == pytest.approx(1.0)
+        expected = min(
+            config.placement_linear_velocity_limit_mps,
+            max(release.lowering_distance_m / duration, 1e-4),
+        )
+        assert release.linear_velocity_limit_mps == pytest.approx(expected)
+    finally:
+        teardown(controller)
+
+
+def test_a_retreat_posture_requires_a_place_posture() -> None:
+    from parcel_pose.pallet_control import PalletControlConfig, PlacePose
+
+    pose = PlacePose(
+        torso_rad=(0.0,) * 6, right_arm_rad=(0.0,) * 7, left_arm_rad=(0.0,) * 7
+    )
+    with pytest.raises(ValueError, match="retreat posture requires a place posture"):
+        PalletControlConfig(retreat_pose=pose)

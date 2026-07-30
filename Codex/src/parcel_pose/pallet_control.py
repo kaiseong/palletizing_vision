@@ -357,6 +357,10 @@ class PalletControlConfig:
     # 20 Hz.  ``None`` keeps the legacy base-Z descent behaviour.
     place_pose: "PlacePose | None" = None
     placement_place_pose_duration_s: float = 1.0
+    # Posture the hands retreat to once the carton is seated.  ``None`` keeps the
+    # outward spread instead.
+    retreat_pose: "PlacePose | None" = None
+    placement_retreat_pose_duration_s: float = 1.0
     # Slot-1 release opens along base Y only.  The commanded travel per hand is
     # exactly this spread because the loaded-hold squeeze cancels out, so a
     # small value keeps both arms far from the reach singularity.
@@ -636,6 +640,17 @@ class PalletControlConfig:
                     defaults.placement_place_pose_duration_s,
                 )
             ),
+            retreat_pose=(
+                None
+                if placement.get("retreat_pose_deg") is None
+                else PlacePose.from_degrees(placement["retreat_pose_deg"])
+            ),
+            placement_retreat_pose_duration_s=float(
+                placement.get(
+                    "retreat_pose_duration_s",
+                    defaults.placement_retreat_pose_duration_s,
+                )
+            ),
             placement_release_spread_m=float(
                 placement.get(
                     "release_spread_m",
@@ -820,6 +835,22 @@ class PalletControlConfig:
             )
         if self.place_pose is not None and not isinstance(self.place_pose, PlacePose):
             raise ValueError("place_pose must be a PlacePose")
+        if self.retreat_pose is not None and not isinstance(
+            self.retreat_pose, PlacePose
+        ):
+            raise ValueError("retreat_pose must be a PlacePose")
+        if self.retreat_pose is not None and self.place_pose is None:
+            raise ValueError("a retreat posture requires a place posture")
+        object.__setattr__(
+            self,
+            "placement_retreat_pose_duration_s",
+            _positive(
+                self.placement_retreat_pose_duration_s,
+                "placement_retreat_pose_duration_s",
+            ),
+        )
+        if self.placement_retreat_pose_duration_s > 5.0 + 1e-12:
+            raise ValueError("retreat pose duration cannot exceed 5 seconds")
         object.__setattr__(
             self,
             "placement_place_pose_duration_s",
@@ -2374,7 +2405,7 @@ class RBY1PalletController:
         state = self.get_measured_state()
         self._validate_cartesian_state(state)
         if self.config.place_pose is not None:
-            target = self._make_place_pose_target(
+            target = self._make_posture_target(
                 state,
                 loaded_target=loaded_target,
                 descent_plan=descent_plan,
@@ -2534,13 +2565,15 @@ class RBY1PalletController:
         drop = min(right_drop, left_drop)
         return drop if math.isfinite(drop) else None
 
-    def _make_place_pose_target(
+    def _make_posture_target(
         self,
         state: MeasuredRobotState,
         *,
         loaded_target: CartesianArmTarget,
         descent_plan: PlacementDescentPlan,
         place_pose: PlacePose,
+        mode: ArmStreamMode = ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING,
+        duration_s: float | None = None,
     ) -> CartesianArmTarget:
         """Command the demonstrated placement posture as Cartesian EEF targets.
 
@@ -2572,7 +2605,11 @@ class RBY1PalletController:
             np.linalg.norm(left_base[:3, 3] - state.T_base_left_eef[:3, 3])
         )
         travel = max(right_travel, left_travel)
-        duration = self.config.placement_place_pose_duration_s
+        duration = (
+            self.config.placement_place_pose_duration_s
+            if duration_s is None
+            else _positive(duration_s, "duration_s")
+        )
         # Pace the move so it spans the requested duration, but never exceed the
         # reviewed placement ceiling.
         linear_limit = min(
@@ -2601,7 +2638,7 @@ class RBY1PalletController:
             place_pose.left_arm_rad, 7, "place_pose_left_arm_rad"
         )
         return CartesianArmTarget(
-            mode=ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING,
+            mode=mode,
             right_T_torso_eef=T_torso_base @ right_base,
             left_T_torso_eef=T_torso_base @ left_base,
             right_T_base_eef=right_base,
@@ -2718,12 +2755,26 @@ class RBY1PalletController:
                 "cartesian release requires the frozen descent plan that started "
                 "the placement"
             )
-        target = self._make_release_target_from_plan(
-            state,
-            lowering_target=lowering_target,
-            descent_plan=descent_plan,
-            release_spread_m=spread,
-        )
+        if self.config.retreat_pose is not None:
+            # The hands retreat to a demonstrated posture instead of opening
+            # outward.  Same conversion as the placement posture: forward
+            # kinematics of the joint target, issued as a Cartesian EEF pose,
+            # because the arms are bound to Cartesian impedance.
+            target = self._make_posture_target(
+                state,
+                loaded_target=lowering_target,
+                descent_plan=descent_plan,
+                place_pose=self.config.retreat_pose,
+                mode=ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE,
+                duration_s=self.config.placement_retreat_pose_duration_s,
+            )
+        else:
+            target = self._make_release_target_from_plan(
+                state,
+                lowering_target=lowering_target,
+                descent_plan=descent_plan,
+                release_spread_m=spread,
+            )
         with self._condition:
             self._require_cartesian_continuation_locked()
             if self._cartesian_arm_target is not lowering_target:
