@@ -26,10 +26,10 @@ from typing import Any, Callable, Mapping, Protocol, TextIO
 
 import numpy as np
 
-from .angles import normalize_line_angle_rad
-from .models import CameraIntrinsics
-from .mobile_servo import VelocityCommand
-from .output import to_jsonable
+from parcel_pose_common.angles import normalize_line_angle_rad
+from parcel_pose_common.models import CameraIntrinsics
+from parcel_pose_common.mobile_servo import VelocityCommand
+from parcel_pose_common.output import to_jsonable
 from .pallet_acquisition import (
     AcquisitionConfig,
     AcquisitionDecision,
@@ -69,9 +69,9 @@ from .pallet_servo import (
     PalletSlot1Servo,
     WheelMotionMeasurement,
 )
-from .realsense_adapter import D435StreamConfig, RealSenseAdapter
-from .transforms import compose_base_from_depth, invert_transform, transform_points
-from .visualization import project_points_to_pixels
+from parcel_pose_common.realsense_adapter import D435StreamConfig, RealSenseAdapter
+from parcel_pose_common.transforms import compose_base_from_depth, invert_transform, transform_points
+from parcel_pose_common.visualization import project_points_to_pixels
 
 
 _MAX_LIVE_CONTROL_RESULT_AGE_S = 0.15

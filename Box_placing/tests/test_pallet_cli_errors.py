@@ -7,8 +7,8 @@ import pathlib
 
 import pytest
 
-from parcel_pose import pallet_cli
-from parcel_pose.pallet_control import CombinedStreamError
+from parcel_pose_placing import pallet_cli
+from parcel_pose_placing.pallet_control import CombinedStreamError
 
 
 ARGV = ["replay", "--session", "nonexistent-session", "--no-default-artifacts"]
@@ -22,7 +22,7 @@ def test_control_fault_exits_with_its_own_code(
         raise CombinedStreamError("This command stream is expired")
 
     monkeypatch.setattr(
-        "parcel_pose.pallet_evaluation.evaluate_pallet_session", explode
+        "parcel_pose_placing.pallet_evaluation.evaluate_pallet_session", explode
     )
     assert pallet_cli.main(ARGV) == 3
     captured = capsys.readouterr()
@@ -39,7 +39,7 @@ def test_plain_value_errors_remain_usage_errors(
         raise ValueError("bad session layout")
 
     monkeypatch.setattr(
-        "parcel_pose.pallet_evaluation.evaluate_pallet_session", explode
+        "parcel_pose_placing.pallet_evaluation.evaluate_pallet_session", explode
     )
     with pytest.raises(SystemExit) as excinfo:
         pallet_cli.main(ARGV)
@@ -53,7 +53,7 @@ def test_keyboard_interrupt_keeps_its_conventional_code(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(
-        "parcel_pose.pallet_evaluation.evaluate_pallet_session", explode
+        "parcel_pose_placing.pallet_evaluation.evaluate_pallet_session", explode
     )
     assert pallet_cli.main(ARGV) == 130
 
@@ -71,7 +71,7 @@ def test_existing_telemetry_is_refused_before_any_robot_contact(tmp_path) -> Non
 
     import json
 
-    from parcel_pose import pallet_runtime
+    from parcel_pose_placing import pallet_runtime
 
     config = json.loads(
         (
@@ -109,7 +109,7 @@ def test_existing_telemetry_is_refused_before_any_robot_contact(tmp_path) -> Non
 
 
 def test_existing_overlay_video_is_refused_too(tmp_path) -> None:
-    from parcel_pose.pallet_runtime import _preflight_output_paths
+    from parcel_pose_placing.pallet_runtime import _preflight_output_paths
 
     video = tmp_path / "overlay.mp4"
     video.write_bytes(b"")
@@ -118,7 +118,7 @@ def test_existing_overlay_video_is_refused_too(tmp_path) -> None:
 
 
 def test_preflight_creates_the_artifact_directory_and_leaves_no_probe(tmp_path) -> None:
-    from parcel_pose.pallet_runtime import _preflight_output_paths
+    from parcel_pose_placing.pallet_runtime import _preflight_output_paths
 
     target = tmp_path / "nested" / "out" / "live.jsonl"
     _preflight_output_paths(target, None)
@@ -133,7 +133,7 @@ def test_preflight_creates_the_artifact_directory_and_leaves_no_probe(tmp_path) 
 def test_correction_limit_fault_reports_the_measured_error() -> None:
     """A bare reason cannot tell a far-parked base from a misidentified feature."""
 
-    from parcel_pose.pallet_servo import (
+    from parcel_pose_placing.pallet_servo import (
         PalletServoConfig,
         PalletServoObservation,
         PalletServoState,
@@ -172,7 +172,7 @@ def test_correction_limit_fault_reports_the_measured_error() -> None:
 def test_correction_ceiling_can_be_disabled_and_the_servo_drives_from_far() -> None:
     """With the ceiling disabled the base tracks a distant hole estimate."""
 
-    from parcel_pose.pallet_servo import (
+    from parcel_pose_placing.pallet_servo import (
         PalletServoConfig,
         PalletServoObservation,
         PalletServoState,
@@ -210,7 +210,7 @@ def test_correction_ceiling_can_be_disabled_and_the_servo_drives_from_far() -> N
 def test_the_shipped_slot1_config_disables_the_correction_ceiling() -> None:
     import json
 
-    from parcel_pose.pallet_servo import PalletServoConfig
+    from parcel_pose_placing.pallet_servo import PalletServoConfig
 
     root = json.loads(
         (
@@ -225,7 +225,7 @@ def test_the_shipped_slot1_config_disables_the_correction_ceiling() -> None:
 def test_the_correction_ceiling_cannot_be_widened_instead_of_disabled() -> None:
     """Silently raising the ceiling would hide a misread feature; null is explicit."""
 
-    from parcel_pose.pallet_servo import PalletServoConfig
+    from parcel_pose_placing.pallet_servo import PalletServoConfig
 
     with pytest.raises(ValueError, match="use null to disable"):
         PalletServoConfig(max_correction_m=0.60)

@@ -16,14 +16,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from parcel_pose.pallet_control import (
+from parcel_pose_placing.pallet_control import (
     CombinedStreamError,
     ArmStreamMode,
     ControllerPhase,
     PalletControlConfig,
     RBY1PalletController,
 )
-from parcel_pose.pallet_place import PlacementConfig
+from parcel_pose_placing.pallet_place import PlacementConfig
 
 from _fake_rby1 import FakeRobot, FakeSdk
 from _factories import descent_plan
@@ -201,7 +201,7 @@ def test_base_velocity_reaches_the_stream_without_disturbing_the_arms(
 
         # Grip evidence is required before any nonzero mobility, so assert the
         # gate first and then bypass it the way the runtime does.
-        from parcel_pose.pallet_control import CombinedStreamError, MobilityCommand
+        from parcel_pose_placing.pallet_control import CombinedStreamError, MobilityCommand
 
         with pytest.raises(CombinedStreamError, match="grip/clearance evidence"):
             controller.send_cycle(MobilityCommand(0.02, 0.0, 0.0))
@@ -223,7 +223,7 @@ def test_base_velocity_reaches_the_stream_without_disturbing_the_arms(
 
 
 def _passing_grip_result(controller: RBY1PalletController):
-    from parcel_pose.pallet_control import GripContinuityResult
+    from parcel_pose_placing.pallet_control import GripContinuityResult
 
     return GripContinuityResult(
         passed=True,
@@ -323,7 +323,7 @@ def test_lowering_moves_to_the_place_pose_not_by_a_base_z_delta(root_config) -> 
 def test_gap_above_the_release_limit_is_refused(root_config) -> None:
     """The 190.6 mm gap recorded in place_10 must not produce a plan."""
 
-    from parcel_pose.pallet_place import PlacementState, Slot1PlacementSequencer
+    from parcel_pose_placing.pallet_place import PlacementState, Slot1PlacementSequencer
 
     from _factories import placement_input
 
@@ -350,7 +350,7 @@ def test_gap_above_the_release_limit_is_refused(root_config) -> None:
 def test_measured_gap_from_place_07_is_admissible(root_config) -> None:
     """159 mm, the gap the physical run reported, must pass and give zero descent."""
 
-    from parcel_pose.pallet_place import PlacementState, Slot1PlacementSequencer
+    from parcel_pose_placing.pallet_place import PlacementState, Slot1PlacementSequencer
 
     from _factories import placement_input
 
@@ -437,8 +437,8 @@ def test_ray_grid_is_cached_across_measured_transform_changes() -> None:
     on the development host.  Only the pixel-ray grid may be cached.
     """
 
-    from parcel_pose.models import CameraIntrinsics
-    from parcel_pose.pallet_geometry import PalletStackEstimator
+    from parcel_pose_common.models import CameraIntrinsics
+    from parcel_pose_placing.pallet_geometry import PalletStackEstimator
 
     estimator = PalletStackEstimator()
     intrinsics = CameraIntrinsics(
@@ -468,8 +468,8 @@ def test_ray_grid_is_cached_across_measured_transform_changes() -> None:
 def test_strided_ray_grid_matches_a_full_resolution_grid_bit_for_bit() -> None:
     """Striding after the combine and combining after the stride must agree."""
 
-    from parcel_pose.models import CameraIntrinsics
-    from parcel_pose.pallet_geometry import PalletStackEstimator
+    from parcel_pose_common.models import CameraIntrinsics
+    from parcel_pose_placing.pallet_geometry import PalletStackEstimator
 
     intrinsics = CameraIntrinsics(
         width=640, height=480, fx=381.5, fy=381.5, cx=319.5, cy=239.5
@@ -499,7 +499,7 @@ def test_strided_ray_grid_matches_a_full_resolution_grid_bit_for_bit() -> None:
 def test_place_pose_is_commanded_as_cartesian_targets(root_config) -> None:
     """The arms are bound to Cartesian impedance, so a joint posture must be FK'd."""
 
-    from parcel_pose.pallet_control import PalletControlConfig
+    from parcel_pose_placing.pallet_control import PalletControlConfig
 
     config = PalletControlConfig.from_root_config(root_config)
     assert config.place_pose is not None, "the shipped config demonstrates a posture"
@@ -554,7 +554,7 @@ def test_place_pose_travel_is_paced_over_the_configured_duration(root_config) ->
 
 
 def test_place_pose_plan_rejects_a_base_z_descent(root_config) -> None:
-    from parcel_pose.pallet_place import PlacementDescentPlan
+    from parcel_pose_placing.pallet_place import PlacementDescentPlan
 
     plan, _delta = placement_plan(root_config)
     fields = {
@@ -613,7 +613,7 @@ def test_retreat_is_paced_over_its_configured_duration(root_config) -> None:
 
 
 def test_a_retreat_posture_requires_a_place_posture() -> None:
-    from parcel_pose.pallet_control import PalletControlConfig, PlacePose
+    from parcel_pose_placing.pallet_control import PalletControlConfig, PlacePose
 
     pose = PlacePose(
         torso_rad=(0.0,) * 6, right_arm_rad=(0.0,) * 7, left_arm_rad=(0.0,) * 7
@@ -679,7 +679,7 @@ def test_a_one_shot_that_never_reports_fails_closed(root_config) -> None:
 
 
 def test_the_one_shot_timeout_covers_the_longest_posture(root_config) -> None:
-    from parcel_pose.pallet_control import PalletControlConfig
+    from parcel_pose_placing.pallet_control import PalletControlConfig
 
     config = PalletControlConfig.from_root_config(root_config)
     assert config.arm_send_once_timeout_s >= max(

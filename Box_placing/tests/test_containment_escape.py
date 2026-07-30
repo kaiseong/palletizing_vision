@@ -6,7 +6,7 @@ import itertools
 
 import pytest
 
-from parcel_pose.pallet_runtime import ActuationContainmentState
+from parcel_pose_placing.pallet_runtime import ActuationContainmentState
 
 
 class FakeTelemetry:
@@ -89,7 +89,7 @@ def test_escape_deadline_only_fires_for_unrecoverable_holds() -> None:
 def test_unrecoverable_containment_returns_within_the_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("parcel_pose.pallet_runtime.time.sleep", lambda _s: None)
+    monkeypatch.setattr("parcel_pose_placing.pallet_runtime.time.sleep", lambda _s: None)
     controller = ExpiredStreamController()
     state = containment(controller, timeout_s=1.0, step_s=0.4)
     # Would otherwise loop forever: no successor can ever acknowledge.

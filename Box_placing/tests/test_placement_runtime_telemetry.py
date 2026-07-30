@@ -6,10 +6,10 @@ import json
 
 import pytest
 
-from parcel_pose.pallet_control import ArmStreamMode
+from parcel_pose_placing.pallet_control import ArmStreamMode
 
-from parcel_pose.pallet_place import PlacementRequest, PlacementState
-from parcel_pose.pallet_runtime import (
+from parcel_pose_placing.pallet_place import PlacementRequest, PlacementState
+from parcel_pose_placing.pallet_runtime import (
     _dispatch_placement_fault_hold_if_needed,
     _placement_telemetry_payload,
 )
@@ -46,7 +46,7 @@ def _flat_fk(position, velocity):
 def retreat_config():
     """A controller config that demonstrates both placement postures."""
 
-    from parcel_pose.pallet_control import PalletControlConfig, PlacePose, ReadyPose
+    from parcel_pose_placing.pallet_control import PalletControlConfig, PlacePose, ReadyPose
 
     ready = ReadyPose()
     place = PlacePose(
@@ -74,7 +74,7 @@ def release_target(controller, spread: float = 0.030):
         descent_plan=plan,
         requested_squeeze_offset_m=None,
     )
-    from parcel_pose.pallet_control import ArmStreamMode
+    from parcel_pose_placing.pallet_control import ArmStreamMode
 
     target = controller._make_posture_target(
         state,

@@ -16,7 +16,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from .models import Plane
+from parcel_pose_common.models import Plane
 
 
 FloatArray = NDArray[np.float64]

@@ -75,7 +75,7 @@ are intentionally not used as final slot-pose sources.
   current-geometry motion predicate.
 - Put fallback logic inside the fine servo: weakens the authority boundary and
   permits two incompatible observability models to share one controller.
-- Reuse the upstream marker pose inside Codex: that camera/algorithm is owned
+- Reuse the upstream marker pose inside the Box_placing package: that camera/algorithm is owned
   by another stage and is not observable at the close placement viewpoint.
 - Release the upstream stream before destination adoption: leaves the carried
   box unsupported by a proven controller during an unbounded software gap.

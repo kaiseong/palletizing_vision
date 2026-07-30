@@ -282,10 +282,10 @@ vy = 0.7  x  y 오차  -  (관측점 x) x wz</pre>
 <h2>10. 코드 위치</h2>
 <table>
 <tr><th width="42%">역할</th><th>파일</th></tr>
-<tr><td>오차 → 속도 계산, 도착 판정</td><td><code>src/parcel_pose/pallet_servo.py</code></td></tr>
-<tr><td>관측 소스 선택, 기준점 결합</td><td><code>src/parcel_pose/pallet_runtime.py</code> (<code>_servo_measurement</code>)</td></tr>
-<tr><td>적층 평면·홀·L코너 인식</td><td><code>src/parcel_pose/pallet_geometry.py</code></td></tr>
-<tr><td>전진 획득 권한 관리</td><td><code>src/parcel_pose/pallet_acquisition.py</code></td></tr>
+<tr><td>오차 → 속도 계산, 도착 판정</td><td><code>src/parcel_pose_placing/pallet_servo.py</code></td></tr>
+<tr><td>관측 소스 선택, 기준점 결합</td><td><code>src/parcel_pose_placing/pallet_runtime.py</code> (<code>_servo_measurement</code>)</td></tr>
+<tr><td>적층 평면·홀·L코너 인식</td><td><code>src/parcel_pose_placing/pallet_geometry.py</code></td></tr>
+<tr><td>전진 획득 권한 관리</td><td><code>src/parcel_pose_placing/pallet_acquisition.py</code></td></tr>
 <tr><td>기준점과 모든 수치</td><td><code>configs/rby1m_v1_2_pallet_slot1_nominal.json</code></td></tr>
 </table>
 

@@ -31,9 +31,11 @@ def _reexec_active_conda_python() -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     if argv is None:
         _reexec_active_conda_python()
-    source_root = PROJECT_ROOT / "src"
-    sys.path.insert(0, str(source_root))
-    from parcel_pose.pallet_cli import main as pallet_main
+    for source_root in (PROJECT_ROOT.parent / "Common" / "src", PROJECT_ROOT / "src"):
+        source_entry = str(source_root)
+        if source_entry not in sys.path:
+            sys.path.insert(0, source_entry)
+    from parcel_pose_placing.pallet_cli import main as pallet_main
 
     return int(pallet_main(sys.argv[1:] if argv is None else list(argv)))
 

@@ -9,7 +9,7 @@ import pathlib
 import numpy as np
 import pytest
 
-from parcel_pose.pallet_control import (
+from parcel_pose_placing.pallet_control import (
     READY_LEFT_ARM_RAD,
     READY_RIGHT_ARM_RAD,
     PalletControlConfig,

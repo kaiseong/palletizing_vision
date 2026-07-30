@@ -83,12 +83,12 @@ Release the carton at the aligned pose by opening both hands along base Y only.
 
 ## Verification
 
-- `Codex/tests/` was reintroduced (no tests were tracked in git before this
+- `Box_placing/tests/` was reintroduced (no tests were tracked in git before this
   change) with 66 hardware-free tests covering the placement sequencer, the
   descent-plan invariants, the release geometry, the release axis, the config
   schema, the runtime telemetry, containment escape, and the CLI error split.
 - `ruff check`, `python -m compileall`, and
-  `pallet.py replay` on `pallet_slot1` and `pallet_demo` all pass.
+  `pallet replay` on `pallet_slot1` and `pallet_demo` all pass.
 
 ## Commissioning addendum — 2026-07-30
 

@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from .models import CameraIntrinsics, Plane
+from parcel_pose_common.models import CameraIntrinsics, Plane
 from .pallet_models import (
     BoundaryLineEvidence,
     HeldBoxHint,
@@ -26,7 +26,7 @@ from .pallet_models import (
     PalletSceneObservation,
     StackObservation,
 )
-from .transforms import validate_transform
+from parcel_pose_common.transforms import validate_transform
 
 
 FloatArray = NDArray[np.float64]

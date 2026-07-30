@@ -24,8 +24,8 @@ from typing import Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from .angles import line_angle_difference_rad, normalize_line_angle_rad
-from .mobile_servo import (
+from parcel_pose_common.angles import line_angle_difference_rad, normalize_line_angle_rad
+from parcel_pose_common.mobile_servo import (
     MAX_ALLOWED_ANGULAR_SPEED_RADPS,
     MAX_ALLOWED_LINEAR_SPEED_MPS,
     VelocityCommand,

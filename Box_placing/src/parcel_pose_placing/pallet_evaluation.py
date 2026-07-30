@@ -13,8 +13,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from .calibration import factory_extrinsics_to_transform
-from .output import to_jsonable
+from parcel_pose_common.calibration import factory_extrinsics_to_transform
+from parcel_pose_common.output import to_jsonable
 from .pallet_acquisition import (
     AcquisitionConfig,
     HoleGateStatus,
@@ -32,9 +32,9 @@ from .pallet_models import (
     load_slot1_hole_reference,
 )
 from .pallet_visualization import draw_pallet_overlay
-from .recording import SessionReader
-from .session import SessionMetadata
-from .transforms import transform_from_euler_zyx, validate_transform
+from parcel_pose_common.recording import SessionReader
+from parcel_pose_common.session import SessionMetadata
+from parcel_pose_common.transforms import transform_from_euler_zyx, validate_transform
 
 
 FloatArray = NDArray[np.float64]
@@ -542,8 +542,13 @@ def evaluate_pallet_session(
     output_config_snapshot: str | Path | None = None,
     overwrite: bool = False,
     max_frames: int | None = None,
+    overlay_text_panel: bool = True,
 ) -> dict[str, Any]:
-    """Replay one RGB-D recording without connecting to the robot."""
+    """Replay one RGB-D recording without connecting to the robot.
+
+    ``overlay_text_panel=False`` renders geometry only, with no HUD text, for
+    review footage where the drawn planes and axes are the subject.
+    """
 
     if max_frames is not None and int(max_frames) <= 0:
         raise ValueError("max_frames must be positive")
@@ -741,6 +746,7 @@ def evaluate_pallet_session(
                     hole_gate=hole_status,
                     acquisition_audit=acquisition_audit,
                     slot1_hole_reference=slot1_hole_reference,
+                    show_text_panel=overlay_text_panel,
                 )
                 writer.write(overlay)
     finally:

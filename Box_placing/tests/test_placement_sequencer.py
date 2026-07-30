@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from parcel_pose.pallet_place import (
+from parcel_pose_placing.pallet_place import (
     LOADED_HOLD_MODE,
     LOWERING_MODE,
     RELEASE_MODE,
@@ -216,7 +216,7 @@ def test_stale_measured_state_faults_immediately() -> None:
 
 
 def test_release_mode_strings_match_the_controller_enum() -> None:
-    from parcel_pose.pallet_control import ArmStreamMode
+    from parcel_pose_placing.pallet_control import ArmStreamMode
 
     assert LOADED_HOLD_MODE == ArmStreamMode.CARTESIAN_LOADED_HOLD.value
     assert LOWERING_MODE == ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING.value

@@ -8,15 +8,15 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from .models import CameraIntrinsics
+from parcel_pose_common.models import CameraIntrinsics
 from .pallet_acquisition import HoleGateStatus, LCornerGateStatus
 from .pallet_models import (
     PalletFrameEvidence,
     PalletSceneObservation,
     Slot1HoleReference,
 )
-from .transforms import invert_transform, transform_points, validate_transform
-from .visualization import project_points_to_pixels
+from parcel_pose_common.transforms import invert_transform, transform_points, validate_transform
+from parcel_pose_common.visualization import project_points_to_pixels
 
 
 ImageArray = NDArray[np.uint8]
@@ -156,10 +156,13 @@ def draw_pallet_overlay(
     frame_id: int | None = None,
     state: str | None = None,
     latency_ms: float | None = None,
+    # Accepted for call-site compatibility; the gate and audit detail lives in
+    # telemetry.jsonl rather than on the picture.
     l_corner_gate: LCornerGateStatus | Mapping[str, Any] | None = None,
     hole_gate: HoleGateStatus | Mapping[str, Any] | None = None,
     acquisition_audit: Mapping[str, Any] | None = None,
     slot1_hole_reference: Slot1HoleReference | None = None,
+    show_text_panel: bool = True,
 ) -> ImageArray:
     """Draw selected stack plane, inner rims, axes, and slot-1 target.
 
@@ -421,12 +424,12 @@ def draw_pallet_overlay(
     )
     branch = stack.axis_branch or (None if coarse is None else coarse.topology_branch)
     source = getattr(stack, "stack_se2_source", None) or "--"
+    # The HUD stays operational: calibration status, rejection reasons, latency
+    # and the offline acquisition audit are all recorded per frame in
+    # telemetry.jsonl, so keeping them on the picture only crowded it.
     lines = [
         f"PALLET SLOT1 {status}{frame_text}{state_text}",
-        (
-            f"registration: {stack.calibration_status}  "
-            f"branch={branch or '--'} source={source}"
-        ),
+        f"branch={branch or '--'} source={source}",
     ]
     if stack.center_base is not None and stack.slot1_target_base is not None:
         center = stack.center_base
@@ -521,44 +524,9 @@ def draw_pallet_overlay(
             f"orthogonality={orthogonality:.1f} deg"
         )
     if latency_ms is not None:
-        lines.append(f"latency={float(latency_ms):.1f} ms  NO GT: repeatability only")
-    else:
-        lines.append("NO GT: repeatability only")
-    if stack.rejection_reasons:
-        lines.append("reason: " + ", ".join(stack.rejection_reasons[:3]))
-    if acquisition_audit is not None:
-        phase = str(acquisition_audit.get("phase", "--"))
-        if bool(acquisition_audit.get("in_fixed_review_interval", False)):
-            lines.append(
-                "OFFLINE AUDIT stationary=ASSUMED "
-                f"phase={phase} odometry=UNAVAILABLE"
-            )
-            lines.append(
-                "L gate "
-                f"{int(_field(l_corner_gate, 'stationary_frames', 0))}/5 "
-                f"stable={bool(_field(l_corner_gate, 'stable', False))} "
-                "metric_proxy="
-                f"{bool(_field(l_corner_gate, 'metric_proxy_stable', False))} "
-                "hole_dwell="
-                f"{bool(_field(hole_gate, 'dwell_complete', False))}"
-            )
-            lines.append(
-                "motion=BLOCKED cmd(vx,vy,wz)=(0,0,0) "
-                "would_request proxy/forward="
-                f"{bool(acquisition_audit.get('would_request_metric_proxy_handoff', False))}/"
-                f"{bool(acquisition_audit.get('would_request_forward_step_from_geometry_only', False))}"
-            )
-        else:
-            lines.append(
-                "OFFLINE AUDIT outside L frames 72..105; "
-                "hole_dwell="
-                f"{bool(_field(hole_gate, 'dwell_complete', False))} motion=BLOCKED"
-            )
-    _draw_text_panel(
-        output,
-        lines,
-        warning=(not stack.valid or stack.calibration_status != "validated"),
-    )
+        lines.append(f"latency={float(latency_ms):.1f} ms")
+    if show_text_panel:
+        _draw_text_panel(output, lines, warning=not stack.valid)
     return output
 
 

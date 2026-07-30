@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from parcel_pose.pallet_control import PalletControlConfig
-from parcel_pose.pallet_place import PlacementConfig
+from parcel_pose_placing.pallet_control import PalletControlConfig
+from parcel_pose_placing.pallet_place import PlacementConfig
 
 
 CONFIG_PATH = (

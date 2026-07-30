@@ -12,13 +12,13 @@ from typing import Any
 
 import numpy as np
 
-from parcel_pose.pallet_control import (
+from parcel_pose_placing.pallet_control import (
     ArmStreamMode,
     MeasuredRobotState,
     PalletControlConfig,
     RBY1PalletController,
 )
-from parcel_pose.pallet_place import (
+from parcel_pose_placing.pallet_place import (
     READY_HOLD_MODE,
     PlacementConfig,
     PlacementDescentPlan,

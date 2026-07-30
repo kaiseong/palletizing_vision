@@ -10,7 +10,7 @@ import sys
 import traceback
 from typing import Any, Sequence
 
-from .output import dumps_strict
+from parcel_pose_common.output import dumps_strict
 
 
 def _default_config_path() -> Path:
@@ -114,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay.add_argument("--max-frames", type=int)
     replay.add_argument("--overwrite", action="store_true")
+    replay.add_argument(
+        "--no-overlay-text",
+        action="store_true",
+        help="render geometry only, with no HUD text, for review footage",
+    )
     replay.set_defaults(handler=_run_replay)
 
     evaluate = subparsers.add_parser(
@@ -246,6 +251,7 @@ def _run_replay(args: argparse.Namespace) -> int:
         output_config_snapshot=output_config_snapshot,
         overwrite=bool(args.overwrite),
         max_frames=args.max_frames,
+        overlay_text_panel=not bool(args.no_overlay_text),
     )
     print(dumps_strict(summary, indent=2))
     return 0
