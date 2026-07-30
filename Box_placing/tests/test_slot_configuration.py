@@ -114,3 +114,30 @@ def test_running_an_undeclared_slot_lists_the_declared_ones() -> None:
 
     with pytest.raises(ValueError, match="declared slots are 1, 2, 5, 6"):
         run_pallet_live(root_config(), slot=3)
+
+
+def test_the_refusal_tells_you_what_to_put_where() -> None:
+    """The error is the discovery mechanism for adding a slot."""
+
+    from parcel_pose_placing.pallet_models import SLOT_MEMBER_SHAPES
+
+    root = root_config()
+    members = sorted(root["pallet"]["slots"]["1"])
+    assert sorted(SLOT_MEMBER_SHAPES) == members, "every member needs a shape hint"
+
+    for member in members:
+        with pytest.raises(ValueError) as caught:
+            require_slot_member(root, 5, member)
+        message = str(caught.value)
+        assert f"pallet.slots.5.{member}" in message, message
+        assert SLOT_MEMBER_SHAPES[member] in message, message
+
+
+def test_the_posture_units_are_stated_in_the_hint() -> None:
+    """rad versus deg is the mistake this hint exists to prevent."""
+
+    from parcel_pose_placing.pallet_models import SLOT_MEMBER_SHAPES
+
+    assert "RADIANS" in SLOT_MEMBER_SHAPES["ready_pose_rad"]
+    assert "DEGREES" in SLOT_MEMBER_SHAPES["place_pose_deg"]
+    assert "DEGREES" in SLOT_MEMBER_SHAPES["retreat_pose_deg"]

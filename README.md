@@ -56,6 +56,35 @@ python box_pallet.py live --headless --execute --slot 1
 fixed_ready_geometry_only_commissioning_enabled`, `placement.enabled`,
 `placement.vision_geometry_release_enabled`가 켜져 있어야 `--execute`가 통과합니다.
 
+### 슬롯 추가하기
+
+`Box_placing/configs/placing_config.json`의 `pallet.slots`가 슬롯별 시연값을
+담는 **유일한 위치**입니다. 슬롯 1만 채워져 있고 2·5·6은 전 항목 `null`입니다.
+
+슬롯 하나에 필요한 값은 여섯 개입니다.
+
+| 키 | 내용 | 단위 |
+|---|---|---|
+| `hole_reference` | 시연한 중앙 홀 중심·yaw·표준편차 | m, deg |
+| `offset_right_far_m` | 팔레트 코너 기준 개구부 오프셋 | m |
+| `long_axis` | 긴 변이 놓인 이미지 축 (`u_right` / `v_far`) | — |
+| `ready_pose_rad` | 적재 준비 자세 (torso 6, 양팔 7, head 2) | **rad** |
+| `place_pose_deg` | 박스를 앉히는 자세 (torso 6, 양팔 7) | **deg** |
+| `retreat_pose_deg` | 손을 빼는 자세 (torso 6, 양팔 7) | **deg** |
+
+값을 채우지 않은 슬롯을 지정하면 로봇에 닿기 전에 거부되고, 메시지가 **무엇을
+어디에 어떤 형태로** 넣어야 하는지 알려줍니다.
+
+```
+$ python box_pallet.py live --headless --execute --slot 5
+pallet: error: slot 5 has no demonstrated hole_reference; set
+pallet.slots.5.hole_reference in the placing config to the demonstrated centre
+hole, {"center_base_xy_m": [x, y], "yaw_base_deg": deg, ...}
+```
+
+준비 자세만 예외로 코드 상수(`READY_*_RAD`)와 설정 두 곳이 일치해야 합니다.
+승인되지 않은 자세가 로봇에 가는 것을 막는 이중 잠금입니다.
+
 ## Recording
 
 새 RGB-D 데이터 수집은 공통 recorder를 사용합니다.

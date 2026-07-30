@@ -1051,18 +1051,51 @@ def slot_config(root_config: Mapping[str, Any], slot: int) -> Mapping[str, Any]:
     return block
 
 
+# What each per-slot member has to contain, so the refusal can say it rather than
+# leaving the next person to reverse-engineer the shape from a null in the JSON.
+SLOT_MEMBER_SHAPES: dict[str, str] = {
+    "hole_reference": (
+        "the demonstrated centre hole, "
+        '{"center_base_xy_m": [x, y], "yaw_base_deg": deg, '
+        '"axis_branch": "image_right", "center_std_xy_m": [sx, sy], '
+        '"yaw_std_deg": s, "calibration_status": "..."}'
+    ),
+    "offset_right_far_m": "the opening offset from the pallet corner, [right_m, far_m]",
+    "long_axis": 'which image axis the long side runs along, "u_right" or "v_far"',
+    "ready_pose_rad": (
+        "the loading posture in RADIANS, "
+        '{"torso": [6], "right_arm": [7], "left_arm": [7], "head": [2]}'
+    ),
+    "place_pose_deg": (
+        "the posture that seats the carton, in DEGREES, "
+        '{"torso": [6], "right_arm": [7], "left_arm": [7]}'
+    ),
+    "retreat_pose_deg": (
+        "the posture the hands withdraw to, in DEGREES, "
+        '{"torso": [6], "right_arm": [7], "left_arm": [7]}'
+    ),
+}
+
+
 def require_slot_member(
     root_config: Mapping[str, Any],
     slot: int,
     member: str,
 ) -> Any:
-    """One demonstrated member of a slot, or a refusal naming what is missing."""
+    """One demonstrated member of a slot, or a refusal naming what is missing.
+
+    The refusal is the discovery mechanism: it names the slot, the member, the JSON
+    path to edit and the shape to put there, so nobody has to read this file to
+    find out how to add a slot.
+    """
 
     value = slot_config(root_config, slot).get(member)
     if value is None:
+        shape = SLOT_MEMBER_SHAPES.get(member, "an operator demonstration")
         raise ValueError(
             f"slot {int(slot)} has no demonstrated {member}; "
-            f"set pallet.slots.{int(slot)}.{member} from an operator demonstration"
+            f"set pallet.slots.{int(slot)}.{member} in the placing config to "
+            f"{shape}"
         )
     return value
 
