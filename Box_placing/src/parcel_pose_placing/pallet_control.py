@@ -202,6 +202,30 @@ class ReadyPose:
         )
 
 
+def _slot_postures(
+    root: Mapping[str, Any],
+    slot: int | None,
+) -> Mapping[str, Any]:
+    """Per-slot posture block, empty when the config predates ``pallet.slots``."""
+
+    pallet_raw = root.get("pallet", {})
+    if not isinstance(pallet_raw, Mapping):
+        return {}
+    slots = pallet_raw.get("slots")
+    if not isinstance(slots, Mapping):
+        return {}
+    key = str(int(pallet_raw.get("default_slot", 1) if slot is None else slot))
+    if key not in slots:
+        raise ValueError(
+            f"pallet.slots has no slot {key}; declared slots are "
+            + ", ".join(sorted(slots, key=lambda value: int(value)))
+        )
+    block = slots[key]
+    if not isinstance(block, Mapping):
+        raise ValueError(f"pallet.slots.{key} must be an object")
+    return block
+
+
 @dataclass(frozen=True, slots=True)
 class PlacePose:
     """Operator-demonstrated joint posture that lowers the carried carton.
@@ -334,12 +358,19 @@ class PalletControlConfig:
         cls,
         root: Mapping[str, Any],
         address_override: str | None = None,
+        slot: int | None = None,
     ) -> "PalletControlConfig":
-        """Build from the repository pallet JSON while preserving hard gates."""
+        """Build from the repository pallet JSON while preserving hard gates.
+
+        The placement and retreat postures are demonstrated per slot, so they are
+        read from ``pallet.slots.<slot>``.  ``slot`` defaults to
+        ``pallet.default_slot``.
+        """
 
         if not isinstance(root, Mapping):
             raise TypeError("root pallet config must be a mapping")
         defaults = cls()
+        slot_block = _slot_postures(root, slot)
 
         def section(name: str) -> Mapping[str, Any]:
             value = root.get(name, {})
@@ -571,8 +602,8 @@ class PalletControlConfig:
             ),
             place_pose=(
                 None
-                if placement.get("place_pose_deg") is None
-                else PlacePose.from_degrees(placement["place_pose_deg"])
+                if slot_block.get("place_pose_deg") is None
+                else PlacePose.from_degrees(slot_block["place_pose_deg"])
             ),
             placement_place_pose_duration_s=float(
                 placement.get(
@@ -582,8 +613,8 @@ class PalletControlConfig:
             ),
             retreat_pose=(
                 None
-                if placement.get("retreat_pose_deg") is None
-                else PlacePose.from_degrees(placement["retreat_pose_deg"])
+                if slot_block.get("retreat_pose_deg") is None
+                else PlacePose.from_degrees(slot_block["retreat_pose_deg"])
             ),
             placement_retreat_pose_duration_s=float(
                 placement.get(
@@ -2726,7 +2757,7 @@ class RBY1PalletController:
         if self.config.retreat_pose is None:
             raise CombinedStreamError(
                 "cartesian release requires a demonstrated retreat posture; "
-                "placement.retreat_pose_deg is not configured"
+                "the selected slot has no demonstrated retreat_pose_deg"
             )
         state = self._require_cartesian_placement_continuation_state()
         with self._condition:

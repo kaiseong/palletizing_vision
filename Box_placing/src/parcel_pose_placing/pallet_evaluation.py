@@ -566,9 +566,8 @@ def evaluate_pallet_session(
     estimator_config = load_pallet_estimator_config(root_config)
     pallet_block = root.get("pallet", {}) if root else {}
     slot1_hole_reference = (
-        load_slot1_hole_reference(root)
-        if isinstance(pallet_block, Mapping)
-        and "slot1_hole_reference" in pallet_block
+        load_slot1_hole_reference(root, int(pallet_block.get("default_slot", 1)))
+        if isinstance(pallet_block, Mapping) and "slots" in pallet_block
         else None
     )
     acquisition_config = AcquisitionConfig.from_root_config(root)

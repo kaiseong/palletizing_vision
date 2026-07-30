@@ -1001,20 +1001,79 @@ NOMINAL_READY_T_BASE_FROM_HEAD = np.array(
 NOMINAL_READY_T_BASE_FROM_HEAD.setflags(write=False)
 
 
-def load_slot1_hole_reference(
-    root_config: Mapping[str, Any],
-) -> Slot1HoleReference:
-    """Load and validate the demonstrated complete-hole PBVS reference."""
+def _declared_slot_offset(
+    pallet_raw: Mapping[str, Any],
+) -> tuple[float, float] | None:
+    """The default slot's opening offset, when one has been demonstrated."""
+
+    slots = pallet_raw.get("slots")
+    if not isinstance(slots, Mapping):
+        return None
+    key = str(int(pallet_raw.get("default_slot", 1)))
+    block = slots.get(key)
+    if not isinstance(block, Mapping):
+        return None
+    offset = block.get("offset_right_far_m")
+    if offset is None:
+        return None
+    return tuple(float(value) for value in offset)
+
+
+def slot_config(root_config: Mapping[str, Any], slot: int) -> Mapping[str, Any]:
+    """The demonstrated per-slot block, refusing a slot nobody demonstrated yet.
+
+    Slots are declared with null members until an operator demonstrates them, so
+    naming an undemonstrated slot is a configuration error that must surface
+    before the robot is touched rather than as a mid-run fault.
+    """
 
     if not isinstance(root_config, Mapping):
         raise TypeError("root_config must be a mapping")
     pallet_raw = root_config.get("pallet", {})
     if not isinstance(pallet_raw, Mapping):
         raise ValueError("pallet configuration block must be an object")
-    reference_raw = pallet_raw.get("slot1_hole_reference")
+    slots = pallet_raw.get("slots")
+    if not isinstance(slots, Mapping):
+        raise ValueError("pallet.slots must be an object keyed by slot number")
+    key = str(int(slot))
+    if key not in slots:
+        raise ValueError(
+            f"pallet.slots has no slot {key}; declared slots are "
+            + ", ".join(sorted(slots, key=lambda value: int(value)))
+        )
+    block = slots[key]
+    if not isinstance(block, Mapping):
+        raise ValueError(f"pallet.slots.{key} must be an object")
+    return block
+
+
+def require_slot_member(
+    root_config: Mapping[str, Any],
+    slot: int,
+    member: str,
+) -> Any:
+    """One demonstrated member of a slot, or a refusal naming what is missing."""
+
+    value = slot_config(root_config, slot).get(member)
+    if value is None:
+        raise ValueError(
+            f"slot {int(slot)} has no demonstrated {member}; "
+            f"set pallet.slots.{int(slot)}.{member} from an operator demonstration"
+        )
+    return value
+
+
+def load_slot1_hole_reference(
+    root_config: Mapping[str, Any],
+    slot: int = 1,
+) -> Slot1HoleReference:
+    """Load and validate the demonstrated complete-hole PBVS reference."""
+
+    pallet_raw = root_config.get("pallet", {})
+    reference_raw = require_slot_member(root_config, slot, "hole_reference")
     if not isinstance(reference_raw, Mapping):
         raise ValueError(
-            "pallet.slot1_hole_reference must be a demonstrated reference object"
+            f"pallet.slots.{int(slot)}.hole_reference must be a reference object"
         )
     expected_branch = str(pallet_raw.get("axis_branch", "")).strip()
     reference_branch = str(reference_raw.get("axis_branch", "")).strip()
@@ -1022,7 +1081,7 @@ def load_slot1_hole_reference(
         raise ValueError("pallet.axis_branch must not be empty")
     if reference_branch != expected_branch:
         raise ValueError(
-            "pallet.slot1_hole_reference.axis_branch must match pallet.axis_branch"
+            "slot hole_reference.axis_branch must match pallet.axis_branch"
         )
     if "yaw_base_rad" in reference_raw:
         yaw_rad = float(reference_raw["yaw_base_rad"])
@@ -1030,7 +1089,7 @@ def load_slot1_hole_reference(
         yaw_rad = math.radians(float(reference_raw["yaw_base_deg"]))
     else:
         raise ValueError(
-            "pallet.slot1_hole_reference requires yaw_base_rad or yaw_base_deg"
+            "slot hole_reference requires yaw_base_rad or yaw_base_deg"
         )
     if "yaw_std_rad" in reference_raw:
         yaw_std_rad = float(reference_raw["yaw_std_rad"])
@@ -1038,7 +1097,7 @@ def load_slot1_hole_reference(
         yaw_std_rad = math.radians(float(reference_raw["yaw_std_deg"]))
     else:
         raise ValueError(
-            "pallet.slot1_hole_reference requires yaw_std_rad or yaw_std_deg"
+            "slot hole_reference requires yaw_std_rad or yaw_std_deg"
         )
     reference = Slot1HoleReference(
         center_base_xy_m=reference_raw.get("center_base_xy_m", ()),
@@ -1097,7 +1156,10 @@ def load_pallet_estimator_config(
         slot1_offset_m=tuple(
             geometry_raw.get(
                 "slot1_offset_right_far_m",
-                geometry_raw.get("slot1_offset_m", (0.12800, 0.20175)),
+                geometry_raw.get(
+                    "slot1_offset_m",
+                    _declared_slot_offset(pallet_raw) or (0.12800, 0.20175),
+                ),
             )
         ),
     )

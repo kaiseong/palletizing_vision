@@ -186,8 +186,6 @@ class PlacementConfig:
             "alignment_hold_before_place_s",
             "squeeze_offset_m",
             "place_pose_duration_s",
-            "place_pose_deg",
-            "retreat_pose_deg",
             "retreat_pose_duration_s",
             "arm_send_once_timeout_s",
             "joint_stiffness_nm_per_rad",

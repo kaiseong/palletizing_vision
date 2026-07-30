@@ -6,14 +6,48 @@
     "version": "1.2",
     "default_address": "192.168.30.1:50051",
     "ready_pose_rad": {
-      "torso": [0.0, 1.410, -1.514, 0.6295, 0.0, 0.0],
-      "right_arm": [-1.120, -0.383, -0.048, -1.066, -0.824, 1.109, 0.157],
-      "left_arm": [-1.120, 0.383, 0.048, -1.066, 0.824, 1.109, -0.157],
-      "head": [0.0, 0.870]
+      "torso": [
+        0.0,
+        1.41,
+        -1.514,
+        0.6295,
+        0.0,
+        0.0
+      ],
+      "right_arm": [
+        -1.12,
+        -0.383,
+        -0.048,
+        -1.066,
+        -0.824,
+        1.109,
+        0.157
+      ],
+      "left_arm": [
+        -1.12,
+        0.383,
+        0.048,
+        -1.066,
+        0.824,
+        1.109,
+        -0.157
+      ],
+      "head": [
+        0.0,
+        0.87
+      ]
     },
     "ready_transition_minimum_time_s": 3.0,
     "ready_tolerance_deg": 1.0,
-    "arm_joint_impedance_stiffness_nm_per_rad": [150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0],
+    "arm_joint_impedance_stiffness_nm_per_rad": [
+      150.0,
+      150.0,
+      150.0,
+      150.0,
+      150.0,
+      150.0,
+      150.0
+    ],
     "arm_torque_limit": "sdk_default"
   },
   "camera": {
@@ -21,10 +55,20 @@
     "serial": "250122079439",
     "required_product_name_contains": "D435",
     "alignment": "color_to_depth",
-    "frame_fresh_after_s": 0.20,
+    "frame_fresh_after_s": 0.2,
     "maximum_rgb_depth_timestamp_skew_s": 0.05,
-    "depth": {"width": 640, "height": 480, "fps": 30, "format": "z16"},
-    "color": {"width": 640, "height": 480, "fps": 30, "format": "bgr8"},
+    "depth": {
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "format": "z16"
+    },
+    "color": {
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "format": "bgr8"
+    },
     "front_glass_depth_start_m": -0.0042,
     "front_glass_depth_start_usage": "mechanical_datum_only_do_not_add_to_sdk_depth"
   },
@@ -32,66 +76,125 @@
     "registration_status": "nominal_unverified",
     "recording_registration_status": "nominal_ready_assumed",
     "T_base_from_head_ready_audit": [
-      [0.174400, 0.0, 0.984675, 0.583771],
-      [0.0, 1.0, 0.0, 0.0],
-      [-0.984675, 0.0, 0.174400, 1.130364],
-      [0.0, 0.0, 0.0, 1.0]
+      [
+        0.1744,
+        0.0,
+        0.984675,
+        0.583771
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        -0.984675,
+        0.0,
+        0.1744,
+        1.130364
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
     ],
     "T_head_from_color": [
-      [6.123233995736766e-17, 6.123233995736766e-17, 1.0, 0.049],
-      [-1.0, 3.749399456654644e-33, 6.123233995736766e-17, -0.0115],
-      [0.0, -1.0, 6.123233995736766e-17, 0.057],
-      [0.0, 0.0, 0.0, 1.0]
+      [
+        6.123233995736766e-17,
+        6.123233995736766e-17,
+        1.0,
+        0.049
+      ],
+      [
+        -1.0,
+        3.749399456654644e-33,
+        6.123233995736766e-17,
+        -0.0115
+      ],
+      [
+        0.0,
+        -1.0,
+        6.123233995736766e-17,
+        0.057
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
     ],
     "E_color_from_depth": [
-      [0.9999751448631287, 0.003511840244755149, 0.00611736997961998, 0.014867995865643024],
-      [-0.0034803308080881834, 0.9999806880950928, -0.005153866484761238, 0.00010203145211562514],
-      [-0.006135351490229368, 0.005132447928190231, 0.9999679923057556, 0.0002396116469753906],
-      [0.0, 0.0, 0.0, 1.0]
+      [
+        0.9999751448631287,
+        0.003511840244755149,
+        0.00611736997961998,
+        0.014867995865643024
+      ],
+      [
+        -0.0034803308080881834,
+        0.9999806880950928,
+        -0.005153866484761238,
+        0.00010203145211562514
+      ],
+      [
+        -0.006135351490229368,
+        0.005132447928190231,
+        0.9999679923057556,
+        0.0002396116469753906
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
     ],
-    "base_translation_correction_m": [0.0, 0.05, 0.0],
+    "base_translation_correction_m": [
+      0.0,
+      0.05,
+      0.0
+    ],
     "base_translation_correction_source": "operator_visual_alignment_2026-07-28",
     "absolute_base_validated": false
   },
   "pallet": {
-    "outer_size_m": [0.660, 0.658],
-    "opening_size_m": [0.148, 0.149],
-    "slot1_offset_right_far_m": [0.128, 0.20175],
-    "slot1_long_axis": "u_right",
-    "fixed_approach_v_far_axis_base_xy": [1.0, 0.0],
+    "outer_size_m": [
+      0.66,
+      0.658
+    ],
+    "opening_size_m": [
+      0.148,
+      0.149
+    ],
+    "fixed_approach_v_far_axis_base_xy": [
+      1.0,
+      0.0
+    ],
     "fixed_approach_axis_source": "RB-Y1 base +X points from robot toward/into the pallet in the fixed slot-1 approach setup",
     "axis_branch": "image_right",
-    "slot1_hole_reference": {
-      "center_base_xy_m": [0.865000, 0.139523],
-      "yaw_base_deg": -90.0,
-      "axis_branch": "image_right",
-      "reference_frame": "base_at_configured_slot1_ready_pose",
-      "source_session": "pallet_slot1",
-      "source_selection": "complete_hole_dwell_complete_frames",
-      "source_frame_count": 16,
-      "center_std_xy_m": [0.000604, 0.000728],
-      "yaw_std_deg": 0.614935,
-      "calibration_status": "nominal_unverified_operator_demonstrated"
-    },
     "acquisition": {
       "mode": "continuous_forward",
       "budget_m": 0.15,
-      "step_m": 0.010,
-      "speed_mps": 0.030,
+      "step_m": 0.01,
+      "speed_mps": 0.03,
       "stationary_frames": 5,
       "settle_duration_s": 0.35,
       "freshness": {
-        "camera_s": 0.20,
+        "camera_s": 0.2,
         "odometry_s": 0.15,
         "wheel_s": 0.15
       },
       "timeouts": {
-        "step_s": 1.50,
+        "step_s": 1.5,
         "acquisition_s": 30.0,
-        "brake_s": 1.50
+        "brake_s": 1.5
       },
       "no_progress": {
-        "timeout_s": 0.60,
+        "timeout_s": 0.6,
         "minimum_m": 0.001
       },
       "drift": {
@@ -101,17 +204,168 @@
       "target_tolerance_m": 0.001,
       "overshoot_tolerance_m": 0.003,
       "braking_allowance_m": 0.006
-    }
+    },
+    "slots": {
+      "1": {
+        "hole_reference": {
+          "center_base_xy_m": [
+            0.865,
+            0.139523
+          ],
+          "yaw_base_deg": -90.0,
+          "axis_branch": "image_right",
+          "reference_frame": "base_at_configured_slot1_ready_pose",
+          "source_session": "pallet_slot1",
+          "source_selection": "complete_hole_dwell_complete_frames",
+          "source_frame_count": 16,
+          "center_std_xy_m": [
+            0.000604,
+            0.000728
+          ],
+          "yaw_std_deg": 0.614935,
+          "calibration_status": "nominal_unverified_operator_demonstrated"
+        },
+        "offset_right_far_m": [
+          0.128,
+          0.20175
+        ],
+        "long_axis": "u_right",
+        "ready_pose_rad": {
+          "torso": [
+            0.0,
+            1.41,
+            -1.514,
+            0.6295,
+            0.0,
+            0.0
+          ],
+          "right_arm": [
+            -1.12,
+            -0.383,
+            -0.048,
+            -1.066,
+            -0.824,
+            1.109,
+            0.157
+          ],
+          "left_arm": [
+            -1.12,
+            0.383,
+            0.048,
+            -1.066,
+            0.824,
+            1.109,
+            -0.157
+          ],
+          "head": [
+            0.0,
+            0.87
+          ]
+        },
+        "place_pose_deg": {
+          "torso": [
+            0.0,
+            80.8,
+            -86.7,
+            36.1,
+            0.0,
+            0.0
+          ],
+          "right_arm": [
+            -66.9,
+            -19.9,
+            -3.4,
+            -45.2,
+            -50.4,
+            54.7,
+            19.4
+          ],
+          "left_arm": [
+            -66.9,
+            20.0,
+            3.4,
+            -45.2,
+            50.4,
+            54.7,
+            -19.4
+          ]
+        },
+        "retreat_pose_deg": {
+          "torso": [
+            0.0,
+            80.8,
+            -86.7,
+            36.1,
+            0.0,
+            0.0
+          ],
+          "right_arm": [
+            -65.3,
+            -28.7,
+            -5.1,
+            -74.7,
+            -49.4,
+            77.7,
+            -0.1
+          ],
+          "left_arm": [
+            -65.3,
+            28.7,
+            5.1,
+            -74.7,
+            49.4,
+            77.7,
+            -0.0
+          ]
+        }
+      },
+      "2": {
+        "hole_reference": null,
+        "offset_right_far_m": null,
+        "long_axis": null,
+        "ready_pose_rad": null,
+        "place_pose_deg": null,
+        "retreat_pose_deg": null
+      },
+      "5": {
+        "hole_reference": null,
+        "offset_right_far_m": null,
+        "long_axis": null,
+        "ready_pose_rad": null,
+        "place_pose_deg": null,
+        "retreat_pose_deg": null
+      },
+      "6": {
+        "hole_reference": null,
+        "offset_right_far_m": null,
+        "long_axis": null,
+        "ready_pose_rad": null,
+        "place_pose_deg": null,
+        "retreat_pose_deg": null
+      }
+    },
+    "default_slot": 1
   },
   "held_box": {
-    "nominal_size_m": [0.400, 0.253, 0.160],
+    "nominal_size_m": [
+      0.4,
+      0.253,
+      0.16
+    ],
     "minimum_height_m": 0.156,
     "maximum_height_m": 0.164,
-    "center_offset_from_eef_midpoint_m": [0.085463, 0.008236, 0.0],
+    "center_offset_from_eef_midpoint_m": [
+      0.085463,
+      0.008236,
+      0.0
+    ],
     "center_offset_frame": "base_at_fixed_pallet_ready_pose",
     "center_offset_source": "operator_eye_arrived_pallet_1_arrived_mean_slot_target_minus_ready_eef_midpoint",
     "center_offset_status": "nominal_unverified_not_external_ground_truth",
-    "center_offset_observed_target_std_xy_m": [0.001779, 0.002159],
+    "center_offset_observed_target_std_xy_m": [
+      0.001779,
+      0.002159
+    ],
     "fixed_ready_box_bottom_uncertainty_m": 0.015,
     "long_axis_from_eef_line_offset_deg": 0.0,
     "maximum_dual_eef_box_center_disagreement_m": 0.015,
@@ -119,12 +373,20 @@
     "direct_top_plane_dwell_frames": 5,
     "maximum_top_plane_std_m": 0.005,
     "maximum_downward_drift_m": 0.005,
-    "nominal_ready_right_eef_base_xyz_m": [1.00046, -0.16948, 0.73157],
-    "nominal_ready_left_eef_base_xyz_m": [1.00046, 0.16948, 0.73157],
+    "nominal_ready_right_eef_base_xyz_m": [
+      1.00046,
+      -0.16948,
+      0.73157
+    ],
+    "nominal_ready_left_eef_base_xyz_m": [
+      1.00046,
+      0.16948,
+      0.73157
+    ],
     "nominal_ready_proxy_usage": "replay_dry_run_and_explicit_fixed_ready_geometry_mvp"
   },
   "perception": {
-    "min_depth_m": 0.20,
+    "min_depth_m": 0.2,
     "max_depth_m": 2.0,
     "minimum_inner_rims": 3,
     "opening_dimension_tolerance_m": 0.015,
@@ -138,22 +400,22 @@
     "stable_window_frames": 5,
     "live_center_spread_m": 0.008,
     "live_yaw_spread_deg": 2.0,
-    "maximum_measurement_jump_age_s": 0.50,
+    "maximum_measurement_jump_age_s": 0.5,
     "l_corner": {
       "edge_band_m": 0.012,
-      "min_front_support_m": 0.450,
-      "min_side_support_m": 0.180,
+      "min_front_support_m": 0.45,
+      "min_side_support_m": 0.18,
       "max_line_p95_residual_m": 0.008,
       "max_connection_gap_m": 0.015,
       "max_orthogonality_error_rad": 0.08726646259971647,
       "max_axis_residual_rad": 0.2617993877991494,
       "image_crop_margin_px": 8,
-      "bev_crop_margin_m": 0.010,
+      "bev_crop_margin_m": 0.01,
       "forward_acquisition": {
-        "min_front_support_m": 0.150,
-        "min_side_support_m": 0.150,
+        "min_front_support_m": 0.15,
+        "min_side_support_m": 0.15,
         "max_line_p95_residual_m": 0.006,
-        "max_connection_gap_m": 0.600,
+        "max_connection_gap_m": 0.6,
         "max_orthogonality_error_rad": 0.06981317007977318,
         "max_axis_residual_rad": 0.20943951023931956
       }
@@ -164,10 +426,10 @@
     "yaw_gain_per_s": 0.8,
     "max_linear_speed_mps": 0.05,
     "max_angular_speed_radps": 0.08,
-    "jump_threshold_m": 0.030,
+    "jump_threshold_m": 0.03,
     "start_yaw_limit_rad": 0.2617993877991494,
-    "stale_after_s": 0.30,
-    "arrival_inner_m": 0.010,
+    "stale_after_s": 0.3,
+    "arrival_inner_m": 0.01,
     "arrival_outer_m": 0.015,
     "arrival_yaw_inner_rad": 0.05235987755982989,
     "arrival_yaw_outer_rad": 0.08726646259971647,
@@ -181,27 +443,25 @@
     "enabled": true,
     "vision_geometry_release_enabled": true,
     "linear_velocity_limit_mps": 0.03,
-    "angular_velocity_limit_radps": 0.20,
+    "angular_velocity_limit_radps": 0.2,
     "linear_acceleration_limit_mps2": 0.08,
-    "angular_acceleration_limit_radps2": 0.30,
-    "maximum_descent_m": 0.250,
+    "angular_acceleration_limit_radps2": 0.3,
+    "maximum_descent_m": 0.25,
     "descent_fraction": 0.6666666666666666,
     "maximum_planned_descent_m": 0.0,
     "alignment_hold_before_place_s": 1.0,
     "squeeze_offset_m": 0.0,
-    "place_pose_deg": {
-      "torso": [0.0, 80.8, -86.7, 36.1, 0.0, 0.0],
-      "right_arm": [-66.9, -19.9, -3.4, -45.2, -50.4, 54.7, 19.4],
-      "left_arm": [-66.9, 20.0, 3.4, -45.2, 50.4, 54.7, -19.4]
-    },
     "place_pose_duration_s": 1.0,
-    "retreat_pose_deg": {
-      "torso": [0.0, 80.8, -86.7, 36.1, 0.0, 0.0],
-      "right_arm": [-65.3, -28.7, -5.1, -74.7, -49.4, 77.7, -0.1],
-      "left_arm": [-65.3, 28.7, 5.1, -74.7, 49.4, 77.7, -0.0]
-    },
     "retreat_pose_duration_s": 1.0,
-    "joint_stiffness_nm_per_rad": [150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0],
+    "joint_stiffness_nm_per_rad": [
+      150.0,
+      150.0,
+      150.0,
+      150.0,
+      150.0,
+      150.0,
+      150.0
+    ],
     "joint_damping_ratio": 1.0,
     "nullspace_weight": [
       1.0,
@@ -227,7 +487,7 @@
     "release_target_translation_tolerance_m": 0.012,
     "release_target_rotation_tolerance_deg": 4.0,
     "vision_seating_max_uncertainty_m": 0.025,
-    "vision_evidence_fresh_after_s": 0.30,
+    "vision_evidence_fresh_after_s": 0.3,
     "vision_plan_valid_for_s": 15.0,
     "vision_gap_stability_tolerance_m": 0.008,
     "vision_evidence_min_samples": 3
@@ -236,7 +496,7 @@
     "state_fresh_after_s": 0.15
   },
   "grip_interlock": {
-    "minimum_dwell_s": 0.50,
+    "minimum_dwell_s": 0.5,
     "minimum_samples": 10,
     "maximum_arm_tracking_error_deg": 1.0,
     "maximum_eef_separation_peak_to_peak_m": 0.004,
@@ -245,9 +505,21 @@
   },
   "mobility_frame": {
     "T_mobility_from_base": [
-      [1.0, 0.0, 0.0],
-      [0.0, 1.0, 0.0],
-      [0.0, 0.0, 1.0]
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
     ],
     "provenance": "RB-Y1 local SDK body-frame command convention; revalidate before commissioning"
   },
