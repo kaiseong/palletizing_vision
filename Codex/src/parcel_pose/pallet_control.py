@@ -726,7 +726,6 @@ class PalletControlConfig:
             "placement_angular_velocity_limit_radps",
             "placement_linear_acceleration_limit_mps2",
             "placement_angular_acceleration_limit_radps2",
-            "placement_release_spread_m",
             "placement_max_release_spread_m",
             "placement_release_axis_max_deviation_rad",
             "placement_joint_damping_ratio",
@@ -824,6 +823,13 @@ class PalletControlConfig:
         )
         if self.placement_place_pose_duration_s > 5.0 + 1e-12:
             raise ValueError("place pose duration cannot exceed 5 seconds")
+        object.__setattr__(
+            self,
+            "placement_release_spread_m",
+            _finite_float_nonnegative(
+                self.placement_release_spread_m, "placement_release_spread_m"
+            ),
+        )
         squeeze = _finite_float_nonnegative(
             self.placement_squeeze_offset_m,
             "placement_squeeze_offset_m",

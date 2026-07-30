@@ -200,7 +200,8 @@
       "left_arm": [-57.9, 19.8, 2.3, -61.1, 47.5, 58.5, -12.9]
     },
     "place_pose_duration_s": 1.0,
-    "release_spread_m": 0.030,
+    "place_pose_tolerance_m": 0.025,
+    "release_spread_m": 0.0,
     "maximum_release_spread_m": 0.040,
     "joint_stiffness_nm_per_rad": [150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0],
     "joint_damping_ratio": 1.0,

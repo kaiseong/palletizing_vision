@@ -164,8 +164,9 @@ def test_arm_target_is_constant_from_ready_until_the_place_pose(root_config) -> 
             key = np.round(packet.right_arm.transform[:3, 3], 9).tobytes()
             if not distinct or distinct[-1] != key:
                 distinct.append(key)
-        assert len(distinct) == 3, (
-            f"expected ready -> place pose -> open, saw {len(distinct)} arm targets"
+        expected = 3 if config.placement_release_spread_m > 0.0 else 2
+        assert len(distinct) == expected, (
+            f"expected {expected} arm targets, saw {len(distinct)}"
         )
     finally:
         teardown(controller)
@@ -548,26 +549,23 @@ def test_place_pose_travel_is_paced_over_the_configured_duration(root_config) ->
         teardown(controller)
 
 
-def test_release_opens_from_the_place_pose_not_the_frozen_plan(root_config) -> None:
+def test_release_does_not_open_the_hands_when_the_spread_is_zero(root_config) -> None:
+    """Slot-1 seats the carton and stops; the hands must not move afterwards."""
+
     (controller, robot, config, _plan, _delta, lowering,
      _lowering_packet, release, release_packet) = drive_to_release(root_config)
     try:
-        spread = config.placement_release_spread_m
-        assert spread == pytest.approx(0.030)
+        assert config.placement_release_spread_m == 0.0
+        assert release.mode is ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE
+        assert release.release_spread_m == 0.0
         assert release.target_source == "demonstrated_place_pose"
-        # Base X and Z stay exactly at the place posture; only Y opens.
-        for axis in (0, 2):
-            assert release.right_T_base_eef[axis, 3] == pytest.approx(
-                lowering.right_T_base_eef[axis, 3], abs=1e-12
-            )
-        assert release.right_T_base_eef[1, 3] == pytest.approx(
-            lowering.right_T_base_eef[1, 3] - spread
+        # The release target is exactly the seated posture, on every axis.
+        np.testing.assert_array_equal(
+            release.right_T_base_eef, lowering.right_T_base_eef
         )
-        assert release.left_T_base_eef[1, 3] == pytest.approx(
-            lowering.left_T_base_eef[1, 3] + spread
-        )
+        np.testing.assert_array_equal(release.left_T_base_eef, lowering.left_T_base_eef)
         assert release_packet.eef_separation_m() == pytest.approx(
-            MEASURED_SEPARATION_M + 2.0 * spread, abs=1e-6
+            MEASURED_SEPARATION_M, abs=1e-9
         )
     finally:
         teardown(controller)

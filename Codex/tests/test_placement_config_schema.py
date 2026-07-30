@@ -41,7 +41,10 @@ def test_shipped_config_builds_both_placement_surfaces(root_config: dict) -> Non
     assert placement.maximum_planned_descent_m <= placement.maximum_descent_m
     assert placement.maximum_release_gap_m >= placement.pre_motion_clearance_floor_m
     assert placement.maximum_planned_descent_m < placement.maximum_release_gap_m
-    assert control.placement_release_spread_m == pytest.approx(0.030)
+    # Slot-1 commissioning seats the carton and stops there: the hands are not
+    # opened afterwards, so the spread is zero on both surfaces.
+    assert control.placement_release_spread_m == 0.0
+    assert placement.release_spread_m == 0.0
     assert control.placement_max_release_spread_m == pytest.approx(0.040)
     assert control.placement_release_axis_max_deviation_rad == pytest.approx(
         math.radians(10.0)

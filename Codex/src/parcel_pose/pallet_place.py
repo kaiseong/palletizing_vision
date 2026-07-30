@@ -138,7 +138,6 @@ class PlacementConfig:
             "lower_rotation_tolerance_rad",
             "release_target_translation_tolerance_m",
             "release_target_rotation_tolerance_rad",
-            "release_spread_m",
             "alignment_hold_before_place_s",
             "vision_seating_max_uncertainty_m",
             "vision_evidence_fresh_after_s",
@@ -147,6 +146,8 @@ class PlacementConfig:
         ):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
         for name in (
+            # 0.0 means "do not open the hands after seating the carton".
+            "release_spread_m",
             "pre_place_verify_dwell_s",
             "seated_dwell_s",
             "release_target_dwell_s",
@@ -208,6 +209,7 @@ class PlacementConfig:
             "squeeze_offset_m",
             "place_pose_duration_s",
             "place_pose_deg",
+            "place_pose_tolerance_m",
             "release_spread_m",
             "maximum_release_spread_m",
             "joint_stiffness_nm_per_rad",
@@ -324,6 +326,9 @@ class PlacementConfig:
                         ),
                     )
                 )
+            ),
+            place_pose_tolerance_m=float(
+                raw.get("place_pose_tolerance_m", defaults.place_pose_tolerance_m)
             ),
             release_spread_m=float(
                 raw.get("release_spread_m", defaults.release_spread_m)
