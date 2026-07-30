@@ -2668,109 +2668,71 @@ def _assemble_live_stack(
     )
 
 
-def run_pallet_live(
-    root_config: Mapping[str, Any],
-    *,
-    execute: bool = False,
-    auto_place_slot1: bool = False,
-    ensure_slot1_ready: bool = False,
-    slot: int | None = None,
-    robot_address: str = "192.168.30.1:50051",
-    robot_power: str = ".*",
-    warmup_frames: int = 30,
-    max_frames: int | None = None,
-    headless: bool = False,
-    window_name: str = "RB-Y1 Pallet Slot-1",
-    output_mp4: str | Path | None = None,
-    log_jsonl: str | Path | None = None,
-    controller: _ControllerLike | None = None,
-) -> int:
-    """Run pallet perception, loaded-box slot-1 alignment, and gated placement.
+@dataclass(frozen=True)
+class _LiveOutcome:
+    """Nothing yet; the run reports through telemetry and the artifacts it wrote."""
 
-    Execution is a standalone post-pick boundary: the previous process must be
-    stopped, the configured loaded ready posture is verified, and this process
-    becomes the sole combined body/mobility stream owner.
+
+
+def _align_and_place(
+    *,
+    accepted_scene_sequence: Any,
+    controller: Any,
+    frame_count: Any,
+    last_placement_output: Any,
+    last_placement_runtime_diagnostics: Any,
+    placement_alignment_ready_since_s: Any,
+    placement_lowering_started: Any,
+    placement_release_started: Any,
+    video_writer: Any,
+    T_base_depth: Any,
+    calibration_status: Any,
+    containment: Any,
+    held_proxy: Any,
+    log_stream: Any,
+    shutdown_pending: Any,
+    window_created: Any,
+    acquisition_config: Any,
+    acquisition_servo: Any,
+    authority: Any,
+    auto_place_slot1: Any,
+    box_bottom_uncertainty_m: Any,
+    ensure_slot1_ready: Any,
+    estimator: Any,
+    estimator_config: Any,
+    execute: Any,
+    fps: Any,
+    frame_gate: Any,
+    geometry_only_policy_enabled: Any,
+    headless: Any,
+    hole_gate: Any,
+    l_corner_gate: Any,
+    log_jsonl: Any,
+    max_frames: Any,
+    maximum_box_height_m: Any,
+    output_mp4: Any,
+    placement_config: Any,
+    placement_sequencer: Any,
+    robot_address: Any,
+    robot_power: Any,
+    root_config: Any,
+    scene_window: Any,
+    selected_slot: Any,
+    servo: Any,
+    servo_bridge: Any,
+    slot1_hole_reference: Any,
+    stream_config: Any,
+    vision_release_policy_enabled: Any,
+    window_name: Any,
+) -> _LiveOutcome:
+    """Open the camera, drive the base onto the slot, place the carton, tear down.
+
+    This is the run: every frame observes, decides, advances the placement, then
+    records and draws.  The finally clause releases the artifacts and says plainly
+    that releasing them does not disarm a loaded robot.
     """
 
-    plan = _resolve_live_plan(
-        auto_place_slot1=auto_place_slot1,
-        controller=controller,
-        ensure_slot1_ready=ensure_slot1_ready,
-        execute=execute,
-        headless=headless,
-        log_jsonl=log_jsonl,
-        max_frames=max_frames,
-        output_mp4=output_mp4,
-        root_config=root_config,
-        slot=slot,
-        warmup_frames=warmup_frames,
-    )
-    camera_config = plan.camera_config
-    fps = plan.fps
-    geometry_only_policy_enabled = plan.geometry_only_policy_enabled
-    selected_slot = plan.selected_slot
-    stream_config = plan.stream_config
-    vision_release_policy_enabled = plan.vision_release_policy_enabled
 
-    # Imports stay below the standalone execute interlock.  In dry-run this is
-    # still pure camera/perception code and cannot import rby1_sdk.
-    stack = _assemble_live_stack(
-        auto_place_slot1=auto_place_slot1,
-        root_config=root_config,
-        selected_slot=selected_slot,
-    )
-    acquisition_config = stack.acquisition_config
-    acquisition_servo = stack.acquisition_servo
-    authority = stack.authority
-    estimator = stack.estimator
-    estimator_config = stack.estimator_config
-    hole_gate = stack.hole_gate
-    l_corner_gate = stack.l_corner_gate
-    placement_config = stack.placement_config
-    placement_sequencer = stack.placement_sequencer
-    servo = stack.servo
-    servo_bridge = stack.servo_bridge
-    slot1_hole_reference = stack.slot1_hole_reference
-    shutdown_pending = False
-    # The alignment dwell used to depend on the first frame never reaching the
-    # arrived branch; state it instead.
-    placement_alignment_ready_since_s: float | None = None
-    placement_lowering_started = False
-    placement_release_started = False
-    last_placement_output: PlacementOutput | None = None
-    last_placement_runtime_diagnostics: dict[str, Any] | None = None
-    scene_window: deque[dict[str, Any]] = deque(maxlen=30)
-    calibration_status = "nominal_ready_assumed"
-    T_base_depth = configured_T_base_from_depth(root_config)
-    held_config = _section(root_config, "held_box")
-    maximum_box_height_m = float(held_config.get("maximum_height_m", 0.164))
-    box_bottom_uncertainty_m = float(
-        held_config.get("fixed_ready_box_bottom_uncertainty_m", 0.015)
-    )
-    if not math.isfinite(maximum_box_height_m) or maximum_box_height_m <= 0.0:
-        raise ValueError("held_box.maximum_height_m must be finite and positive")
-    if (
-        not math.isfinite(box_bottom_uncertainty_m)
-        or box_bottom_uncertainty_m < 0.0
-    ):
-        raise ValueError(
-            "held_box.fixed_ready_box_bottom_uncertainty_m must be finite and "
-            "non-negative"
-        )
-    held_proxy = _nominal_held_pose(root_config)
-
-    video_writer: Any | None = None
-    log_stream: TextIO | None = None
-    window_created = False
-    frame_count = 0
-    accepted_scene_sequence = 0
-    frame_gate = LiveFrameGate(
-        maximum_capture_age_s=float(camera_config.get("frame_fresh_after_s", 0.20)),
-        maximum_rgb_depth_timestamp_skew_s=float(
-            camera_config.get("maximum_rgb_depth_timestamp_skew_s", 0.05)
-        ),
-    )
-    containment: ActuationContainmentState | None = None
     try:
         if ensure_slot1_ready and controller is None:
             from .pallet_ready import ensure_slot1_ready_from_config
@@ -3133,6 +3095,164 @@ def run_pallet_live(
                 cv2.destroyWindow(window_name)
             except Exception:
                 pass
+
+    return _LiveOutcome(
+    )
+
+
+def run_pallet_live(
+    root_config: Mapping[str, Any],
+    *,
+    execute: bool = False,
+    auto_place_slot1: bool = False,
+    ensure_slot1_ready: bool = False,
+    slot: int | None = None,
+    robot_address: str = "192.168.30.1:50051",
+    robot_power: str = ".*",
+    warmup_frames: int = 30,
+    max_frames: int | None = None,
+    headless: bool = False,
+    window_name: str = "RB-Y1 Pallet Slot-1",
+    output_mp4: str | Path | None = None,
+    log_jsonl: str | Path | None = None,
+    controller: _ControllerLike | None = None,
+) -> int:
+    """Run pallet perception, loaded-box slot-1 alignment, and gated placement.
+
+    Execution is a standalone post-pick boundary: the previous process must be
+    stopped, the configured loaded ready posture is verified, and this process
+    becomes the sole combined body/mobility stream owner.
+    """
+
+    plan = _resolve_live_plan(
+        auto_place_slot1=auto_place_slot1,
+        controller=controller,
+        ensure_slot1_ready=ensure_slot1_ready,
+        execute=execute,
+        headless=headless,
+        log_jsonl=log_jsonl,
+        max_frames=max_frames,
+        output_mp4=output_mp4,
+        root_config=root_config,
+        slot=slot,
+        warmup_frames=warmup_frames,
+    )
+    camera_config = plan.camera_config
+    fps = plan.fps
+    geometry_only_policy_enabled = plan.geometry_only_policy_enabled
+    selected_slot = plan.selected_slot
+    stream_config = plan.stream_config
+    vision_release_policy_enabled = plan.vision_release_policy_enabled
+
+    # Imports stay below the standalone execute interlock.  In dry-run this is
+    # still pure camera/perception code and cannot import rby1_sdk.
+    stack = _assemble_live_stack(
+        auto_place_slot1=auto_place_slot1,
+        root_config=root_config,
+        selected_slot=selected_slot,
+    )
+    acquisition_config = stack.acquisition_config
+    acquisition_servo = stack.acquisition_servo
+    authority = stack.authority
+    estimator = stack.estimator
+    estimator_config = stack.estimator_config
+    hole_gate = stack.hole_gate
+    l_corner_gate = stack.l_corner_gate
+    placement_config = stack.placement_config
+    placement_sequencer = stack.placement_sequencer
+    servo = stack.servo
+    servo_bridge = stack.servo_bridge
+    slot1_hole_reference = stack.slot1_hole_reference
+    shutdown_pending = False
+    # The alignment dwell used to depend on the first frame never reaching the
+    # arrived branch; state it instead.
+    placement_alignment_ready_since_s: float | None = None
+    placement_lowering_started = False
+    placement_release_started = False
+    last_placement_output: PlacementOutput | None = None
+    last_placement_runtime_diagnostics: dict[str, Any] | None = None
+    scene_window: deque[dict[str, Any]] = deque(maxlen=30)
+    calibration_status = "nominal_ready_assumed"
+    T_base_depth = configured_T_base_from_depth(root_config)
+    held_config = _section(root_config, "held_box")
+    maximum_box_height_m = float(held_config.get("maximum_height_m", 0.164))
+    box_bottom_uncertainty_m = float(
+        held_config.get("fixed_ready_box_bottom_uncertainty_m", 0.015)
+    )
+    if not math.isfinite(maximum_box_height_m) or maximum_box_height_m <= 0.0:
+        raise ValueError("held_box.maximum_height_m must be finite and positive")
+    if (
+        not math.isfinite(box_bottom_uncertainty_m)
+        or box_bottom_uncertainty_m < 0.0
+    ):
+        raise ValueError(
+            "held_box.fixed_ready_box_bottom_uncertainty_m must be finite and "
+            "non-negative"
+        )
+    held_proxy = _nominal_held_pose(root_config)
+
+    video_writer: Any | None = None
+    log_stream: TextIO | None = None
+    window_created = False
+    frame_count = 0
+    accepted_scene_sequence = 0
+    frame_gate = LiveFrameGate(
+        maximum_capture_age_s=float(camera_config.get("frame_fresh_after_s", 0.20)),
+        maximum_rgb_depth_timestamp_skew_s=float(
+            camera_config.get("maximum_rgb_depth_timestamp_skew_s", 0.05)
+        ),
+    )
+    containment: ActuationContainmentState | None = None
+    _align_and_place(
+        accepted_scene_sequence=accepted_scene_sequence,
+        controller=controller,
+        frame_count=frame_count,
+        last_placement_output=last_placement_output,
+        last_placement_runtime_diagnostics=last_placement_runtime_diagnostics,
+        placement_alignment_ready_since_s=placement_alignment_ready_since_s,
+        placement_lowering_started=placement_lowering_started,
+        placement_release_started=placement_release_started,
+        video_writer=video_writer,
+        T_base_depth=T_base_depth,
+        calibration_status=calibration_status,
+        containment=containment,
+        held_proxy=held_proxy,
+        log_stream=log_stream,
+        shutdown_pending=shutdown_pending,
+        window_created=window_created,
+        acquisition_config=acquisition_config,
+        acquisition_servo=acquisition_servo,
+        authority=authority,
+        auto_place_slot1=auto_place_slot1,
+        box_bottom_uncertainty_m=box_bottom_uncertainty_m,
+        ensure_slot1_ready=ensure_slot1_ready,
+        estimator=estimator,
+        estimator_config=estimator_config,
+        execute=execute,
+        fps=fps,
+        frame_gate=frame_gate,
+        geometry_only_policy_enabled=geometry_only_policy_enabled,
+        headless=headless,
+        hole_gate=hole_gate,
+        l_corner_gate=l_corner_gate,
+        log_jsonl=log_jsonl,
+        max_frames=max_frames,
+        maximum_box_height_m=maximum_box_height_m,
+        output_mp4=output_mp4,
+        placement_config=placement_config,
+        placement_sequencer=placement_sequencer,
+        robot_address=robot_address,
+        robot_power=robot_power,
+        root_config=root_config,
+        scene_window=scene_window,
+        selected_slot=selected_slot,
+        servo=servo,
+        servo_bridge=servo_bridge,
+        slot1_hole_reference=slot1_hole_reference,
+        stream_config=stream_config,
+        vision_release_policy_enabled=vision_release_policy_enabled,
+        window_name=window_name,
+    )
         # Never imply that resource cleanup preserves a loaded robot.  The
         # execute path remains open unless explicit forced cancellation or a
         # separately acknowledged owner handoff closes it.
