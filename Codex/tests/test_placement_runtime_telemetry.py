@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-import math
 
 import pytest
+
+from parcel_pose.pallet_control import ArmStreamMode
 
 from parcel_pose.pallet_place import PlacementRequest, PlacementState
 from parcel_pose.pallet_runtime import (
@@ -14,6 +15,7 @@ from parcel_pose.pallet_runtime import (
 )
 
 from _factories import (
+    RIGHT_ARM_INDICES,
     descent_plan,
     loaded_hold_target,
     measured_state,
@@ -21,9 +23,50 @@ from _factories import (
 )
 
 
+def _flat_fk(position, velocity):
+    """Torso at base z=0.90, wrists offset by joint 0 so a posture actually moves."""
+
+    import numpy as np
+
+    def transform(xyz):
+        matrix = np.eye(4, dtype=np.float64)
+        matrix[:3, 3] = np.asarray(xyz, dtype=np.float64)
+        return matrix
+
+    shift = float(position[RIGHT_ARM_INDICES][0])
+    return {
+        "T_base_torso": transform((0.0, 0.0, 0.90)),
+        "T_base_head": transform((0.10, 0.0, 1.20)),
+        "T_base_right_eef": transform((0.45 + shift, -0.17, 0.73)),
+        "T_base_left_eef": transform((0.45 + shift, 0.17, 0.73)),
+        "base_twist_w_vx_vy": (0.0, 0.0, 0.0),
+    }
+
+
+def retreat_config():
+    """A controller config that demonstrates both placement postures."""
+
+    from parcel_pose.pallet_control import PalletControlConfig, PlacePose, ReadyPose
+
+    ready = ReadyPose()
+    place = PlacePose(
+        torso_rad=ready.torso_rad,
+        right_arm_rad=ready.right_arm_rad,
+        left_arm_rad=ready.left_arm_rad,
+    )
+    retreat = PlacePose(
+        torso_rad=ready.torso_rad,
+        right_arm_rad=tuple(v + 0.05 for v in ready.right_arm_rad),
+        left_arm_rad=tuple(v + 0.05 for v in ready.left_arm_rad),
+    )
+    return PalletControlConfig(place_pose=place, retreat_pose=retreat)
+
+
 def release_target(controller, spread: float = 0.030):
     state = measured_state()
-    plan = descent_plan(planned_delta_z_m=0.0)
+    plan = descent_plan(
+        planned_delta_z_m=0.0, target_source="demonstrated_place_pose"
+    )
     loaded = loaded_hold_target(controller, state)
     lowering = controller._make_lowering_target_from_loaded_hold(
         state,
@@ -31,11 +74,15 @@ def release_target(controller, spread: float = 0.030):
         descent_plan=plan,
         requested_squeeze_offset_m=None,
     )
-    target = controller._make_release_target_from_plan(
+    from parcel_pose.pallet_control import ArmStreamMode
+
+    target = controller._make_posture_target(
         state,
-        lowering_target=lowering,
+        loaded_target=lowering,
         descent_plan=plan,
-        release_spread_m=spread,
+        place_pose=controller.config.retreat_pose,
+        mode=ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE,
+        duration_s=controller.config.placement_retreat_pose_duration_s,
     )
     controller._arm_stream_mode = target.mode
     controller._cartesian_arm_target = target
@@ -43,32 +90,30 @@ def release_target(controller, spread: float = 0.030):
 
 
 def test_placement_telemetry_reports_the_release_geometry() -> None:
-    controller = offline_controller()
+    controller = offline_controller(retreat_config(), fk_provider=_flat_fk)
     release_target(controller)
     telemetry = controller.placement_telemetry()
-    assert telemetry.release_spread_m == pytest.approx(0.030)
+    assert telemetry.arm_mode is ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE
     assert telemetry.release_axis_base == pytest.approx((0.0, -1.0, 0.0))
-    assert telemetry.release_axis_deviation_rad == pytest.approx(0.0)
-    assert telemetry.lowering_distance_m == pytest.approx(0.0)
+    # The retreat posture moves the wrists, so the travel is reported.
+    assert telemetry.lowering_distance_m is not None
+    assert telemetry.lowering_distance_m > 0.0
 
 
 def test_placement_telemetry_payload_is_json_serializable() -> None:
-    controller = offline_controller()
+    controller = offline_controller(retreat_config(), fk_provider=_flat_fk)
     release_target(controller)
     payload = _placement_telemetry_payload(controller.placement_telemetry())
     # The live JSONL writer uses the same strict json.dumps settings.
     encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True)
     decoded = json.loads(encoded)
-    assert decoded["release_spread_m"] == pytest.approx(0.030)
     assert decoded["release_axis_base"] == pytest.approx([0.0, -1.0, 0.0])
-    assert decoded["release_axis_deviation_rad"] == pytest.approx(0.0)
     assert decoded["arm_mode"] == "CARTESIAN_PLACEMENT_RELEASE"
 
 
 def test_placement_telemetry_payload_tolerates_no_target() -> None:
     controller = offline_controller()
     payload = _placement_telemetry_payload(controller.placement_telemetry())
-    assert payload["release_spread_m"] is None
     assert payload["release_axis_base"] is None
 
 
@@ -107,28 +152,3 @@ def test_fault_hold_is_dispatched_only_after_a_placement_command() -> None:
         == "fail_closed_cartesian_placement_hold"
     )
     assert calls == ["release_axis_deviation"]
-
-
-def test_axis_deviation_is_reported_in_degrees_for_operators() -> None:
-    controller = offline_controller()
-    right = (0.450 - 0.0113, -0.1295, 0.300)
-    left = (0.450 + 0.0113, 0.1295, 0.300)
-    state = measured_state(right_xyz=right, left_xyz=left)
-    plan = descent_plan(planned_delta_z_m=0.0, right_xyz=right, left_xyz=left)
-    loaded = loaded_hold_target(controller, state)
-    lowering = controller._make_lowering_target_from_loaded_hold(
-        state,
-        loaded_target=loaded,
-        descent_plan=plan,
-        requested_squeeze_offset_m=None,
-    )
-    controller._cartesian_arm_target = controller._make_release_target_from_plan(
-        state,
-        lowering_target=lowering,
-        descent_plan=plan,
-        release_spread_m=0.030,
-    )
-    telemetry = controller.placement_telemetry()
-    assert math.degrees(telemetry.release_axis_deviation_rad) == pytest.approx(
-        5.0, abs=0.05
-    )

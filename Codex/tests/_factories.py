@@ -19,7 +19,7 @@ from parcel_pose.pallet_control import (
     RBY1PalletController,
 )
 from parcel_pose.pallet_place import (
-    LOADED_HOLD_MODE,
+    READY_HOLD_MODE,
     PlacementConfig,
     PlacementDescentPlan,
     PlacementInput,
@@ -95,10 +95,17 @@ def measured_state(
 
 def offline_controller(
     config: PalletControlConfig | None = None,
+    fk_provider: Any = None,
 ) -> RBY1PalletController:
-    """Build a controller that never touches the SDK, stream, or threads."""
+    """Build a controller that never touches the SDK, stream, or threads.
 
-    controller = RBY1PalletController(execute=False, config=config)
+    ``fk_provider`` is needed only by paths that compute forward kinematics at a
+    demonstrated posture.
+    """
+
+    controller = RBY1PalletController(
+        execute=False, config=config, fk_provider=fk_provider
+    )
     controller._indices = {
         "mobility": MOBILITY_INDICES,
         "torso": TORSO_INDICES,
@@ -161,7 +168,8 @@ def placement_input(
     *,
     now_s: float = 100.0,
     sequence: int = 1,
-    controller_arm_mode: str = LOADED_HOLD_MODE,
+    controller_arm_mode: str = READY_HOLD_MODE,
+    ready_posture_verified: bool = True,
     controller_target_ack: bool = True,
     right_xyz: tuple[float, float, float] = RIGHT_EEF_XYZ,
     left_xyz: tuple[float, float, float] = LEFT_EEF_XYZ,
@@ -183,6 +191,7 @@ def placement_input(
         "measured_state_fresh": True,
         "controller_stream_healthy": True,
         "controller_arm_mode": controller_arm_mode,
+        "ready_posture_verified": ready_posture_verified,
         "controller_target_ack": controller_target_ack,
         "right_target_base": right_target_base,
         "left_target_base": left_target_base,

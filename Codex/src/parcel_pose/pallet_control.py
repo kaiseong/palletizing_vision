@@ -174,51 +174,6 @@ def _read_field(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
-def resolve_release_axis(
-    inter_eef_axis_base: Sequence[float],
-    reference_axis_base: Sequence[float],
-    *,
-    max_deviation_rad: float,
-) -> tuple[np.ndarray, float]:
-    """Snap a measured inter-EEF axis onto a commanded opening axis.
-
-    Slot-1 release opens the hands along one fixed direction, so the commanded
-    target moves on that axis only.  ``reference_axis_base`` is that direction
-    expressed in the base frame; the slot-1 path passes the torso-tip frame's
-    ``Y`` axis so the opening matches the box-pick grip convention regardless of
-    torso yaw.  The returned axis is the unit reference axis signed to agree
-    with the measured hand order, and the returned angle is the deviation
-    between the measured axis and it.
-
-    This function only reports the deviation; the caller owns the accept/reject
-    decision so a single place in the controller can fail closed.
-    """
-
-    axis = np.asarray(inter_eef_axis_base, dtype=np.float64).reshape(3)
-    reference = np.asarray(reference_axis_base, dtype=np.float64).reshape(3)
-    if not np.all(np.isfinite(axis)) or not np.all(np.isfinite(reference)):
-        raise ValueError("release axes must be finite")
-    axis_norm = float(np.linalg.norm(axis))
-    reference_norm = float(np.linalg.norm(reference))
-    if not math.isfinite(axis_norm) or axis_norm <= 1e-9:
-        raise ValueError("inter_eef_axis_base must be a non-zero direction")
-    if not math.isfinite(reference_norm) or reference_norm <= 1e-9:
-        raise ValueError("reference_axis_base must be a non-zero direction")
-    limit = float(max_deviation_rad)
-    if not math.isfinite(limit) or limit <= 0.0:
-        raise ValueError("max_deviation_rad must be finite and positive")
-    unit = axis / axis_norm
-    reference_unit = reference / reference_norm
-    projection = float(unit @ reference_unit)
-    if abs(projection) <= _RELEASE_AXIS_SIGN_EPSILON:
-        raise ValueError(
-            "inter_eef_axis_base is perpendicular to the reference axis, so the "
-            "opening direction has no decidable sign"
-        )
-    sign = 1.0 if projection > 0.0 else -1.0
-    release_axis = sign * reference_unit
-    deviation_rad = math.acos(float(np.clip(abs(projection), 0.0, 1.0)))
-    return release_axis, deviation_rad
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,7 +261,10 @@ class PalletControlConfig:
     state_update_rate_hz: float = 50.0
     state_stale_after_s: float = 0.15
     send_rate_hz: float = 20.0
-    control_hold_time_s: float = 1.0
+    # How long the robot keeps executing the last streamed packet if nothing
+    # follows.  The pump refreshes at 20 Hz, so this is a dead-man timer, not a
+    # pacing knob: a shorter value stops the base sooner if the sender dies.
+    control_hold_time_s: float = 0.5
     steady_minimum_time_s: float = 0.05
     command_stale_after_s: float = 0.15
     send_timeout_ms: int = 250
@@ -346,7 +304,6 @@ class PalletControlConfig:
     # A streamed Cartesian packet must not restart a multi-second trajectory on
     # every 20 Hz update.  Smoothness comes from the explicit velocity and
     # acceleration limits; minimum_time only spans one stream period.
-    placement_minimum_time_s: float = 0.05
     placement_linear_velocity_limit_mps: float = 0.03
     placement_angular_velocity_limit_radps: float = 0.20
     placement_linear_acceleration_limit_mps2: float = 0.08
@@ -372,11 +329,8 @@ class PalletControlConfig:
     # Slot-1 release opens along base Y only.  The commanded travel per hand is
     # exactly this spread because the loaded-hold squeeze cancels out, so a
     # small value keeps both arms far from the reach singularity.
-    placement_release_spread_m: float = 0.030
-    placement_max_release_spread_m: float = 0.040
     # A measured inter-EEF axis further than this from base +/-Y would shear the
     # carton sideways instead of opening, so release fails closed instead.
-    placement_release_axis_max_deviation_rad: float = math.radians(10.0)
     placement_joint_stiffness: tuple[float, ...] = (150.0,) * 7
     placement_joint_damping_ratio: float = 1.0
     placement_nullspace_weight: tuple[float, ...] = (1.0,) * 7
@@ -604,9 +558,6 @@ class PalletControlConfig:
             fixed_ready_geometry_only_commissioning_enabled=(
                 geometry_only_enabled
             ),
-            placement_minimum_time_s=float(
-                placement.get("minimum_time_s", defaults.placement_minimum_time_s)
-            ),
             placement_linear_velocity_limit_mps=float(
                 placement.get(
                     "linear_velocity_limit_mps",
@@ -663,28 +614,6 @@ class PalletControlConfig:
                 placement.get(
                     "arm_send_once_timeout_s",
                     defaults.arm_send_once_timeout_s,
-                )
-            ),
-            placement_release_spread_m=float(
-                placement.get(
-                    "release_spread_m",
-                    defaults.placement_release_spread_m,
-                )
-            ),
-            placement_max_release_spread_m=float(
-                placement.get(
-                    "maximum_release_spread_m",
-                    defaults.placement_max_release_spread_m,
-                )
-            ),
-            placement_release_axis_max_deviation_rad=math.radians(
-                float(
-                    placement.get(
-                        "release_axis_max_deviation_deg",
-                        math.degrees(
-                            defaults.placement_release_axis_max_deviation_rad
-                        ),
-                    )
                 )
             ),
             placement_joint_stiffness=tuple(
@@ -757,13 +686,10 @@ class PalletControlConfig:
             "clearance_scene_max_span_s",
             "maximum_box_height_m",
             "minimum_clearance_m",
-            "placement_minimum_time_s",
             "placement_linear_velocity_limit_mps",
             "placement_angular_velocity_limit_radps",
             "placement_linear_acceleration_limit_mps2",
             "placement_angular_acceleration_limit_radps2",
-            "placement_max_release_spread_m",
-            "placement_release_axis_max_deviation_rad",
             "placement_joint_damping_ratio",
             "placement_nullspace_kp",
             "placement_nullspace_kd",
@@ -827,15 +753,11 @@ class PalletControlConfig:
             raise ValueError("maximum box height cannot be below measured 164 mm")
         if self.minimum_clearance_m < 0.050 - 1e-12:
             raise ValueError("minimum vertical clearance cannot be below 50 mm")
-        stream_period_s = 1.0 / self.send_rate_hz
-        if self.placement_minimum_time_s + 1e-12 < stream_period_s:
+        # The dead-man hold must outlast one send period or the base would stop
+        # between healthy packets.
+        if self.control_hold_time_s + 1e-12 < 1.0 / self.send_rate_hz:
             raise ValueError(
-                "placement minimum time must span at least one stream period"
-            )
-        if self.placement_minimum_time_s > 0.10 + 1e-12:
-            raise ValueError(
-                "placement minimum time cannot exceed 0.10 s in the repeated stream; "
-                "velocity/acceleration limits own trajectory smoothing"
+                "control_hold_time_s must span at least one stream period"
             )
         if self.placement_linear_velocity_limit_mps > 0.05 + 1e-12:
             raise ValueError("placement linear velocity limit cannot exceed 0.05 m/s")
@@ -890,13 +812,6 @@ class PalletControlConfig:
         )
         if self.placement_place_pose_duration_s > 5.0 + 1e-12:
             raise ValueError("place pose duration cannot exceed 5 seconds")
-        object.__setattr__(
-            self,
-            "placement_release_spread_m",
-            _finite_float_nonnegative(
-                self.placement_release_spread_m, "placement_release_spread_m"
-            ),
-        )
         squeeze = _finite_float_nonnegative(
             self.placement_squeeze_offset_m,
             "placement_squeeze_offset_m",
@@ -904,14 +819,6 @@ class PalletControlConfig:
         object.__setattr__(self, "placement_squeeze_offset_m", squeeze)
         if squeeze > 0.150 + 1e-12:
             raise ValueError("placement squeeze offset cannot exceed 150 mm")
-        if self.placement_release_spread_m > self.placement_max_release_spread_m:
-            raise ValueError("placement release spread cannot exceed its max bound")
-        if self.placement_max_release_spread_m > 0.040 + 1e-12:
-            raise ValueError("placement max release spread cannot exceed 40 mm")
-        if self.placement_release_axis_max_deviation_rad > math.radians(30.0) + 1e-12:
-            raise ValueError(
-                "placement release axis deviation limit cannot exceed 30 degrees"
-            )
         object.__setattr__(
             self,
             "placement_joint_stiffness",
@@ -1086,6 +993,10 @@ class PlacementTelemetry:
     stream_running: bool
     target_acknowledged: bool
     acknowledged_command_sequence: int
+    # The arms hold the ready posture from the verified all-joint Position move.
+    # With a mobility-only stream this is the only evidence that the body is
+    # where placement assumes it is.
+    ready_posture_verified: bool = False
     last_reason: str | None = None
     descent_plan_id: str | None = None
     lowering_distance_m: float | None = None
@@ -1720,6 +1631,7 @@ class RBY1PalletController:
         self._cartesian_arm_target: CartesianArmTarget | None = None
         self._placement_started = False
         self._placement_last_reason: str | None = None
+        self._ready_posture_verified = False
         self._descent_plan: PlacementDescentPlan | None = None
         self._last_acknowledged_body_target_token: str | None = None
         self._grip_result: GripContinuityResult | None = None
@@ -2071,6 +1983,10 @@ class RBY1PalletController:
             if latest_ack.ready_within(self.config.ready_tolerance_rad):
                 with self._condition:
                     self._ready_ack = latest_ack
+                    # With a mobility-only stream nothing re-commands the body, so
+                    # this verified move is the standing evidence that the arms,
+                    # torso and head are where placement assumes they are.
+                    self._ready_posture_verified = True
                     self._condition.notify_all()
                 return latest_ack
 
@@ -2864,20 +2780,20 @@ class RBY1PalletController:
                 "current EEF FK does not match frozen descent plan provenance"
             )
 
-    def start_cartesian_release_hold(
-        self,
-        *,
-        release_spread_m: float | None = None,
-    ) -> CartesianArmTarget:
-        """Open both EEF targets outward along the base ``+/-Y`` axis only."""
+    def start_cartesian_release_hold(self) -> CartesianArmTarget:
+        """Withdraw both hands to the demonstrated retreat posture.
 
-        spread = (
-            self.config.placement_release_spread_m
-            if release_spread_m is None
-            else _positive(release_spread_m, "release_spread_m")
-        )
-        if spread > self.config.placement_max_release_spread_m + 1e-12:
-            raise ValueError("release_spread_m exceeds the configured release bound")
+        Slot-1 used to open the hands outward along a computed grip axis.  A
+        demonstrated retreat posture replaces that entirely: it withdraws the
+        hands instead of spreading them, so there is no opening axis to validate
+        and no spread distance to bound.
+        """
+
+        if self.config.retreat_pose is None:
+            raise CombinedStreamError(
+                "cartesian release requires a demonstrated retreat posture; "
+                "placement.retreat_pose_deg is not configured"
+            )
         state = self._require_cartesian_placement_continuation_state()
         with self._condition:
             lowering_target = self._cartesian_arm_target
@@ -2896,26 +2812,17 @@ class RBY1PalletController:
                 "cartesian release requires the frozen descent plan that started "
                 "the placement"
             )
-        if self.config.retreat_pose is not None:
-            # The hands retreat to a demonstrated posture instead of opening
-            # outward.  Same conversion as the placement posture: forward
-            # kinematics of the joint target, issued as a Cartesian EEF pose,
-            # because the arms are bound to Cartesian impedance.
-            target = self._make_posture_target(
-                state,
-                loaded_target=lowering_target,
-                descent_plan=descent_plan,
-                place_pose=self.config.retreat_pose,
-                mode=ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE,
-                duration_s=self.config.placement_retreat_pose_duration_s,
-            )
-        else:
-            target = self._make_release_target_from_plan(
-                state,
-                lowering_target=lowering_target,
-                descent_plan=descent_plan,
-                release_spread_m=spread,
-            )
+        # Same conversion as the placement posture: forward kinematics of the
+        # demonstrated joints, issued as a Cartesian EEF pose because the arms
+        # are commanded by Cartesian impedance.
+        target = self._make_posture_target(
+            state,
+            loaded_target=lowering_target,
+            descent_plan=descent_plan,
+            place_pose=self.config.retreat_pose,
+            mode=ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE,
+            duration_s=self.config.placement_retreat_pose_duration_s,
+        )
         with self._condition:
             self._require_cartesian_continuation_locked()
             if self._cartesian_arm_target is not lowering_target:
@@ -3020,6 +2927,7 @@ class RBY1PalletController:
                 acknowledged_command_sequence=(
                     self._last_acknowledged_command_sequence
                 ),
+                ready_posture_verified=self._ready_posture_verified,
                 last_reason=self._placement_last_reason,
                 descent_plan_id=None if target is None else target.descent_plan_id,
                 lowering_distance_m=(
@@ -3899,99 +3807,6 @@ class RBY1PalletController:
             "Cartesian nullspace hold requires measured right/left arm indices"
         )
 
-    def _make_release_target_from_plan(
-        self,
-        state: MeasuredRobotState,
-        *,
-        lowering_target: CartesianArmTarget,
-        descent_plan: PlacementDescentPlan,
-        release_spread_m: float,
-    ) -> CartesianArmTarget:
-        """Open from the frozen plan geometry along base ``+/-Y`` only.
-
-        ``descent_plan.right_target_base`` already is "measured hand at plan
-        freeze, lowered by the planned descent, no squeeze", so adding the
-        spread here makes the commanded travel exactly one spread per hand and
-        leaves base X and Z untouched.  Deriving the target from the frozen plan
-        rather than the live wrists keeps it invariant to compliance, creep, or
-        a stalled measured pose at the instant release is requested.
-        """
-
-        self._validate_cartesian_state(state)
-        if lowering_target.mode is not ArmStreamMode.CARTESIAN_PLACEMENT_LOWERING:
-            raise ValueError("lowering_target must be a placement-lowering target")
-        if lowering_target.descent_plan_id != descent_plan.plan_id:
-            with self._condition:
-                self._placement_fail_closed_locked("release_plan_id_mismatch")
-            raise CombinedStreamError(
-                "release descent plan does not match the acknowledged lowering "
-                f"target: {lowering_target.descent_plan_id!r} != "
-                f"{descent_plan.plan_id!r}"
-            )
-        T_base_torso = self._T_base_torso_for_cartesian(state)
-        if T_base_torso is None:
-            raise MeasuredStateError("T_base_torso unexpectedly missing")
-        max_deviation_rad = self.config.placement_release_axis_max_deviation_rad
-        # The hands open along the torso-tip Y axis, matching the box-pick grip
-        # convention.  Expressing it in base keeps the frozen plan arithmetic in
-        # one frame while the commanded target is still emitted in torso coords.
-        torso_y_axis_base = np.asarray(T_base_torso[:3, 1], dtype=np.float64)
-        try:
-            release_axis, deviation_rad = resolve_release_axis(
-                lowering_target.inter_eef_axis_base,
-                torso_y_axis_base,
-                max_deviation_rad=max_deviation_rad,
-            )
-        except ValueError as exc:
-            with self._condition:
-                self._placement_fail_closed_locked("release_axis_unresolved")
-            raise MeasuredStateError(
-                f"base-Y release axis is unresolvable: {exc}"
-            ) from exc
-        if deviation_rad > max_deviation_rad:
-            with self._condition:
-                self._placement_fail_closed_locked("release_axis_deviation")
-            raise MeasuredStateError(
-                "measured inter-EEF axis deviates "
-                f"{math.degrees(deviation_rad):.2f} deg from base Y; the limit is "
-                f"{math.degrees(max_deviation_rad):.2f} deg"
-            )
-        outward = release_axis * float(release_spread_m)
-        # Open from whatever the acknowledged lowering command asked for.  With a
-        # demonstrated place posture that is the posture itself, so the frozen
-        # plan's base-Z targets no longer describe where the hands are going.
-        right_base = np.array(
-            lowering_target.right_T_base_eef,
-            dtype=np.float64,
-            copy=True,
-        )
-        left_base = np.array(
-            lowering_target.left_T_base_eef,
-            dtype=np.float64,
-            copy=True,
-        )
-        right_base[:3, 3] += outward
-        left_base[:3, 3] -= outward
-        T_torso_base = np.linalg.inv(T_base_torso)
-        right_nullspace, left_nullspace = self._arm_joint_vectors_for_target(state)
-        return CartesianArmTarget(
-            mode=ArmStreamMode.CARTESIAN_PLACEMENT_RELEASE,
-            right_T_torso_eef=T_torso_base @ right_base,
-            left_T_torso_eef=T_torso_base @ left_base,
-            right_T_base_eef=right_base,
-            left_T_base_eef=left_base,
-            right_nullspace_joint_rad=right_nullspace,
-            left_nullspace_joint_rad=left_nullspace,
-            inter_eef_axis_base=tuple(float(value) for value in release_axis),
-            created_monotonic_s=self._clock(),
-            source_state_sequence=state.sequence,
-            lowering_distance_m=lowering_target.lowering_distance_m,
-            squeeze_offset_m=0.0,
-            release_spread_m=float(release_spread_m),
-            descent_plan_id=descent_plan.plan_id,
-            release_axis_deviation_rad=deviation_rad,
-            target_source=lowering_target.target_source,
-        )
 
     def _make_measured_cartesian_hold_target(
         self,
@@ -4528,5 +4343,4 @@ __all__ = [
     "WheelStopStatus",
     "ZERO_MOBILITY",
     "evaluate_grip_continuity",
-    "resolve_release_axis",
 ]

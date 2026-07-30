@@ -22,6 +22,7 @@ import numpy as np
 
 ZERO_MOBILITY_COMMAND: tuple[float, float, float] = (0.0, 0.0, 0.0)
 LOADED_HOLD_MODE = "CARTESIAN_LOADED_HOLD"
+READY_HOLD_MODE = "JOINT_READY_HOLD"
 LOWERING_MODE = "CARTESIAN_PLACEMENT_LOWERING"
 RELEASE_MODE = "CARTESIAN_PLACEMENT_RELEASE"
 
@@ -107,21 +108,10 @@ class PlacementConfig:
     release_target_dwell_s: float = 0.35
     feedback_stale_s: float = 0.25
     lower_z_tolerance_m: float = 0.008
-    # Tolerances for the demonstrated place posture.  The posture moves the wrists
-    # in all three axes, so a single z tolerance is not the right check.
-    place_pose_tolerance_m: float = 0.015
-    # Entering SEATED and holding it are different questions.  The impedance
-    # settles with a steady-state error that wanders by a few millimetres, so
-    # re-checking the entry threshold every frame turns normal settling into
-    # lowered_geometry_lost_before_release.  The hold band must therefore be
-    # wider than the entry band.
-    place_pose_hold_tolerance_m: float = 0.035
-    place_pose_rotation_tolerance_rad: float = math.radians(4.0)
     lower_midpoint_xy_drift_m: float = 0.015
     lower_rotation_tolerance_rad: float = math.radians(3.0)
     release_target_translation_tolerance_m: float = 0.012
     release_target_rotation_tolerance_rad: float = math.radians(4.0)
-    release_spread_m: float = 0.120
     vision_seating_max_uncertainty_m: float = 0.015
     vision_evidence_fresh_after_s: float = 0.30
     vision_plan_valid_for_s: float = 15.0
@@ -138,9 +128,6 @@ class PlacementConfig:
             "release_timeout_s",
             "feedback_stale_s",
             "lower_z_tolerance_m",
-            "place_pose_tolerance_m",
-            "place_pose_hold_tolerance_m",
-            "place_pose_rotation_tolerance_rad",
             "lower_midpoint_xy_drift_m",
             "lower_rotation_tolerance_rad",
             "release_target_translation_tolerance_m",
@@ -153,8 +140,6 @@ class PlacementConfig:
         ):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
         for name in (
-            # 0.0 means "do not open the hands after seating the carton".
-            "release_spread_m",
             "pre_place_verify_dwell_s",
             "seated_dwell_s",
             "release_target_dwell_s",
@@ -178,11 +163,6 @@ class PlacementConfig:
             raise ValueError("descent_fraction cannot exceed 1.0")
         if self.vision_seating_max_uncertainty_m > 0.030 + 1e-12:
             raise ValueError("descent uncertainty limit cannot exceed 30 mm")
-        if self.place_pose_hold_tolerance_m < self.place_pose_tolerance_m - 1e-12:
-            raise ValueError(
-                "place_pose_hold_tolerance_m cannot be tighter than the entry "
-                "tolerance; holding would fail as soon as it is reached"
-            )
         if self.vision_plan_valid_for_s < self.lowering_timeout_s:
             raise ValueError(
                 "vision plan validity must cover the full lowering timeout"
@@ -216,7 +196,6 @@ class PlacementConfig:
             "descent_fraction",
             "maximum_planned_descent_m",
             "maximum_release_gap_m",
-            "release_axis_max_deviation_deg",
             "alignment_hold_before_place_s",
             "squeeze_offset_m",
             "place_pose_duration_s",
@@ -224,10 +203,6 @@ class PlacementConfig:
             "retreat_pose_deg",
             "retreat_pose_duration_s",
             "arm_send_once_timeout_s",
-            "place_pose_tolerance_m",
-            "place_pose_hold_tolerance_m",
-            "release_spread_m",
-            "maximum_release_spread_m",
             "joint_stiffness_nm_per_rad",
             "joint_damping_ratio",
             "nullspace_weight",
@@ -342,18 +317,6 @@ class PlacementConfig:
                         ),
                     )
                 )
-            ),
-            place_pose_tolerance_m=float(
-                raw.get("place_pose_tolerance_m", defaults.place_pose_tolerance_m)
-            ),
-            place_pose_hold_tolerance_m=float(
-                raw.get(
-                    "place_pose_hold_tolerance_m",
-                    defaults.place_pose_hold_tolerance_m,
-                )
-            ),
-            release_spread_m=float(
-                raw.get("release_spread_m", defaults.release_spread_m)
             ),
             vision_seating_max_uncertainty_m=float(
                 raw.get(
@@ -534,6 +497,9 @@ class PlacementInput:
     controller_stream_healthy: bool
     controller_arm_mode: str
     controller_target_ack: bool
+    # The all-joint ready Position move finished Ok and the measured posture
+    # matched.  Nothing re-commands the body afterwards, so this stays true.
+    ready_posture_verified: bool = False
     right_target_base: Any | None = None
     left_target_base: Any | None = None
     allow_vision_geometry_release: bool = False
@@ -560,10 +526,6 @@ class PlacementInput:
     # the carton, not before it, otherwise the gate rejects exactly the case the
     # posture exists to handle.
     place_pose_vertical_drop_m: float | None = None
-    # True when the release stage commands a demonstrated retreat posture instead
-    # of opening the hands outward.  The separation-increase check then does not
-    # apply: the hands withdraw rather than spread.
-    demonstrated_retreat_pose: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "now_s", _finite(self.now_s, "now_s"))
@@ -837,11 +799,7 @@ class Slot1PlacementSequencer:
 
     def _update_lowering(self, sample: PlacementInput) -> PlacementOutput:
         if self._state_elapsed(sample) > self.config.lowering_timeout_s:
-            return self._fault(
-                "lowering_or_seating_timeout"
-                + self._place_pose_progress_note(sample),
-                sample,
-            )
+            return self._fault("lowering_or_seating_timeout", sample)
         if sample.controller_arm_mode != LOWERING_MODE:
             return self._output(
                 sample,
@@ -855,12 +813,15 @@ class Slot1PlacementSequencer:
                 PlacementRequest.HOLD_CURRENT,
                 "waiting_for_lowering_command_ack",
             )
-        if not self._lower_geometry_reached(sample):
+        if not self._posture_is_one_shot(sample) and not self._lower_geometry_reached(
+            sample
+        ):
+            # A streamed base-Z descent has no completion signal, so geometry is
+            # the only evidence.  A one-shot posture reports Ok when it is done.
             return self._output(
                 sample,
                 PlacementRequest.HOLD_CURRENT,
-                "waiting_for_measured_planned_descent"
-                + self._place_pose_progress_note(sample),
+                "waiting_for_measured_planned_descent",
             )
         if not self._seating_evidence(sample):
             return self._fault("seating_evidence_unavailable", sample)
@@ -875,10 +836,11 @@ class Slot1PlacementSequencer:
     def _update_seated(self, sample: PlacementInput) -> PlacementOutput:
         if sample.controller_arm_mode != LOWERING_MODE or not sample.controller_target_ack:
             return self._fault("lowering_hold_ack_lost_before_release", sample)
-        if not self._lower_geometry_reached(sample, hold=True):
+        if not self._posture_is_one_shot(sample) and not self._lower_geometry_reached(
+            sample
+        ):
             return self._fault(
-                "lowered_geometry_lost_before_release"
-                + self._place_pose_progress_note(sample, hold=True),
+                "lowered_geometry_lost_before_release",
                 sample,
             )
         if not self._seating_evidence(sample):
@@ -922,17 +884,14 @@ class Slot1PlacementSequencer:
                 "waiting_for_release_command_ack",
                 release_authorized=True,
             )
-        if not self._release_target_reached(sample):
+        if not self._posture_is_one_shot(sample) and not self._release_target_reached(
+            sample
+        ):
             self._release_target_started_s = None
             return self._output(
                 sample,
                 PlacementRequest.HOLD_CURRENT,
-                "waiting_for_release_target"
-                + (
-                    self._place_pose_progress_note(sample)
-                    if sample.demonstrated_retreat_pose
-                    else ""
-                ),
+                "waiting_for_release_target",
                 release_authorized=True,
             )
         if self._release_target_started_s is None:
@@ -969,10 +928,13 @@ class Slot1PlacementSequencer:
             return "post_zero_wheel_stop_missing"
         if not sample.zero_command_ack:
             return "zero_command_ack_missing"
-        if sample.controller_arm_mode != LOADED_HOLD_MODE:
-            return "loaded_cartesian_hold_mode_missing"
-        if not sample.controller_target_ack:
-            return "loaded_cartesian_hold_ack_missing"
+        # The stream carries mobility only, so there is no arm hold to inspect.
+        # What matters is that the verified ready posture is still the standing
+        # body command and no placement posture is already in flight.
+        if not sample.ready_posture_verified:
+            return "ready_posture_not_verified"
+        if sample.controller_arm_mode != READY_HOLD_MODE:
+            return "arms_not_holding_the_ready_posture"
         release_path_available = bool(
             sample.allow_vision_geometry_release
             and self._vision_input_is_fresh(sample)
@@ -1011,6 +973,20 @@ class Slot1PlacementSequencer:
             return "feedback_timestamp_stale"
         return None
 
+    def _posture_is_one_shot(self, sample: PlacementInput) -> bool:
+        """True when the arms are moved by a one-shot command that reports Ok.
+
+        The Ok feedback is the completion signal, so re-deriving arrival from
+        measured geometry would only add a second, noisier opinion; the Cartesian
+        impedance settles with a steady-state residual that no fixed band
+        describes well.  The residual is still reported as diagnostics.
+        """
+
+        plan = self._descent_plan
+        return bool(
+            plan is not None and plan.target_source == "demonstrated_place_pose"
+        )
+
     def _place_pose_residual(
         self, sample: PlacementInput
     ) -> tuple[float, float, float, float] | None:
@@ -1037,51 +1013,11 @@ class Slot1PlacementSequencer:
             float(_rotation_error_rad(sample.left_eef_base, sample.left_target_base)),
         )
 
-    def _place_pose_progress_note(
-        self, sample: PlacementInput, *, hold: bool = False
-    ) -> str:
-        """Human-readable residual for the live line; empty when unavailable."""
 
-        plan = self._descent_plan
-        if plan is None or plan.target_source != "demonstrated_place_pose":
-            return ""
-        residual = self._place_pose_residual(sample)
-        if residual is None:
-            return " (controller target not reported)"
-        right_m, left_m, right_rad, left_rad = residual
-        limit = (
-            self.config.place_pose_hold_tolerance_m
-            if hold
-            else self.config.place_pose_tolerance_m
-        )
-        return (
-            f" (R {right_m * 1000.0:.0f}mm/{math.degrees(right_rad):.1f}deg,"
-            f" L {left_m * 1000.0:.0f}mm/{math.degrees(left_rad):.1f}deg,"
-            f" need {limit * 1000.0:.0f}mm/"
-            f"{math.degrees(self.config.place_pose_rotation_tolerance_rad):.0f}deg)"
-        )
-
-    def _lower_geometry_reached(
-        self, sample: PlacementInput, *, hold: bool = False
-    ) -> bool:
+    def _lower_geometry_reached(self, sample: PlacementInput) -> bool:
         plan = self._descent_plan
         if plan is None or not plan.valid:
             return False
-        if plan.target_source == "demonstrated_place_pose":
-            residual = self._place_pose_residual(sample)
-            if residual is None:
-                return False
-            right_m, left_m, right_rad, left_rad = residual
-            limit = (
-                self.config.place_pose_hold_tolerance_m
-                if hold
-                else self.config.place_pose_tolerance_m
-            )
-            return bool(
-                max(right_m, left_m) <= limit
-                and max(right_rad, left_rad)
-                <= self.config.place_pose_rotation_tolerance_rad
-            )
         expected_right_z = float(plan.right_target_base[2, 3])
         expected_left_z = float(plan.left_target_base[2, 3])
         z_ok = bool(
@@ -1125,19 +1061,6 @@ class Slot1PlacementSequencer:
     def _release_target_reached(self, sample: PlacementInput) -> bool:
         if sample.right_target_base is None or sample.left_target_base is None:
             return False
-        if sample.demonstrated_retreat_pose:
-            # A retreat posture withdraws the hands, so requiring the separation
-            # to grow would reject it.  The admissible evidence is the same as
-            # for the placement posture: the acknowledged controller target.
-            residual = self._place_pose_residual(sample)
-            if residual is None:
-                return False
-            right_m, left_m, right_rad, left_rad = residual
-            return bool(
-                max(right_m, left_m) <= self.config.place_pose_tolerance_m
-                and max(right_rad, left_rad)
-                <= self.config.place_pose_rotation_tolerance_rad
-            )
         target_reached = bool(
             np.linalg.norm(
                 sample.right_eef_base[:3, 3] - sample.right_target_base[:3, 3]
@@ -1157,27 +1080,9 @@ class Slot1PlacementSequencer:
         plan = self._descent_plan
         if plan is None:
             return False
-        initial_separation_m = float(
-            np.linalg.norm(
-                plan.right_eef_base[:3, 3] - plan.left_eef_base[:3, 3]
-            )
-        )
-        current_separation_m = float(
-            np.linalg.norm(
-                sample.right_eef_base[:3, 3] - sample.left_eef_base[:3, 3]
-            )
-        )
-        minimum_increase_m = max(
-            0.0,
-            2.0
-            * (
-                self.config.release_spread_m
-                - self.config.release_target_translation_tolerance_m
-            ),
-        )
-        return bool(
-            current_separation_m - initial_separation_m >= minimum_increase_m
-        )
+        # Nothing spreads the hands any more, so there is no separation increase
+        # to require: reaching the commanded target is the whole condition.
+        return True
 
     def _vision_seating_evidence(self, now_s: float) -> bool:
         if self._baseline_gap_timestamp_s is None:
@@ -1291,8 +1196,7 @@ class Slot1PlacementSequencer:
             )
         )
         max_release_separation_m = initial_separation_m + 2.0 * (
-            self.config.release_spread_m
-            + self.config.release_target_translation_tolerance_m
+            self.config.release_target_translation_tolerance_m
         )
         right_z_error_m = abs(
             float(sample.right_eef_base[2, 3])
@@ -1510,9 +1414,17 @@ class Slot1PlacementSequencer:
         rejected_plan_reason = (
             self._descent_plan_rejection_reason if active_plan is None else None
         )
+        residual = self._place_pose_residual(sample)
         diagnostics: dict[str, object] = {
             "controller_arm_mode": sample.controller_arm_mode,
             "controller_target_ack": sample.controller_target_ack,
+            # Diagnostics, not a gate: how far each wrist ended up from the
+            # commanded posture once the impedance settled.  place_24 measured
+            # 18 mm on the right and 13 mm on the left.
+            "posture_residual_right_m": None if residual is None else residual[0],
+            "posture_residual_left_m": None if residual is None else residual[1],
+            "posture_residual_right_rad": None if residual is None else residual[2],
+            "posture_residual_left_rad": None if residual is None else residual[3],
             "vision_seating_evidence": self._vision_seating_evidence(sample.now_s),
             "predicted_box_bottom_gap_m": self._baseline_gap_m,
             "predicted_box_bottom_gap_uncertainty_m": (

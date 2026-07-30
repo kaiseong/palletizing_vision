@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
 import pytest
@@ -30,7 +29,6 @@ def test_defaults_ship_a_descent_free_release() -> None:
     defaults = PlacementConfig()
     assert defaults.maximum_planned_descent_m == 0.0
     assert defaults.maximum_release_gap_m == pytest.approx(0.120)
-    assert PalletControlConfig().placement_release_spread_m == pytest.approx(0.030)
 
 
 def test_shipped_config_builds_both_placement_surfaces(root_config: dict) -> None:
@@ -43,12 +41,11 @@ def test_shipped_config_builds_both_placement_surfaces(root_config: dict) -> Non
     assert placement.maximum_planned_descent_m < placement.maximum_release_gap_m
     # Slot-1 commissioning seats the carton and stops there: the hands are not
     # opened afterwards, so the spread is zero on both surfaces.
-    assert control.placement_release_spread_m == 0.0
-    assert placement.release_spread_m == 0.0
-    assert control.placement_max_release_spread_m == pytest.approx(0.040)
-    assert control.placement_release_axis_max_deviation_rad == pytest.approx(
-        math.radians(10.0)
-    )
+    # Slot-1 withdraws the hands to a demonstrated posture instead of spreading
+    # them, so there is no spread distance or opening axis left to configure.
+    assert control.retreat_pose is not None
+    assert not hasattr(control, "placement_release_spread_m")
+    assert not hasattr(placement, "release_spread_m")
 
 
 def test_unknown_placement_keys_are_rejected(root_config: dict) -> None:
@@ -69,7 +66,7 @@ def test_new_keys_fall_back_to_defaults(root_config: dict) -> None:
         not in {
             "maximum_planned_descent_m",
             "maximum_release_gap_m",
-            "release_axis_max_deviation_deg",
+            "arm_send_once_timeout_s",
         }
     }
     placement = PlacementConfig.from_root_config({**root_config, "placement": stripped})
@@ -77,18 +74,9 @@ def test_new_keys_fall_back_to_defaults(root_config: dict) -> None:
         {**root_config, "placement": stripped}
     )
     defaults = PlacementConfig()
+    assert control.arm_send_once_timeout_s == PalletControlConfig().arm_send_once_timeout_s
     assert placement.maximum_planned_descent_m == defaults.maximum_planned_descent_m
     assert placement.maximum_release_gap_m == defaults.maximum_release_gap_m
-    assert control.placement_release_axis_max_deviation_rad == pytest.approx(
-        PalletControlConfig().placement_release_axis_max_deviation_rad
-    )
-
-
-def test_release_spread_above_the_bound_is_rejected(root_config: dict) -> None:
-    broken = dict(root_config)
-    broken["placement"] = {**root_config["placement"], "release_spread_m": 0.060}
-    with pytest.raises(ValueError, match="cannot exceed its max bound"):
-        PalletControlConfig.from_root_config(broken)
 
 
 def test_release_gap_below_the_clearance_floor_is_rejected() -> None:
@@ -99,8 +87,3 @@ def test_release_gap_below_the_clearance_floor_is_rejected() -> None:
 def test_planned_descent_cap_cannot_exceed_the_descent_ceiling() -> None:
     with pytest.raises(ValueError, match="cannot exceed maximum_descent_m"):
         PlacementConfig(maximum_planned_descent_m=0.400)
-
-
-def test_axis_deviation_limit_is_bounded() -> None:
-    with pytest.raises(ValueError, match="cannot exceed 30 degrees"):
-        PalletControlConfig(placement_release_axis_max_deviation_rad=math.radians(31.0))

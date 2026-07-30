@@ -79,7 +79,13 @@ def test_missing_start_gate_holds_without_faulting() -> None:
     assert not output.faulted
 
     output = sequencer.update(placement_input(controller_arm_mode="SOMETHING_ELSE"))
-    assert output.reason == "loaded_cartesian_hold_mode_missing"
+    assert output.reason == "arms_not_holding_the_ready_posture"
+    assert not output.faulted
+
+    # The verified ready move is the only evidence the body is where placement
+    # assumes it is, because the mobility-only stream never re-commands it.
+    output = sequencer.update(placement_input(ready_posture_verified=False))
+    assert output.reason == "ready_posture_not_verified"
     assert not output.faulted
 
 
@@ -274,20 +280,21 @@ def test_a_missing_place_pose_drop_is_missing_evidence_not_a_zero_drop() -> None
     assert output.reason == "descent_place_pose_drop_unavailable", output.reason
 
 
-def test_lowering_wait_reports_how_far_the_wrists_still_are() -> None:
-    """A bare wait reason cannot tell "not moving" from "stopped just short"."""
+def test_a_one_shot_posture_advances_on_feedback_not_on_geometry() -> None:
+    """Ok feedback is the completion signal; the residual is only diagnostics.
 
-    config = PlacementConfig(maximum_release_gap_m=GAP_M + 0.010)
-    sequencer = Slot1PlacementSequencer(config)
-    started = _drive(
-        sequencer,
-        demonstrated_place_pose=True,
-        place_pose_vertical_drop_m=0.030,
+    place_24 settled 18 mm from the commanded posture and place_30 then faulted
+    re-checking that same band, so a band cannot decide arrival.  The one-shot
+    reports Ok when the move is done.
+    """
+
+    config = PlacementConfig(
+        maximum_release_gap_m=GAP_M + 0.010, seated_dwell_s=0.0
     )
-    assert started.reason == "lowering_started", started.reason
+    sequencer = Slot1PlacementSequencer(config)
+    _drive(sequencer, demonstrated_place_pose=True, place_pose_vertical_drop_m=0.030)
 
-    # The controller acknowledges a target 40 mm below the measured wrists, so the
-    # residual is 40 mm: past the 15 mm tolerance and therefore still waiting.
+    # A 40 mm residual, far outside any band that was ever tried, still advances.
     output = sequencer.update(
         placement_input(
             now_s=101.0,
@@ -299,82 +306,27 @@ def test_lowering_wait_reports_how_far_the_wrists_still_are() -> None:
             left_target_base=transform(lowered(LEFT_EEF_XYZ, 0.040)),
         )
     )
-    assert output.reason.startswith("waiting_for_measured_planned_descent")
-    assert "R 40mm" in output.reason, output.reason
-    assert "L 40mm" in output.reason, output.reason
-    assert "need 15mm" in output.reason, output.reason
+    assert not output.faulted, output.reason
+    assert sequencer.state is not PlacementState.LOWERING
+    # The measurement is still recorded so a bad settle stays visible.
+    assert output.diagnostics["posture_residual_right_m"] == pytest.approx(0.040)
+    assert output.diagnostics["posture_residual_left_m"] == pytest.approx(0.040)
 
 
-def test_lowering_timeout_reports_the_residual_too() -> None:
-    config = PlacementConfig(maximum_release_gap_m=GAP_M + 0.010)
+def test_a_streamed_base_z_descent_still_needs_geometry() -> None:
+    """Without a one-shot there is no completion signal, so geometry stays."""
+
+    config = PlacementConfig(maximum_planned_descent_m=0.025)
     sequencer = Slot1PlacementSequencer(config)
-    _drive(
-        sequencer,
-        demonstrated_place_pose=True,
-        place_pose_vertical_drop_m=0.030,
-    )
+    started = drive_to_lowering(sequencer)
+    assert started.reason == "lowering_started"
     output = sequencer.update(
         placement_input(
-            now_s=100.2 + config.lowering_timeout_s + 1.0,
+            now_s=100.5,
             sequence=9,
             controller_arm_mode=LOWERING_MODE,
-            demonstrated_place_pose=True,
-            place_pose_vertical_drop_m=0.030,
-            right_target_base=transform(lowered(RIGHT_EEF_XYZ, 0.040)),
-            left_target_base=transform(lowered(LEFT_EEF_XYZ, 0.040)),
+            right_target_base=transform(lowered(RIGHT_EEF_XYZ, 0.025)),
+            left_target_base=transform(lowered(LEFT_EEF_XYZ, 0.025)),
         )
     )
-    assert output.faulted
-    assert output.reason.startswith("lowering_or_seating_timeout")
-    assert "R 40mm" in output.reason, output.reason
-
-
-def test_seated_holds_through_impedance_settling_but_not_a_real_loss() -> None:
-    """Entering SEATED and holding it are different thresholds.
-
-    place_30 reached the posture, advanced to SEATED, and faulted on the next
-    frame with lowered_geometry_lost_before_release: the impedance residual
-    wandered back across the entry threshold while it settled.
-    """
-
-    config = PlacementConfig(
-        maximum_release_gap_m=GAP_M + 0.010,
-        place_pose_tolerance_m=0.025,
-        place_pose_hold_tolerance_m=0.045,
-    )
-    sequencer = Slot1PlacementSequencer(config)
-    _drive(sequencer, demonstrated_place_pose=True, place_pose_vertical_drop_m=0.030)
-
-    def step(now_s: float, residual_m: float):
-        return sequencer.update(
-            placement_input(
-                now_s=now_s,
-                sequence=9,
-                controller_arm_mode=LOWERING_MODE,
-                demonstrated_place_pose=True,
-                place_pose_vertical_drop_m=0.030,
-                right_target_base=transform(lowered(RIGHT_EEF_XYZ, residual_m)),
-                left_target_base=transform(lowered(LEFT_EEF_XYZ, residual_m)),
-            )
-        )
-
-    # Inside the entry band: LOWERING completes.
-    assert step(101.0, 0.020).reason == "seating_evidence_started"
-    assert sequencer.state is PlacementState.SEATED
-    # Settling past the entry band but inside the hold band must not fault.
-    held = step(101.2, 0.035)
-    assert not held.faulted, held.reason
-    assert held.reason.startswith("seating_evidence"), held.reason
-    # Beyond the hold band it is a real loss.
-    lost = step(101.4, 0.060)
-    assert lost.faulted
-    assert lost.reason.startswith("lowered_geometry_lost_before_release")
-    assert "R 60mm" in lost.reason, lost.reason
-    assert "need 45mm" in lost.reason, lost.reason
-
-
-def test_the_hold_band_cannot_be_tighter_than_the_entry_band() -> None:
-    with pytest.raises(ValueError, match="cannot be tighter than the entry"):
-        PlacementConfig(
-            place_pose_tolerance_m=0.025, place_pose_hold_tolerance_m=0.010
-        )
+    assert output.reason.startswith("waiting_for_measured_planned_descent")

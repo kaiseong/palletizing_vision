@@ -110,3 +110,39 @@ descent and a 59 mm drop.
 
 Neither the 15 mm descent nor the base-Y release has been executed on the robot
 yet.
+
+## Superseded by demonstrated postures (2026-07-30)
+
+The base-Y opening this ADR introduced is gone.  Slot-1 now seats the carton with
+an operator-demonstrated placement posture and then withdraws the hands to a
+second demonstrated posture, both converted with forward kinematics and issued as
+one-shot Cartesian impedance commands.
+
+What that removed, and why each removal is safe:
+
+- `release_spread_m`, `maximum_release_spread_m`: a retreat posture withdraws the
+  hands instead of spreading them, so there is no spread distance to bound.
+- `release_axis_max_deviation_deg` and `resolve_release_axis`: with no opening
+  direction there is no axis to validate against the grip axis.  The check that
+  the two wrists are at least 100 mm apart is kept.
+- `place_pose_tolerance_m`, `place_pose_hold_tolerance_m`: a one-shot reports Ok
+  when the move is done, so arrival is no longer re-derived from measured
+  geometry.  Live runs showed why that mattered: place_24 settled 18 mm from the
+  commanded posture and place_30 then faulted re-checking the same band.  The
+  residual is still recorded as diagnostics.
+- `placement_minimum_time_s`: declared and validated but never wired to a
+  command.  A one-shot can ask for its full duration, so the 0.10 s streamed
+  ceiling has no successor.
+
+What this ADR established and is still in force:
+
+- No base-Z descent.  `maximum_planned_descent_m` stays 0.0 and a demonstrated
+  posture is rejected outright if a non-zero descent is also planned.
+- The release gap ceiling, `maximum_release_gap_m` 0.170, now judged on the gap
+  that remains after the posture has lowered the carton.  A missing drop is
+  missing evidence, not a zero drop.
+- Stream expiry is unrecoverable and containment has a 30 s timeout.
+- CLI control faults exit 3 with a traceback rather than as usage errors.
+
+The combined stream this ADR assumed is also gone: the stream carries SE(2)
+mobility only, which is what allows the arms to be commanded one shot at a time.

@@ -1400,6 +1400,9 @@ def _placement_input(
         controller_stream_healthy=bool(getattr(telemetry, "stream_running", False)),
         controller_arm_mode=_controller_arm_mode_string(telemetry),
         controller_target_ack=bool(getattr(telemetry, "target_acknowledged", False)),
+        ready_posture_verified=bool(
+            getattr(telemetry, "ready_posture_verified", False)
+        ),
         right_target_base=getattr(telemetry, "right_T_base_eef_target", None),
         left_target_base=getattr(telemetry, "left_T_base_eef_target", None),
         allow_vision_geometry_release=bool(allow_vision_geometry_release),
@@ -1424,10 +1427,6 @@ def _placement_input(
         ),
         demonstrated_place_pose=bool(
             getattr(getattr(controller, "config", None), "place_pose", None) is not None
-        ),
-        demonstrated_retreat_pose=bool(
-            getattr(getattr(controller, "config", None), "retreat_pose", None)
-            is not None
         ),
         place_pose_vertical_drop_m=(
             drop_probe()
