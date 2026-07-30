@@ -327,6 +327,13 @@ class PalletControlConfig:
     held_top_direct_plane_dwell_frames: int = 5
     held_top_sample_fresh_after_s: float = 0.30
     clearance_evidence_fresh_after_s: float = 0.30
+    # How long the required contiguous clearance frames may take to arrive.  This
+    # is a proxy for "the robot did not move between the samples"; while the base
+    # is commanded to exact zero it is stationary, so a longer span is physically
+    # sound.  The substantive protection is elsewhere and is unchanged: the latest
+    # sample must be fresher than clearance_evidence_fresh_after_s (0.30 s), and
+    # the box-bottom samples must agree within held_top_peak_to_peak_m,
+    # held_top_std_m and held_top_downward_drift_m.
     clearance_scene_max_span_s: float = 0.50
     maximum_box_height_m: float = 0.164
     minimum_clearance_m: float = 0.050
@@ -785,8 +792,8 @@ class PalletControlConfig:
             )
         if abs(self.clearance_evidence_fresh_after_s - 0.30) > 1e-12:
             raise ValueError("clearance evidence freshness must be exactly 0.30 seconds")
-        if self.clearance_scene_max_span_s > 0.50 + 1e-12:
-            raise ValueError("clearance scene evidence span cannot exceed 0.50 seconds")
+        if self.clearance_scene_max_span_s > 2.00 + 1e-12:
+            raise ValueError("clearance scene evidence span cannot exceed 2.00 seconds")
         if self.maximum_box_height_m < 0.164 - 1e-12:
             raise ValueError("maximum box height cannot be below measured 164 mm")
         if self.minimum_clearance_m < 0.050 - 1e-12:

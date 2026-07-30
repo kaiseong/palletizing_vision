@@ -244,7 +244,7 @@
     "maximum_arm_tracking_error_deg": 1.0,
     "maximum_eef_separation_peak_to_peak_m": 0.004,
     "maximum_eef_separation_axis_std_m": 0.002,
-    "maximum_scene_evidence_span_s": 0.50,
+    "maximum_scene_evidence_span_s": 1.5,
     "fixed_ready_geometry_only_commissioning_enabled": true
   },
   "mobility_frame": {

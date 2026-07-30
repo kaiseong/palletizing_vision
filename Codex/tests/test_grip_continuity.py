@@ -270,3 +270,86 @@ def test_controller_publishes_the_result_for_the_motion_gate() -> None:
     )
     assert result is controller._grip_result
     assert result.passed, result.reasons
+
+
+# --------------------------------------------------------------------------- #
+# intermittent clearance evidence must still latch
+# --------------------------------------------------------------------------- #
+def spread_window(*, step_s: float, count: int = 6, now_s: float = NOW_S, **overrides):
+    """Contiguous observations arriving every ``step_s`` instead of every frame."""
+
+    window = []
+    for index in range(count):
+        capture = now_s - step_s * (count - 1) - 0.05 + step_s * index
+        window.append(
+            Scene(
+                frame_id=10 + index,
+                accepted_observation_sequence=1 + index,
+                capture_timestamp_s=capture,
+                accepted_monotonic_s=capture + 0.01,
+                **overrides,
+            )
+        )
+    return window
+
+
+def test_evidence_spread_over_a_second_latches_when_the_span_allows_it() -> None:
+    """Live runs collect the five frames intermittently, not at camera rate.
+
+    place_26 held in clearance_evidence_span_too_long for its whole run: the five
+    contiguous direct-plane frames did arrive, spread over more than 0.50 s.
+    """
+
+    window = spread_window(step_s=0.20)  # four gaps over the five kept frames
+    relaxed = evaluate(
+        config=PalletControlConfig(
+            fixed_ready_geometry_only_commissioning_enabled=True,
+            clearance_scene_max_span_s=1.5,
+        ),
+        scene_window=window,
+    )
+    assert "clearance_evidence_span_too_long" not in relaxed.reasons, relaxed.reasons
+
+    strict = evaluate(config=CONFIG, scene_window=window)
+    assert "clearance_evidence_span_too_long" in strict.reasons
+
+
+def test_a_longer_span_does_not_admit_stale_evidence() -> None:
+    """Loosening the span must not loosen freshness."""
+
+    config = PalletControlConfig(
+        fixed_ready_geometry_only_commissioning_enabled=True,
+        clearance_scene_max_span_s=1.5,
+    )
+    window = spread_window(step_s=0.20)
+    stale = evaluate(
+        config=config,
+        scene_window=window,
+        now_s=window[-1].accepted_monotonic_s + 0.50,
+    )
+    assert "clearance_eef_box_bottom_evidence_stale" in stale.reasons
+
+
+def test_a_longer_span_does_not_admit_a_sinking_carton() -> None:
+    """The box-bottom agreement checks remain the substantive protection."""
+
+    config = PalletControlConfig(
+        fixed_ready_geometry_only_commissioning_enabled=True,
+        clearance_scene_max_span_s=1.5,
+    )
+    window = spread_window(step_s=0.20)
+    # Make the carton sink across the window instead of holding still.
+    for index, scene in enumerate(window):
+        object.__setattr__(
+            scene, "held_box_bottom_z_base_m", 0.200 - 0.004 * index
+        )
+    result = evaluate(config=config, scene_window=window)
+    assert any("box_bottom" in reason for reason in result.reasons), result.reasons
+
+
+def test_the_span_cannot_be_widened_without_limit() -> None:
+    with pytest.raises(ValueError, match="cannot exceed 2.00 seconds"):
+        PalletControlConfig(
+            fixed_ready_geometry_only_commissioning_enabled=True,
+            clearance_scene_max_span_s=2.5,
+        )
