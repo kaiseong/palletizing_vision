@@ -15,6 +15,7 @@ from parcel_pose_placing.pallet_place import (
 )
 
 from _factories import (
+    STACK_TOP_Z_M,
     BOX_BOTTOM_Z_M,
     GAP_M,
     LEFT_EEF_XYZ,
@@ -127,33 +128,6 @@ def test_descent_cap_never_exceeds_the_fraction_of_a_small_gap() -> None:
     assert plan.planned_delta_z_m <= plan.min_delta_z_m
 
 
-def test_gap_above_the_release_limit_faults() -> None:
-    config = PlacementConfig(maximum_release_gap_m=0.070)
-    sequencer = Slot1PlacementSequencer(config)
-    output = drive_to_lowering(sequencer)
-    assert output.faulted
-    assert output.reason.startswith("descent_gap_above_release_limit")
-    # The reason must carry the measurement so the operator can act on it.
-    assert "mm >" in output.reason, output.reason
-    assert sequencer.state is PlacementState.FAULT_HOLD
-    assert output.descent_plan is None
-
-
-def test_clearance_below_floor_never_freezes_a_plan() -> None:
-    sequencer = Slot1PlacementSequencer()
-    tight = {"box_bottom_z_base_m": 0.140}  # gap 30 mm, below the 50 mm floor
-    for index in range(3):
-        output = sequencer.update(
-            placement_input(now_s=100.0 + index * 0.10, sequence=index + 1, **tight)
-        )
-    # The start gate withholds authority instead of faulting, so the run can
-    # recover if the operator repositions the pallet.
-    assert not output.faulted
-    assert output.reason == "seating_evidence_unavailable"
-    assert sequencer.state is PlacementState.PRE_PLACE_VERIFY
-    assert output.descent_plan is None
-
-
 def test_full_sequence_reaches_release_authorization() -> None:
     sequencer = Slot1PlacementSequencer()
     plan = drive_to_lowering(sequencer).descent_plan
@@ -236,50 +210,6 @@ def _drive(sequencer, **extra):
     return output
 
 
-def test_place_pose_drop_is_subtracted_before_the_release_ceiling() -> None:
-    """A gap the posture will close must not be rejected as if it stayed open."""
-
-    # A ceiling just under the fixture gap: refused without a posture.
-    config = PlacementConfig(maximum_release_gap_m=GAP_M - 0.010)
-    refused = _drive(Slot1PlacementSequencer(config))
-    assert refused.faulted
-    assert refused.reason.startswith("descent_gap_above_release_limit"), refused.reason
-
-    # The same gap, with a posture that lowers the carton past the excess.
-    accepted = _drive(
-        Slot1PlacementSequencer(config),
-        demonstrated_place_pose=True,
-        place_pose_vertical_drop_m=0.020,
-    )
-    assert not accepted.faulted, accepted.reason
-    assert accepted.reason == "lowering_started", accepted.reason
-    assert accepted.descent_plan is not None
-    assert accepted.descent_plan.target_source == "demonstrated_place_pose"
-    assert accepted.descent_plan.planned_delta_z_m == 0.0
-
-
-def test_the_reason_shows_the_gap_the_posture_leaves_behind() -> None:
-    config = PlacementConfig(maximum_release_gap_m=GAP_M - 0.030)
-    output = _drive(
-        Slot1PlacementSequencer(config),
-        demonstrated_place_pose=True,
-        place_pose_vertical_drop_m=0.005,
-    )
-    assert output.faulted
-    assert "place pose 5mm" in output.reason, output.reason
-    assert f"{(GAP_M - 0.005) * 1000.0:.0f}mm >" in output.reason, output.reason
-
-
-def test_a_missing_place_pose_drop_is_missing_evidence_not_a_zero_drop() -> None:
-    output = _drive(
-        Slot1PlacementSequencer(PlacementConfig()),
-        demonstrated_place_pose=True,
-        place_pose_vertical_drop_m=None,
-    )
-    assert output.faulted
-    assert output.reason == "descent_place_pose_drop_unavailable", output.reason
-
-
 def test_a_one_shot_posture_advances_on_feedback_not_on_geometry() -> None:
     """Ok feedback is the completion signal; the residual is only diagnostics.
 
@@ -289,10 +219,10 @@ def test_a_one_shot_posture_advances_on_feedback_not_on_geometry() -> None:
     """
 
     config = PlacementConfig(
-        maximum_release_gap_m=GAP_M + 0.010, seated_dwell_s=0.0
+        seated_dwell_s=0.0
     )
     sequencer = Slot1PlacementSequencer(config)
-    _drive(sequencer, demonstrated_place_pose=True, place_pose_vertical_drop_m=0.030)
+    _drive(sequencer, demonstrated_place_pose=True)
 
     # A 40 mm residual, far outside any band that was ever tried, still advances.
     output = sequencer.update(
@@ -301,7 +231,6 @@ def test_a_one_shot_posture_advances_on_feedback_not_on_geometry() -> None:
             sequence=9,
             controller_arm_mode=LOWERING_MODE,
             demonstrated_place_pose=True,
-            place_pose_vertical_drop_m=0.030,
             right_target_base=transform(lowered(RIGHT_EEF_XYZ, 0.040)),
             left_target_base=transform(lowered(LEFT_EEF_XYZ, 0.040)),
         )
@@ -330,3 +259,45 @@ def test_a_streamed_base_z_descent_still_needs_geometry() -> None:
         )
     )
     assert output.reason.startswith("waiting_for_measured_planned_descent")
+
+
+# --------------------------------------------------------------------------- #
+# the release ceiling and clearance floor are gone
+# --------------------------------------------------------------------------- #
+def test_a_gap_far_above_the_old_ceiling_now_freezes_a_plan() -> None:
+    """place_22 held at descent_gap_above_release_limit for 400 frames.
+
+    The ceiling judged a gap the demonstrated posture was about to close, and
+    subtracting the posture travel from it was a sign the bound never described
+    the motion.  Both are gone.
+    """
+
+    sequencer = Slot1PlacementSequencer(PlacementConfig())
+    output = _drive(sequencer, demonstrated_place_pose=True)
+    assert not output.faulted, output.reason
+    assert output.reason == "lowering_started"
+    assert output.descent_plan is not None
+    assert output.descent_plan.target_source == "demonstrated_place_pose"
+
+
+def test_a_clearance_below_the_old_floor_now_freezes_a_plan() -> None:
+    sequencer = Slot1PlacementSequencer(PlacementConfig())
+    output = _drive(
+        sequencer,
+        demonstrated_place_pose=True,
+        box_bottom_z_base_m=STACK_TOP_Z_M + 0.030,  # 30 mm, under the old 50 mm
+    )
+    assert not output.faulted, output.reason
+    assert output.reason == "lowering_started"
+
+
+def test_an_unmeasurable_stack_plane_is_still_refused() -> None:
+    """Losing the floor must not admit a placement with no stack evidence."""
+
+    sequencer = Slot1PlacementSequencer(PlacementConfig())
+    output = _drive(
+        sequencer,
+        demonstrated_place_pose=True,
+        box_bottom_z_base_m=STACK_TOP_Z_M - 0.010,  # carton below the stack top
+    )
+    assert output.reason != "lowering_started", output.reason

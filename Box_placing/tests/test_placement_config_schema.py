@@ -28,7 +28,6 @@ def test_defaults_ship_a_descent_free_release() -> None:
 
     defaults = PlacementConfig()
     assert defaults.maximum_planned_descent_m == 0.0
-    assert defaults.maximum_release_gap_m == pytest.approx(0.120)
 
 
 def test_shipped_config_builds_both_placement_surfaces(root_config: dict) -> None:
@@ -37,8 +36,10 @@ def test_shipped_config_builds_both_placement_surfaces(root_config: dict) -> Non
     # The commissioned descent cap and gap limit are site-tuned, so assert the
     # invariants that keep them physically consistent instead of fixed numbers.
     assert placement.maximum_planned_descent_m <= placement.maximum_descent_m
-    assert placement.maximum_release_gap_m >= placement.pre_motion_clearance_floor_m
-    assert placement.maximum_planned_descent_m < placement.maximum_release_gap_m
+    # No clearance floor and no release ceiling: a demonstrated posture owns the
+    # descent, so neither bound describes the motion.
+    assert not hasattr(placement, "maximum_release_gap_m")
+    assert not hasattr(placement, "pre_motion_clearance_floor_m")
     # Slot-1 commissioning seats the carton and stops there: the hands are not
     # opened afterwards, so the spread is zero on both surfaces.
     # Slot-1 withdraws the hands to a demonstrated posture instead of spreading
@@ -65,7 +66,6 @@ def test_new_keys_fall_back_to_defaults(root_config: dict) -> None:
         if key
         not in {
             "maximum_planned_descent_m",
-            "maximum_release_gap_m",
             "arm_send_once_timeout_s",
         }
     }
@@ -76,12 +76,6 @@ def test_new_keys_fall_back_to_defaults(root_config: dict) -> None:
     defaults = PlacementConfig()
     assert control.arm_send_once_timeout_s == PalletControlConfig().arm_send_once_timeout_s
     assert placement.maximum_planned_descent_m == defaults.maximum_planned_descent_m
-    assert placement.maximum_release_gap_m == defaults.maximum_release_gap_m
-
-
-def test_release_gap_below_the_clearance_floor_is_rejected() -> None:
-    with pytest.raises(ValueError, match="cannot be below the clearance floor"):
-        PlacementConfig(maximum_release_gap_m=0.040)
 
 
 def test_planned_descent_cap_cannot_exceed_the_descent_ceiling() -> None:

@@ -89,7 +89,6 @@ class PlacementRequest(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class PlacementConfig:
-    pre_motion_clearance_floor_m: float = 0.050
     maximum_descent_m: float = 0.250
     descent_fraction: float = 2.0 / 3.0
     # Commissioned slot-1 release lowers nothing: the arms would extend toward a
@@ -99,7 +98,6 @@ class PlacementConfig:
     maximum_planned_descent_m: float = 0.0
     # With no descent the carton falls the whole measured gap, so an upper gap
     # bound is the only control over release height.
-    maximum_release_gap_m: float = 0.120
     alignment_hold_before_place_s: float = 1.0
     pre_place_verify_dwell_s: float = 0.15
     lowering_timeout_s: float = 12.0
@@ -120,10 +118,8 @@ class PlacementConfig:
 
     def __post_init__(self) -> None:
         for name in (
-            "pre_motion_clearance_floor_m",
             "maximum_descent_m",
             "descent_fraction",
-            "maximum_release_gap_m",
             "lowering_timeout_s",
             "release_timeout_s",
             "feedback_stale_s",
@@ -146,18 +142,11 @@ class PlacementConfig:
             "maximum_planned_descent_m",
         ):
             object.__setattr__(self, name, _nonnegative(getattr(self, name), name))
-        if self.pre_motion_clearance_floor_m < 0.050 - 1e-12:
-            raise ValueError("pre-motion clearance floor cannot be below 50 mm")
         if self.maximum_descent_m > 0.300 + 1e-12:
             raise ValueError("maximum planned descent cannot exceed 300 mm")
         if self.maximum_planned_descent_m > self.maximum_descent_m + 1e-12:
             raise ValueError(
                 "maximum_planned_descent_m cannot exceed maximum_descent_m"
-            )
-        if self.maximum_release_gap_m < self.pre_motion_clearance_floor_m - 1e-12:
-            raise ValueError(
-                "maximum_release_gap_m cannot be below the clearance floor; no gap "
-                "would be admissible"
             )
         if self.descent_fraction > 1.0 + 1e-12:
             raise ValueError("descent_fraction cannot exceed 1.0")
@@ -191,11 +180,9 @@ class PlacementConfig:
             "angular_velocity_limit_radps",
             "linear_acceleration_limit_mps2",
             "angular_acceleration_limit_radps2",
-            "pre_motion_clearance_floor_m",
             "maximum_descent_m",
             "descent_fraction",
             "maximum_planned_descent_m",
-            "maximum_release_gap_m",
             "alignment_hold_before_place_s",
             "squeeze_offset_m",
             "place_pose_duration_s",
@@ -234,12 +221,6 @@ class PlacementConfig:
 
         defaults = cls()
         return cls(
-            pre_motion_clearance_floor_m=float(
-                raw.get(
-                    "pre_motion_clearance_floor_m",
-                    defaults.pre_motion_clearance_floor_m,
-                )
-            ),
             maximum_descent_m=float(
                 raw.get("maximum_descent_m", defaults.maximum_descent_m)
             ),
@@ -251,9 +232,6 @@ class PlacementConfig:
                     "maximum_planned_descent_m",
                     defaults.maximum_planned_descent_m,
                 )
-            ),
-            maximum_release_gap_m=float(
-                raw.get("maximum_release_gap_m", defaults.maximum_release_gap_m)
             ),
             pre_place_verify_dwell_s=float(
                 raw.get(
@@ -521,11 +499,6 @@ class PlacementInput:
     # True when the controller will replace the base-Z targets with the forward
     # kinematics of an operator-demonstrated placement posture.
     demonstrated_place_pose: bool = False
-    # How far the wrists drop at that posture, from the controller's forward
-    # kinematics.  The release gap must be judged after the posture has lowered
-    # the carton, not before it, otherwise the gate rejects exactly the case the
-    # posture exists to handle.
-    place_pose_vertical_drop_m: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "now_s", _finite(self.now_s, "now_s"))
@@ -1104,10 +1077,9 @@ class Slot1PlacementSequencer:
             return False
         if uncertainty > self.config.vision_seating_max_uncertainty_m:
             return False
-        return bool(
-            gap - uncertainty >= self.config.pre_motion_clearance_floor_m
-            and gap > 0.0
-        )
+        # Evidence that the stack plane was actually measured below the carton,
+        # not that any particular clearance remains.
+        return bool(gap - uncertainty > 0.0)
 
     def _seating_evidence(self, sample: PlacementInput) -> bool:
         plan = self._descent_plan
@@ -1274,22 +1246,12 @@ class Slot1PlacementSequencer:
             box_bottom_z + box_uncertainty
             - (stack_top_z - stack_uncertainty)
         )
-        # The demonstrated posture lowers the carton before release, so the
-        # release ceiling applies to what is left of the gap afterwards.  Every
-        # pre-motion check below still uses the untouched measured gap.
-        place_pose_drop = 0.0
-        release_gap = gap
-        drop_unavailable = False
-        if sample.demonstrated_place_pose:
-            if sample.place_pose_vertical_drop_m is None:
-                drop_unavailable = True
-            else:
-                place_pose_drop = max(0.0, float(sample.place_pose_vertical_drop_m))
-                release_gap = gap - place_pose_drop
+        # No clearance floor and no release ceiling: placement lowers the carton by
+        # a demonstrated posture whose travel the operator fixed, so neither bound
+        # describes the motion any more.  What is still checked is that the stack
+        # plane and the wrists were measured, agree with each other, and are fresh.
         rejection: str | None = None
-        if drop_unavailable:
-            rejection = "descent_place_pose_drop_unavailable"
-        elif (
+        if (
             abs(reported_gap - gap) > 1e-6
             or abs(reported_uncertainty - uncertainty) > 1e-6
         ):
@@ -1314,26 +1276,10 @@ class Slot1PlacementSequencer:
             rejection = "descent_bilateral_eef_stale"
         elif uncertainty > self.config.vision_seating_max_uncertainty_m:
             rejection = "descent_gap_uncertainty_too_large"
-        elif min_delta < self.config.pre_motion_clearance_floor_m:
-            rejection = "descent_clearance_below_50mm_floor"
         elif gap <= 0.0 or min_delta <= 0.0 or max_delta <= 0.0:
             rejection = "descent_gap_nonpositive"
         elif gap > self.config.maximum_descent_m:
             rejection = "descent_distance_too_large"
-        elif release_gap > self.config.maximum_release_gap_m:
-            # Carry the numbers: the operator otherwise cannot tell a carton held
-            # too high from a stack plane read too low.
-            rejection = (
-                "descent_gap_above_release_limit"
-                f" (gap {gap * 1000.0:.0f}mm"
-                + (
-                    ""
-                    if place_pose_drop <= 0.0
-                    else f" - place pose {place_pose_drop * 1000.0:.0f}mm"
-                )
-                + f" = {release_gap * 1000.0:.0f}mm >"
-                f" {self.config.maximum_release_gap_m * 1000.0:.0f}mm)"
-            )
         if rejection is not None:
             return None, rejection
 

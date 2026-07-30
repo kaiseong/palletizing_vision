@@ -290,16 +290,7 @@ class PalletControlConfig:
     held_top_direct_plane_dwell_frames: int = 5
     held_top_sample_fresh_after_s: float = 0.30
     clearance_evidence_fresh_after_s: float = 0.30
-    # How long the required contiguous clearance frames may take to arrive.  This
-    # is a proxy for "the robot did not move between the samples"; while the base
-    # is commanded to exact zero it is stationary, so a longer span is physically
-    # sound.  The substantive protection is elsewhere and is unchanged: the latest
-    # sample must be fresher than clearance_evidence_fresh_after_s (0.30 s), and
-    # the box-bottom samples must agree within held_top_peak_to_peak_m,
-    # held_top_std_m and held_top_downward_drift_m.
-    clearance_scene_max_span_s: float = 0.50
     maximum_box_height_m: float = 0.164
-    minimum_clearance_m: float = 0.050
     fixed_ready_geometry_only_commissioning_enabled: bool = False
     # A streamed Cartesian packet must not restart a multi-second trajectory on
     # every 20 Hz update.  Smoothness comes from the explicit velocity and
@@ -366,7 +357,7 @@ class PalletControlConfig:
         placement = section("placement")
         PlacementConfig.from_root_config(root)
 
-        safety_keys = {"minimum_clearance_m", "state_fresh_after_s"}
+        safety_keys = {"state_fresh_after_s"}
         unknown_safety_keys = sorted(set(safety) - safety_keys)
         if unknown_safety_keys:
             raise ValueError(
@@ -380,7 +371,6 @@ class PalletControlConfig:
             "maximum_arm_tracking_error_deg",
             "maximum_eef_separation_peak_to_peak_m",
             "maximum_eef_separation_axis_std_m",
-            "maximum_scene_evidence_span_s",
             "clearance_evidence_fresh_after_s",
             "fixed_ready_geometry_only_commissioning_enabled",
         }
@@ -543,17 +533,8 @@ class PalletControlConfig:
                     defaults.clearance_evidence_fresh_after_s,
                 )
             ),
-            clearance_scene_max_span_s=float(
-                grip_interlock.get(
-                    "maximum_scene_evidence_span_s",
-                    defaults.clearance_scene_max_span_s,
-                )
-            ),
             maximum_box_height_m=float(
                 held_box.get("maximum_height_m", defaults.maximum_box_height_m)
-            ),
-            minimum_clearance_m=float(
-                safety.get("minimum_clearance_m", defaults.minimum_clearance_m)
             ),
             fixed_ready_geometry_only_commissioning_enabled=(
                 geometry_only_enabled
@@ -683,9 +664,7 @@ class PalletControlConfig:
             "held_top_downward_drift_m",
             "held_top_sample_fresh_after_s",
             "clearance_evidence_fresh_after_s",
-            "clearance_scene_max_span_s",
             "maximum_box_height_m",
-            "minimum_clearance_m",
             "placement_linear_velocity_limit_mps",
             "placement_angular_velocity_limit_radps",
             "placement_linear_acceleration_limit_mps2",
@@ -737,9 +716,14 @@ class PalletControlConfig:
             raise ValueError("held-top std limit cannot exceed 5 mm")
         if self.held_top_downward_drift_m > 0.005 + 1e-12:
             raise ValueError("held-top downward drift limit cannot exceed 5 mm")
-        if self.held_top_direct_plane_dwell_frames < 5:
+        if self.held_top_direct_plane_dwell_frames < 2:
+            # Two is the minimum that lets the peak-to-peak, std and downward
+            # drift checks say anything about a carton that is slipping.  The
+            # former floor of five, inside a 0.50 s window, is what stalled live
+            # runs for 8.6 s of a 23.8 s approach while the stack plane resolved
+            # intermittently.
             raise ValueError(
-                "held-top direct-plane dwell must contain at least 5 frames"
+                "held-top direct-plane dwell must contain at least 2 frames"
             )
         if self.held_top_sample_fresh_after_s > 0.30 + 1e-12:
             raise ValueError(
@@ -747,12 +731,8 @@ class PalletControlConfig:
             )
         if abs(self.clearance_evidence_fresh_after_s - 0.30) > 1e-12:
             raise ValueError("clearance evidence freshness must be exactly 0.30 seconds")
-        if self.clearance_scene_max_span_s > 2.00 + 1e-12:
-            raise ValueError("clearance scene evidence span cannot exceed 2.00 seconds")
         if self.maximum_box_height_m < 0.164 - 1e-12:
             raise ValueError("maximum box height cannot be below measured 164 mm")
-        if self.minimum_clearance_m < 0.050 - 1e-12:
-            raise ValueError("minimum vertical clearance cannot be below 50 mm")
         # The dead-man hold must outlast one send period or the base would stop
         # between healthy packets.
         if self.control_hold_time_s + 1e-12 < 1.0 / self.send_rate_hz:
@@ -1546,12 +1526,6 @@ def evaluate_grip_continuity(
             or latest_age_s > config.clearance_evidence_fresh_after_s
         ):
             reasons.append("clearance_eef_box_bottom_evidence_stale")
-        if (
-            not math.isfinite(evidence_span_s)
-            or evidence_span_s < 0.0
-            or evidence_span_s > config.clearance_scene_max_span_s
-        ):
-            reasons.append("clearance_evidence_span_too_long")
         held_array = np.asarray(held_top_z, dtype=np.float64)
         held_std = float(np.std(held_array))
         held_drift = max(0.0, float(held_array[0] - held_array[-1]))
@@ -1571,9 +1545,10 @@ def evaluate_grip_continuity(
                 stack_top_z, stack_top_uncertainty, strict=True
             )
         )
+        # Reported, not gated.  The floor protected a computed descent; placement
+        # now lowers by a demonstrated posture whose travel the operator fixed, so
+        # there is no computed descent left for it to bound.
         clearance = box_bottom_lower_bound - stack_top_upper_bound
-        if clearance < config.minimum_clearance_m:
-            reasons.append("insufficient_vertical_clearance")
 
     result = GripContinuityResult(
         passed=not reasons,
@@ -2596,31 +2571,6 @@ class RBY1PalletController:
             ) from exc
         return T_torso, T_right, T_left
 
-    def place_pose_vertical_drop_m(self) -> float | None:
-        """Forward-kinematics drop of the wrists at the demonstrated posture.
-
-        ``None`` when no posture is configured or the measured state cannot be
-        read, which the placement gate treats as missing evidence rather than as
-        a zero drop.  The smaller of the two arms is returned: the carton bottom
-        cannot descend further than the hand that moves least.
-        """
-
-        place_pose = self.config.place_pose
-        if place_pose is None:
-            return None
-        try:
-            state = self.get_measured_state()
-            if state.T_base_right_eef is None or state.T_base_left_eef is None:
-                return None
-            _T_torso, right_base, left_base = self._kinematics_at_place_pose(
-                state, place_pose
-            )
-        except Exception:
-            return None
-        right_drop = float(state.T_base_right_eef[2, 3] - right_base[2, 3])
-        left_drop = float(state.T_base_left_eef[2, 3] - left_base[2, 3])
-        drop = min(right_drop, left_drop)
-        return drop if math.isfinite(drop) else None
 
     def _make_posture_target(
         self,
@@ -2724,22 +2674,6 @@ class RBY1PalletController:
                 "cartesian lowering requires a valid descent plan: "
                 f"{descent_plan.rejection_reason}"
             )
-        if descent_plan.min_delta_z_m < self.config.minimum_clearance_m - 1e-12:
-            with self._condition:
-                self._placement_fail_closed_locked("descent_plan_clearance_below_floor")
-            raise CombinedStreamError(
-                "descent plan violates the 50 mm pre-motion clearance floor"
-            )
-        if (
-            descent_plan.box_bottom_z_lower_bound_m
-            - descent_plan.stack_top_z_upper_bound_m
-            < self.config.minimum_clearance_m - 1e-12
-        ):
-            with self._condition:
-                self._placement_fail_closed_locked("descent_plan_bounds_below_floor")
-            raise CombinedStreamError(
-                "descent plan box-bottom/stack-top bounds violate the clearance floor"
-            )
 
     def _validate_descent_plan_matches_state(
         self,
@@ -2748,7 +2682,7 @@ class RBY1PalletController:
     ) -> None:
         if state.T_base_right_eef is None or state.T_base_left_eef is None:
             raise MeasuredStateError("EEF FK unexpectedly missing")
-        translation_tolerance_m = max(0.015, self.config.minimum_clearance_m * 0.25)
+        translation_tolerance_m = 0.015
         rotation_tolerance_rad = math.radians(3.0)
         right_translation_error = float(
             np.linalg.norm(

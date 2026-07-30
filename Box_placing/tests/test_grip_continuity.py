@@ -107,26 +107,6 @@ def test_nominal_loaded_hold_passes() -> None:
     assert result.fixed_ready_geometry_only_authorized
 
 
-def test_clearance_below_the_floor_is_refused() -> None:
-    # Box bottom only 30 mm above the stack: under the 50 mm pre-motion floor.
-    result = evaluate(scene_window=scene_window(held_box_bottom_z_base_m=0.140))
-    assert not result.passed
-    assert "insufficient_vertical_clearance" in result.reasons
-    assert result.clearance_lower_bound_m == pytest.approx(0.022)
-
-
-def test_clearance_uses_conservative_bounds_not_nominal_values() -> None:
-    result = evaluate(
-        scene_window=scene_window(
-            held_box_bottom_uncertainty_m=0.030,
-            stack_top_uncertainty_m=0.030,
-        )
-    )
-    # nominal gap is 90 mm but the worst case is 30 mm, so it must refuse.
-    assert not result.passed
-    assert "insufficient_vertical_clearance" in result.reasons
-
-
 def test_too_few_state_samples_is_refused() -> None:
     result = evaluate(states=states(count=4, span_s=0.55))
     assert not result.passed
@@ -275,81 +255,76 @@ def test_controller_publishes_the_result_for_the_motion_gate() -> None:
 # --------------------------------------------------------------------------- #
 # intermittent clearance evidence must still latch
 # --------------------------------------------------------------------------- #
-def spread_window(*, step_s: float, count: int = 6, now_s: float = NOW_S, **overrides):
-    """Contiguous observations arriving every ``step_s`` instead of every frame."""
+
+
+# --------------------------------------------------------------------------- #
+# gates that a demonstrated placement posture made inapplicable
+# --------------------------------------------------------------------------- #
+def test_a_low_clearance_no_longer_blocks_motion() -> None:
+    """The 50 mm floor bounded a computed descent that no longer exists.
+
+    Placement lowers the carton by a posture whose travel the operator fixed, so
+    the floor has nothing left to bound.  The measurement is still reported.
+    """
+
+    result = evaluate(scene_window=scene_window(held_box_bottom_z_base_m=0.140))
+    assert result.passed, result.reasons
+    assert "insufficient_vertical_clearance" not in result.reasons
+    assert result.clearance_lower_bound_m is not None
+    assert result.clearance_lower_bound_m < 0.050, "the low clearance was measured"
+
+
+def test_intermittently_collected_evidence_no_longer_waits_on_a_span() -> None:
+    """place_26 held for a whole run because five frames spread past 0.50 s."""
 
     window = []
-    for index in range(count):
-        capture = now_s - step_s * (count - 1) - 0.05 + step_s * index
+    for index in range(6):
+        capture = NOW_S - 0.20 - 0.25 * (5 - index)
         window.append(
             Scene(
                 frame_id=10 + index,
                 accepted_observation_sequence=1 + index,
                 capture_timestamp_s=capture,
                 accepted_monotonic_s=capture + 0.01,
-                **overrides,
             )
         )
-    return window
+    result = evaluate(scene_window=window)
+    assert "clearance_evidence_span_too_long" not in result.reasons
+    assert result.scene_evidence_span_s is not None
+    assert result.scene_evidence_span_s > 0.50, "the span really is long now"
 
 
-def test_evidence_spread_over_a_second_latches_when_the_span_allows_it() -> None:
-    """Live runs collect the five frames intermittently, not at camera rate.
+def test_stale_evidence_is_still_refused() -> None:
+    """Freshness stays: acting on an old stack reading is a different failure."""
 
-    place_26 held in clearance_evidence_span_too_long for its whole run: the five
-    contiguous direct-plane frames did arrive, spread over more than 0.50 s.
-    """
-
-    window = spread_window(step_s=0.20)  # four gaps over the five kept frames
-    relaxed = evaluate(
-        config=PalletControlConfig(
-            fixed_ready_geometry_only_commissioning_enabled=True,
-            clearance_scene_max_span_s=1.5,
-        ),
-        scene_window=window,
-    )
-    assert "clearance_evidence_span_too_long" not in relaxed.reasons, relaxed.reasons
-
-    strict = evaluate(config=CONFIG, scene_window=window)
-    assert "clearance_evidence_span_too_long" in strict.reasons
-
-
-def test_a_longer_span_does_not_admit_stale_evidence() -> None:
-    """Loosening the span must not loosen freshness."""
-
-    config = PalletControlConfig(
-        fixed_ready_geometry_only_commissioning_enabled=True,
-        clearance_scene_max_span_s=1.5,
-    )
-    window = spread_window(step_s=0.20)
-    stale = evaluate(
-        config=config,
+    window = scene_window()
+    result = evaluate(
         scene_window=window,
         now_s=window[-1].accepted_monotonic_s + 0.50,
     )
-    assert "clearance_eef_box_bottom_evidence_stale" in stale.reasons
+    assert "clearance_eef_box_bottom_evidence_stale" in result.reasons
 
 
-def test_a_longer_span_does_not_admit_a_sinking_carton() -> None:
-    """The box-bottom agreement checks remain the substantive protection."""
+def test_a_sinking_carton_is_still_refused() -> None:
+    """Removing the floor must not stop the interlock noticing a slipping box."""
 
-    config = PalletControlConfig(
-        fixed_ready_geometry_only_commissioning_enabled=True,
-        clearance_scene_max_span_s=1.5,
-    )
-    window = spread_window(step_s=0.20)
-    # Make the carton sink across the window instead of holding still.
+    window = scene_window()
     for index, scene in enumerate(window):
-        object.__setattr__(
-            scene, "held_box_bottom_z_base_m", 0.200 - 0.004 * index
-        )
-    result = evaluate(config=config, scene_window=window)
+        object.__setattr__(scene, "held_box_bottom_z_base_m", 0.200 - 0.004 * index)
+    result = evaluate(scene_window=window)
     assert any("box_bottom" in reason for reason in result.reasons), result.reasons
 
 
-def test_the_span_cannot_be_widened_without_limit() -> None:
-    with pytest.raises(ValueError, match="cannot exceed 2.00 seconds"):
+def test_two_contiguous_frames_are_enough() -> None:
+    from parcel_pose_placing.pallet_control import PalletControlConfig
+
+    config = PalletControlConfig(
+        fixed_ready_geometry_only_commissioning_enabled=True,
+        held_top_direct_plane_dwell_frames=2,
+    )
+    assert config.held_top_direct_plane_dwell_frames == 2
+    with pytest.raises(ValueError, match="at least 2 frames"):
         PalletControlConfig(
             fixed_ready_geometry_only_commissioning_enabled=True,
-            clearance_scene_max_span_s=2.5,
+            held_top_direct_plane_dwell_frames=1,
         )

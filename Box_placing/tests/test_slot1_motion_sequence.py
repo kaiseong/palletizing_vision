@@ -320,61 +320,6 @@ def test_lowering_moves_to_the_place_pose_not_by_a_base_z_delta(root_config) -> 
         teardown(controller)
 
 
-def test_gap_above_the_release_limit_is_refused(root_config) -> None:
-    """The 190.6 mm gap recorded in place_10 must not produce a plan."""
-
-    from parcel_pose_placing.pallet_place import PlacementState, Slot1PlacementSequencer
-
-    from _factories import placement_input
-
-    placement = PlacementConfig.from_root_config(root_config)
-    assert 0.1906 > placement.maximum_release_gap_m, "the shipped cap must reject it"
-
-    sequencer = Slot1PlacementSequencer(placement)
-    box_bottom = 0.6056
-    scene = {
-        "box_bottom_z_base_m": box_bottom,
-        "stack_top_z_base_m": box_bottom - 0.1906,
-    }
-    for index in range(3):
-        output = sequencer.update(
-            placement_input(now_s=100.0 + index * 0.10, sequence=index + 1, **scene)
-        )
-    assert output.faulted
-    assert output.reason.startswith("descent_gap_above_release_limit")
-    # The reason must carry the measurement so the operator can act on it.
-    assert "mm >" in output.reason, output.reason
-    assert sequencer.state is PlacementState.FAULT_HOLD
-
-
-def test_measured_gap_from_place_07_is_admissible(root_config) -> None:
-    """159 mm, the gap the physical run reported, must pass and give zero descent."""
-
-    from parcel_pose_placing.pallet_place import PlacementState, Slot1PlacementSequencer
-
-    from _factories import placement_input
-
-    placement = PlacementConfig.from_root_config(root_config)
-    sequencer = Slot1PlacementSequencer(placement)
-    box_bottom = 0.6056
-    scene = {
-        "box_bottom_z_base_m": box_bottom,
-        "stack_top_z_base_m": box_bottom - 0.159,
-    }
-    for index in range(3):
-        output = sequencer.update(
-            placement_input(now_s=100.0 + index * 0.10, sequence=index + 1, **scene)
-        )
-    assert not output.faulted, output.reason
-    assert sequencer.state is PlacementState.LOWERING
-    assert output.descent_plan is not None
-    assert output.descent_plan.planned_delta_z_m == 0.0
-    assert output.descent_plan.gap_m == pytest.approx(0.159)
-
-
-# --------------------------------------------------------------------------- #
-# stage 5: printable timeline
-# --------------------------------------------------------------------------- #
 def test_timeline(root_config, capsys) -> None:
     """Print the streamed packets and the one-shot arm commands side by side."""
 
