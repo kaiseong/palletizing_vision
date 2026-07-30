@@ -806,7 +806,11 @@ class Slot1PlacementSequencer:
 
     def _update_lowering(self, sample: PlacementInput) -> PlacementOutput:
         if self._state_elapsed(sample) > self.config.lowering_timeout_s:
-            return self._fault("lowering_or_seating_timeout", sample)
+            return self._fault(
+                "lowering_or_seating_timeout"
+                + self._place_pose_progress_note(sample),
+                sample,
+            )
         if sample.controller_arm_mode != LOWERING_MODE:
             return self._output(
                 sample,
@@ -824,7 +828,8 @@ class Slot1PlacementSequencer:
             return self._output(
                 sample,
                 PlacementRequest.HOLD_CURRENT,
-                "waiting_for_measured_planned_descent",
+                "waiting_for_measured_planned_descent"
+                + self._place_pose_progress_note(sample),
             )
         if not self._seating_evidence(sample):
             return self._fault("seating_evidence_unavailable", sample)
@@ -966,29 +971,61 @@ class Slot1PlacementSequencer:
             return "feedback_timestamp_stale"
         return None
 
+    def _place_pose_residual(
+        self, sample: PlacementInput
+    ) -> tuple[float, float, float, float] | None:
+        """Distance and rotation still separating each wrist from its target.
+
+        The posture owns where the hands go, so the only admissible evidence is
+        the acknowledged controller target rather than a base-Z expectation.
+        """
+
+        if sample.right_target_base is None or sample.left_target_base is None:
+            return None
+        return (
+            float(
+                np.linalg.norm(
+                    sample.right_eef_base[:3, 3] - sample.right_target_base[:3, 3]
+                )
+            ),
+            float(
+                np.linalg.norm(
+                    sample.left_eef_base[:3, 3] - sample.left_target_base[:3, 3]
+                )
+            ),
+            float(_rotation_error_rad(sample.right_eef_base, sample.right_target_base)),
+            float(_rotation_error_rad(sample.left_eef_base, sample.left_target_base)),
+        )
+
+    def _place_pose_progress_note(self, sample: PlacementInput) -> str:
+        """Human-readable residual for the live line; empty when unavailable."""
+
+        plan = self._descent_plan
+        if plan is None or plan.target_source != "demonstrated_place_pose":
+            return ""
+        residual = self._place_pose_residual(sample)
+        if residual is None:
+            return " (controller target not reported)"
+        right_m, left_m, right_rad, left_rad = residual
+        return (
+            f" (R {right_m * 1000.0:.0f}mm/{math.degrees(right_rad):.1f}deg,"
+            f" L {left_m * 1000.0:.0f}mm/{math.degrees(left_rad):.1f}deg,"
+            f" need {self.config.place_pose_tolerance_m * 1000.0:.0f}mm/"
+            f"{math.degrees(self.config.place_pose_rotation_tolerance_rad):.0f}deg)"
+        )
+
     def _lower_geometry_reached(self, sample: PlacementInput) -> bool:
         plan = self._descent_plan
         if plan is None or not plan.valid:
             return False
         if plan.target_source == "demonstrated_place_pose":
-            # The posture owns where the hands go, so the only admissible
-            # evidence is the acknowledged controller target.
-            if sample.right_target_base is None or sample.left_target_base is None:
+            residual = self._place_pose_residual(sample)
+            if residual is None:
                 return False
+            right_m, left_m, right_rad, left_rad = residual
             return bool(
-                np.linalg.norm(
-                    sample.right_eef_base[:3, 3] - sample.right_target_base[:3, 3]
-                )
-                <= self.config.place_pose_tolerance_m
-                and np.linalg.norm(
-                    sample.left_eef_base[:3, 3] - sample.left_target_base[:3, 3]
-                )
-                <= self.config.place_pose_tolerance_m
-                and _rotation_error_rad(
-                    sample.right_eef_base, sample.right_target_base
-                )
-                <= self.config.place_pose_rotation_tolerance_rad
-                and _rotation_error_rad(sample.left_eef_base, sample.left_target_base)
+                max(right_m, left_m) <= self.config.place_pose_tolerance_m
+                and max(right_rad, left_rad)
                 <= self.config.place_pose_rotation_tolerance_rad
             )
         expected_right_z = float(plan.right_target_base[2, 3])

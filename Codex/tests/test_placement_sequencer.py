@@ -20,6 +20,7 @@ from _factories import (
     LEFT_EEF_XYZ,
     RIGHT_EEF_XYZ,
     placement_input,
+    transform,
 )
 
 
@@ -271,3 +272,58 @@ def test_a_missing_place_pose_drop_is_missing_evidence_not_a_zero_drop() -> None
     )
     assert output.faulted
     assert output.reason == "descent_place_pose_drop_unavailable", output.reason
+
+
+def test_lowering_wait_reports_how_far_the_wrists_still_are() -> None:
+    """A bare wait reason cannot tell "not moving" from "stopped just short"."""
+
+    config = PlacementConfig(maximum_release_gap_m=GAP_M + 0.010)
+    sequencer = Slot1PlacementSequencer(config)
+    started = _drive(
+        sequencer,
+        demonstrated_place_pose=True,
+        place_pose_vertical_drop_m=0.030,
+    )
+    assert started.reason == "lowering_started", started.reason
+
+    # The controller acknowledges a target 40 mm below the measured wrists, so the
+    # residual is 40 mm: past the 15 mm tolerance and therefore still waiting.
+    output = sequencer.update(
+        placement_input(
+            now_s=101.0,
+            sequence=9,
+            controller_arm_mode=LOWERING_MODE,
+            demonstrated_place_pose=True,
+            place_pose_vertical_drop_m=0.030,
+            right_target_base=transform(lowered(RIGHT_EEF_XYZ, 0.040)),
+            left_target_base=transform(lowered(LEFT_EEF_XYZ, 0.040)),
+        )
+    )
+    assert output.reason.startswith("waiting_for_measured_planned_descent")
+    assert "R 40mm" in output.reason, output.reason
+    assert "L 40mm" in output.reason, output.reason
+    assert "need 15mm" in output.reason, output.reason
+
+
+def test_lowering_timeout_reports_the_residual_too() -> None:
+    config = PlacementConfig(maximum_release_gap_m=GAP_M + 0.010)
+    sequencer = Slot1PlacementSequencer(config)
+    _drive(
+        sequencer,
+        demonstrated_place_pose=True,
+        place_pose_vertical_drop_m=0.030,
+    )
+    output = sequencer.update(
+        placement_input(
+            now_s=100.2 + config.lowering_timeout_s + 1.0,
+            sequence=9,
+            controller_arm_mode=LOWERING_MODE,
+            demonstrated_place_pose=True,
+            place_pose_vertical_drop_m=0.030,
+            right_target_base=transform(lowered(RIGHT_EEF_XYZ, 0.040)),
+            left_target_base=transform(lowered(LEFT_EEF_XYZ, 0.040)),
+        )
+    )
+    assert output.faulted
+    assert output.reason.startswith("lowering_or_seating_timeout")
+    assert "R 40mm" in output.reason, output.reason
