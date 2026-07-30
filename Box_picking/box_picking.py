@@ -1,4 +1,4 @@
-"""One-command D435 live viewer for the RB-Y1 parcel-pose estimator."""
+"""One-command box-picking facade for the RB-Y1 parcel workflow."""
 
 from __future__ import annotations
 
@@ -9,19 +9,6 @@ from typing import Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_CALIBRATION = PROJECT_ROOT / "configs" / "rby1m_v1_2_fixed_table_nominal.json"
-
-
-def _has_option(argv: Sequence[str], name: str) -> bool:
-    return any(argument == name or argument.startswith(f"{name}=") for argument in argv)
-
-
-def build_live_view_args(argv: Sequence[str]) -> list[str]:
-    arguments = ["live-view"]
-    if not _has_option(argv, "--calibration"):
-        arguments.extend(("--calibration", str(DEFAULT_CALIBRATION)))
-    arguments.extend(argv)
-    return arguments
 
 
 def _reexec_active_conda_python() -> None:
@@ -42,19 +29,26 @@ def _reexec_active_conda_python() -> None:
     )
 
 
-def _run_parcel_pose(argv: Sequence[str]) -> int:
-    source_root = PROJECT_ROOT / "src"
-    sys.path.insert(0, str(source_root))
-    from parcel_pose.cli import main as parcel_pose_main
+def _ensure_source_tree_imports() -> None:
+    repo_root = PROJECT_ROOT.parent
+    for source_root in (repo_root / "Common" / "src", PROJECT_ROOT / "src"):
+        source_entry = str(source_root)
+        if source_entry not in sys.path:
+            sys.path.insert(0, source_entry)
 
-    return parcel_pose_main(argv)
+
+def _run_box_picking(argv: Sequence[str]) -> int:
+    _ensure_source_tree_imports()
+    from parcel_pose_picking.cli import main as box_picking_main
+
+    return box_picking_main(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     if argv is None:
         _reexec_active_conda_python()
     user_args = sys.argv[1:] if argv is None else list(argv)
-    return _run_parcel_pose(build_live_view_args(user_args))
+    return _run_box_picking(user_args)
 
 
 if __name__ == "__main__":

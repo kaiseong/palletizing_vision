@@ -18,14 +18,14 @@ from typing import Any, Mapping, Protocol, TextIO
 import numpy as np
 from numpy.typing import NDArray
 
-from .calibration import factory_extrinsics_to_transform
+from parcel_pose_common.calibration import factory_extrinsics_to_transform
 from .estimator import EstimationEvidence, ParcelPoseEstimator
 from .evaluation import BasePoseDiagnostic, base_pose_from_estimate
-from .models import Calibration, CameraIntrinsics, EstimatorConfig
+from parcel_pose_common.models import Calibration, CameraIntrinsics, EstimatorConfig
 from .projection import unproject_plane_points
-from .realsense_adapter import D435StreamConfig, RealSenseAdapter
-from .transforms import transform_points
-from .visualization import project_points_to_pixels
+from parcel_pose_common.realsense_adapter import D435StreamConfig, RealSenseAdapter
+from parcel_pose_common.transforms import transform_points
+from parcel_pose_common.visualization import project_points_to_pixels
 
 
 ImageArray = NDArray[np.uint8]
@@ -64,7 +64,7 @@ def _cv2() -> Any:
         import cv2  # type: ignore[import-not-found]
     except ImportError as exc:
         raise LiveViewUnavailableError(
-            "OpenCV is required to render live-view overlays; install OpenCV or "
+            "OpenCV is required to render box-picking overlays; install OpenCV or "
             "run --headless without --output-mp4"
         ) from exc
     return cv2
@@ -109,7 +109,7 @@ def _require_highgui(cv2: Any) -> None:
     ):
         raise LiveViewUnavailableError(
             "no graphical display is available; set DISPLAY/WAYLAND_DISPLAY or run "
-            "live-view from the Jetson desktop session, or pass --headless"
+            "box_picking.py from the Jetson desktop session, or pass --headless"
         )
 
 
@@ -266,7 +266,7 @@ def _open_video(
     )
     if not writer.isOpened():
         writer.release()
-        raise LiveViewUnavailableError(f"cannot open live-view MP4 writer: {path}")
+        raise LiveViewUnavailableError(f"cannot open box-picking MP4 writer: {path}")
     return writer
 
 
@@ -333,7 +333,7 @@ def run_live_view(
 
     if calibration.T_base_from_depth is None:
         raise ValueError(
-            "live-view requires a complete T_base_from_depth transform chain"
+            "box_picking.py requires a complete T_base_from_depth transform chain"
         )
     if max_frames is not None and max_frames <= 0:
         raise ValueError("--max-frames must be positive")
@@ -344,11 +344,11 @@ def run_live_view(
 
     output_mp4_path = _prepare_output_path(
         None if output_mp4 is None else Path(output_mp4),
-        description="live-view video",
+        description="box-picking video",
     )
     log_jsonl_path = _prepare_output_path(
         None if log_jsonl is None else Path(log_jsonl),
-        description="live-view telemetry",
+        description="box-picking telemetry",
     )
     if (
         output_mp4_path is not None
@@ -413,7 +413,7 @@ def run_live_view(
                         )
                 except Exception as exc:
                     raise LiveViewUnavailableError(
-                        f"OpenCV could not create the live-view window: {exc}"
+                        f"OpenCV could not create the box-picking window: {exc}"
                     ) from exc
 
             while max_frames is None or processed_frames < max_frames:
@@ -472,7 +472,7 @@ def run_live_view(
                         key = int(cv2.waitKey(1)) & 0xFF
                     except Exception as exc:
                         raise LiveViewUnavailableError(
-                            f"OpenCV live-view display failed: {exc}"
+                            f"OpenCV box-picking display failed: {exc}"
                         ) from exc
                 processed_frames += 1
                 if key in {27, ord("q"), ord("Q")}:

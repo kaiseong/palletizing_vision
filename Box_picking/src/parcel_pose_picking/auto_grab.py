@@ -1,8 +1,9 @@
-"""Opt-in RB-Y1 mobile alignment and seamless grasp orchestration.
+"""Automatic RB-Y1 box-picking lifecycle orchestration.
 
-This module owns the robot lifecycle only when :class:`AutoGrabRuntime.start`
-is called with ``execute=True``.  The default live viewer never imports the
-RB-Y1 SDK, connects to a robot, or creates a command stream.
+The default operator entrypoint prepares the fixed RB-Y1 M setup, runs bounded
+mobile alignment from parcel pose measurements, waits for a measured wheel
+stop, shuts down the mobility stream, and hands off to the same robot session
+for the packaged grasp sequence.
 """
 
 from __future__ import annotations
@@ -17,9 +18,9 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .angles import line_angle_difference_rad
+from parcel_pose_common.angles import line_angle_difference_rad
 from .evaluation import BasePoseDiagnostic
-from .mobile_servo import (
+from parcel_pose_common.mobile_servo import (
     MobileVisualServo,
     PoseMeasurement,
     RBY1CommandPumpConfig,
@@ -478,7 +479,7 @@ class AutoGrabRuntime:
 
         if not self._execute:
             raise AutoGrabError(
-                "robot execution is disabled; --auto-grab is required"
+                "robot execution is disabled; automatic box-picking execution is required"
             )
         if self._started:
             raise AutoGrabError("auto-grab runtime has already started")
@@ -490,7 +491,7 @@ class AutoGrabRuntime:
                     self._sdk = importlib.import_module("rby1_sdk")
                 except ImportError as exc:
                     raise AutoGrabError(
-                        "rby1_sdk is required for --auto-grab on the robot PC"
+                        "rby1_sdk is required for automatic box-picking on the robot PC"
                     ) from exc
             if self._grabbing is None:
                 self._grabbing = _load_grabbing_sequence()

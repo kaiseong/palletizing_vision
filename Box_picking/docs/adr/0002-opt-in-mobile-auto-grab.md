@@ -2,8 +2,11 @@
 
 ## Status
 
-Accepted and amended for horizontal-yaw alignment and pre-mobile arm posture,
-2026-07-28.
+Superseded by
+[ADR 0003: Default automatic box-picking entrypoint](0003-default-automatic-picking.md),
+2026-07-30.
+
+This ADR is preserved as the historical opt-in `live-view --auto-grab` design.
 
 ## Context
 

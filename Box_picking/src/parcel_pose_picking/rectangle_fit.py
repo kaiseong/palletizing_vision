@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from .models import BoxModel
+from parcel_pose_common.models import BoxModel
 
 
 FloatArray = NDArray[np.float64]

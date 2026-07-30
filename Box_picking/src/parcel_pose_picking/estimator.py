@@ -14,18 +14,18 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from .angles import classify_canonical_angle_deg
-from .models import (
+from parcel_pose_common.angles import classify_canonical_angle_deg
+from parcel_pose_common.models import (
     Calibration,
     CameraIntrinsics,
     EstimatorConfig,
     Plane,
     PoseEstimate,
 )
-from .plane import offset_plane
+from parcel_pose_common.plane import offset_plane
 from .projection import DepthPlaneProjector, PlaneProjection, unproject_plane_points
 from .rectangle_fit import RectangleFitConfig, RectangleFitResult, fit_fixed_rectangle
-from .transforms import transform_directions, transform_points
+from parcel_pose_common.transforms import transform_directions, transform_points
 
 
 FloatArray = NDArray[np.float64]

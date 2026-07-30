@@ -29,8 +29,8 @@
 # Force/torque (FT) sensor data on both arms is monitored in real time through
 # a state-update callback (robot.start_state_update) while the motion executes.
 #
-# Usage example after installing the Codex package:
-#     python -m parcel_pose.grabbing --address 192.168.30.1:50051 --model m
+# Usage example after installing the parcel_pose_picking package:
+#     python -m parcel_pose_picking.grabbing --address 192.168.30.1:50051 --model m
 #
 # Copyright (c) 2025 Rainbow Robotics. All rights reserved.
 #

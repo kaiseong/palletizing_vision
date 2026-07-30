@@ -8,8 +8,8 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
-from .angles import classify_canonical_angle_deg, line_angle_difference_rad
-from .models import CalibrationState, PoseEstimate
+from parcel_pose_common.angles import classify_canonical_angle_deg, line_angle_difference_rad
+from parcel_pose_common.models import CalibrationState, PoseEstimate
 
 
 @dataclass(frozen=True)

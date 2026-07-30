@@ -9,8 +9,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from .models import CameraIntrinsics, Plane
-from .plane import point_on_plane
+from parcel_pose_common.models import CameraIntrinsics, Plane
+from parcel_pose_common.plane import point_on_plane
 
 
 FloatArray = NDArray[np.float64]
