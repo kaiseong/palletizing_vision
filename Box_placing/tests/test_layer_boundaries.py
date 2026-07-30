@@ -153,3 +153,32 @@ def test_perception_only_runs_keep_the_configured_camera_pose() -> None:
     )
     np.testing.assert_array_equal(seen["transform"], configured)
     np.testing.assert_array_equal(observation.T_base_depth, configured)
+
+
+def test_the_picking_entry_point_owns_its_sequence_too() -> None:
+    """box_picking.py holds the picking flow for the same reason box_pallet.py does."""
+
+    import ast
+
+    entry = (
+        pathlib.Path(__file__).resolve().parents[2] / "Box_picking" / "box_picking.py"
+    )
+    tree = ast.parse(entry.read_text(encoding="utf-8"))
+    lengths = {
+        node.name: node.end_lineno - node.lineno + 1
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.end_lineno is not None
+    }
+    assert "pick_box" in lengths, "pick_box disappeared from box_picking.py"
+    assert lengths["pick_box"] <= 75, (
+        f"pick_box grew to {lengths['pick_box']} lines; name the next stage instead "
+        "of inlining it"
+    )
+
+    from parcel_pose_picking import realtime
+
+    for stage in ("resolve_live_view_plan", "watch_and_grab"):
+        assert stage in realtime.__all__, f"{stage} must be public"
+    assert not hasattr(realtime, "run_live_view"), (
+        "the old monolith must not come back alongside pick_box"
+    )

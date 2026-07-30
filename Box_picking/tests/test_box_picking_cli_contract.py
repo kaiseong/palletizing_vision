@@ -157,10 +157,25 @@ def test_no_arg_and_headless_build_auto_pick_without_camera_or_robot(
     realtime_module = ModuleType("parcel_pose_picking.realtime")
     realtime_module.LiveViewUnavailableError = RuntimeError
 
-    def fake_run_live_view(*_args: object, **kwargs: object) -> None:
+    plan_calls: list[dict[str, object]] = []
+
+    def fake_resolve_live_view_plan(**kwargs: object) -> SimpleNamespace:
+        plan_calls.append(kwargs)
+        return SimpleNamespace(
+            handoff_ready=False,
+            handoff_started=False,
+            log_stream=None,
+            processed_frames=0,
+            user_cancelled=False,
+            video_writer=None,
+            window_created=False,
+        )
+
+    def fake_watch_and_grab(**kwargs: object) -> None:
         run_calls.append(kwargs)
 
-    realtime_module.run_live_view = fake_run_live_view
+    realtime_module.resolve_live_view_plan = fake_resolve_live_view_plan
+    realtime_module.watch_and_grab = fake_watch_and_grab
     monkeypatch.setitem(sys.modules, "parcel_pose_picking.realtime", realtime_module)
 
     def fake_load_json(path: Path) -> dict[str, object]:
@@ -192,12 +207,17 @@ def test_no_arg_and_headless_build_auto_pick_without_camera_or_robot(
         *argv,
     ]
 
-    assert cli.main(args) == 0
+    # The sequence lives in box_picking.py, which attaches it to the handler.
+    import box_picking
+
+    assert box_picking.main(args) == 0
     assert automation_configs == [("robot.test:50051", "main", True)]
+    assert len(plan_calls) == 1
     assert len(run_calls) == 1
+    assert plan_calls[0]["headless"] is expected_headless
+    assert plan_calls[0]["output_mp4"] == video
+    assert plan_calls[0]["log_jsonl"] == telemetry
     assert run_calls[0]["headless"] is expected_headless
-    assert run_calls[0]["output_mp4"] == video
-    assert run_calls[0]["log_jsonl"] == telemetry
     assert run_calls[0]["automation"] is not None
     captured = capsys.readouterr()
     assert "nominal_unverified camera registration" in captured.err

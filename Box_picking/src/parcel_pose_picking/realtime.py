@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 import time
@@ -21,7 +22,7 @@ from numpy.typing import NDArray
 from parcel_pose_common.calibration import factory_extrinsics_to_transform
 from .estimator import EstimationEvidence, ParcelPoseEstimator
 from .evaluation import BasePoseDiagnostic, base_pose_from_estimate
-from parcel_pose_common.models import Calibration, CameraIntrinsics, EstimatorConfig
+from parcel_pose_common.models import Calibration, CameraIntrinsics
 from .projection import unproject_plane_points
 from parcel_pose_common.realsense_adapter import D435StreamConfig, RealSenseAdapter
 from parcel_pose_common.transforms import transform_points
@@ -315,21 +316,53 @@ def _write_live_record(
     stream.flush()
 
 
-def run_live_view(
-    calibration: Calibration,
-    estimator_config: EstimatorConfig,
-    metadata_context: Mapping[str, Any],
+@dataclass(frozen=True)
+class LiveViewPlan:
+    """What a validated live-view request resolved to."""
+
+    cv2: Any
+    handoff_ready: Any
+    handoff_started: Any
+    log_jsonl_path: Any
+    log_stream: Any
+    needs_overlay: Any
+    output_mp4_path: Any
+    processed_frames: Any
+    stream_config: Any
+    user_cancelled: Any
+    video_writer: Any
+    window_created: Any
+
+
+def resolve_live_view_plan(
     *,
-    warmup_frames: int = 30,
-    max_frames: int | None = None,
-    fullscreen: bool = False,
-    window_name: str = DEFAULT_WINDOW_NAME,
-    automation: LivePoseAutomation | None = None,
-    headless: bool = False,
-    output_mp4: str | Path | None = None,
-    log_jsonl: str | Path | None = None,
-) -> int:
-    """Run the D435 estimator loop and return the processed frame count."""
+    calibration: Any,
+    fullscreen: Any,
+    headless: Any,
+    log_jsonl: Any,
+    max_frames: Any,
+    output_mp4: Any,
+    warmup_frames: Any,
+    window_name: Any,
+) -> LiveViewPlan:
+    """Check the request and the calibration, then hand back what the run needs.
+
+    Pure: every refusal here happens before the camera opens, so a missing base
+    transform or an unusable output path costs nothing.
+    """
+
+    cv2 = None
+    handoff_ready = None
+    handoff_started = None
+    log_jsonl_path = None
+    log_stream = None
+    needs_overlay = None
+    output_mp4_path = None
+    processed_frames = None
+    stream_config = None
+    user_cancelled = None
+    video_writer = None
+    window_created = None
 
     if calibration.T_base_from_depth is None:
         raise ValueError(
@@ -373,9 +406,60 @@ def run_live_view(
         align_color_to_depth=False,
         warmup_frames=warmup_frames,
     )
+
+    return LiveViewPlan(
+        cv2=cv2,
+        handoff_ready=handoff_ready,
+        handoff_started=handoff_started,
+        log_jsonl_path=log_jsonl_path,
+        log_stream=log_stream,
+        needs_overlay=needs_overlay,
+        output_mp4_path=output_mp4_path,
+        processed_frames=processed_frames,
+        stream_config=stream_config,
+        user_cancelled=user_cancelled,
+        video_writer=video_writer,
+        window_created=window_created,
+    )
+
+
+@dataclass(frozen=True)
+class LiveViewOutcome:
+    """Nothing yet; the run reports through its artifacts and the automation."""
+
+    processed_frames: Any
+
+
+def watch_and_grab(
+    *,
+    handoff_ready: Any,
+    handoff_started: Any,
+    log_stream: Any,
+    processed_frames: Any,
+    user_cancelled: Any,
+    video_writer: Any,
+    window_created: Any,
+    plan: LiveViewPlan,
+    automation: Any,
+    calibration: Any,
+    estimator_config: Any,
+    fullscreen: Any,
+    headless: Any,
+    max_frames: Any,
+    metadata_context: Any,
+    window_name: Any,
+) -> LiveViewOutcome:
+    """Open the camera, watch for the box, and hand off to the grab when asked.
+
+    Every frame estimates the pose, draws, records, and offers the automation a
+    chance to take over.  A wrong grab trigger is diagnosed here.
+    """
+
+    processed_frames = None
+
     try:
-        log_stream = _open_log(log_jsonl_path)
-        with RealSenseAdapter(stream_config) as camera:
+        log_stream = _open_log(plan.log_jsonl_path)
+        with RealSenseAdapter(plan.stream_config) as camera:
             metadata = camera.session_metadata(**dict(metadata_context))
             _validate_camera_profile(calibration, metadata)
             estimator = ParcelPoseEstimator(
@@ -384,32 +468,32 @@ def run_live_view(
                 estimator_config,
             )
             color_from_depth: FloatArray | None = None
-            if needs_overlay:
-                assert cv2 is not None
+            if plan.needs_overlay:
+                assert plan.cv2 is not None
                 color_from_depth = factory_extrinsics_to_transform(
                     metadata.depth_to_color
                 )
-            if output_mp4_path is not None:
-                assert cv2 is not None
+            if plan.output_mp4_path is not None:
+                assert plan.cv2 is not None
                 color_intrinsics = metadata.color_profile.intrinsics
                 video_writer = _open_video(
-                    output_mp4_path,
+                    plan.output_mp4_path,
                     (color_intrinsics.height, color_intrinsics.width),
-                    stream_config.fps,
-                    cv2_module=cv2,
+                    plan.stream_config.fps,
+                    cv2_module=plan.cv2,
                 )
             if automation is not None:
                 automation.start()
             if not headless:
-                assert cv2 is not None
+                assert plan.cv2 is not None
                 try:
-                    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                    plan.cv2.namedWindow(window_name, plan.cv2.WINDOW_NORMAL)
                     window_created = True
                     if fullscreen:
-                        cv2.setWindowProperty(
+                        plan.cv2.setWindowProperty(
                             window_name,
-                            cv2.WND_PROP_FULLSCREEN,
-                            cv2.WINDOW_FULLSCREEN,
+                            plan.cv2.WND_PROP_FULLSCREEN,
+                            plan.cv2.WINDOW_FULLSCREEN,
                         )
                 except Exception as exc:
                     raise LiveViewUnavailableError(
@@ -441,8 +525,8 @@ def run_live_view(
                         now_s=now_s,
                     )
                 overlay: ImageArray | None = None
-                if needs_overlay:
-                    assert cv2 is not None and color_from_depth is not None
+                if plan.needs_overlay:
+                    assert plan.cv2 is not None and color_from_depth is not None
                     overlay = draw_live_overlay(
                         frame.raw_color_bgr,
                         base_pose,
@@ -450,7 +534,7 @@ def run_live_view(
                         color_from_depth=color_from_depth,
                         color_intrinsics=metadata.color_profile.intrinsics,
                         estimator_latency_ms=estimator_ms,
-                        cv2_module=cv2,
+                        cv2_module=plan.cv2,
                     )
                 if video_writer is not None:
                     assert overlay is not None
@@ -466,10 +550,10 @@ def run_live_view(
                 )
                 key = -1
                 if not headless:
-                    assert cv2 is not None and overlay is not None
+                    assert plan.cv2 is not None and overlay is not None
                     try:
-                        cv2.imshow(window_name, overlay)
-                        key = int(cv2.waitKey(1)) & 0xFF
+                        plan.cv2.imshow(window_name, overlay)
+                        key = int(plan.cv2.waitKey(1)) & 0xFF
                     except Exception as exc:
                         raise LiveViewUnavailableError(
                             f"OpenCV box-picking display failed: {exc}"
@@ -494,16 +578,21 @@ def run_live_view(
         if log_stream is not None:
             log_stream.close()
         if window_created:
-            assert cv2 is not None
+            assert plan.cv2 is not None
             try:
-                cv2.destroyWindow(window_name)
+                plan.cv2.destroyWindow(window_name)
             except Exception:
-                destroy_all = getattr(cv2, "destroyAllWindows", None)
+                destroy_all = getattr(plan.cv2, "destroyAllWindows", None)
                 if callable(destroy_all):
                     destroy_all()
         if automation is not None:
             automation.close()
-    return processed_frames
+
+    return LiveViewOutcome(
+        processed_frames=processed_frames,
+    )
+
+
 
 
 __all__ = [
@@ -512,5 +601,6 @@ __all__ = [
     "LiveViewUnavailableError",
     "draw_live_overlay",
     "live_overlay_lines",
-    "run_live_view",
+    "resolve_live_view_plan",
+    "watch_and_grab",
 ]

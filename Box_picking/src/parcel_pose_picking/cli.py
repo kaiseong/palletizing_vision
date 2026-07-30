@@ -274,51 +274,27 @@ def _run_evaluate_video(args: argparse.Namespace) -> int:
 
 
 def _run_box_picking(args: argparse.Namespace) -> int:
-    from parcel_pose_common.calibration import load_calibration, load_json
-    from parcel_pose_common.realsense_adapter import RealSenseUnavailableError
+    """Run the picking sequence box_picking.py owns.
 
-    from .auto_grab import AutoGrabConfig, AutoGrabError, AutoGrabRuntime
-    from .realtime import LiveViewUnavailableError, run_live_view
+    The sequence is not here: it is in box_picking.py, which attaches it so the
+    dependency points from the entry point into the library and not back.
+    """
 
-    config = load_json(args.config)
-    calibration = load_calibration(args.calibration)
-    automation = AutoGrabRuntime(
-        AutoGrabConfig(
-            address=args.robot_address,
-            power=args.robot_power,
-        ),
-        execute=True,
-    )
-    if not calibration.absolute_base_validated:
-        print(
-            "warning: base coordinates use nominal_unverified camera registration "
-            "with an empirical +0.050 m y correction; automatic RB-Y1 motion "
-            "is enabled by the box_picking entrypoint",
-            file=sys.stderr,
+    pick_box = getattr(args, "pick_box", None)
+    if pick_box is None:  # pragma: no cover - box_picking.py always supplies it
+        raise RuntimeError(
+            "picking runs are owned by box_picking.py; run it rather than this module"
         )
-    try:
-        run_live_view(
-            calibration,
-            _estimator_config(config),
-            _recording_context(config, {}),
-            warmup_frames=args.warmup_frames,
-            max_frames=args.max_frames,
-            headless=args.headless,
-            fullscreen=args.fullscreen,
-            window_name=args.window_name,
-            output_mp4=args.output_mp4,
-            log_jsonl=args.log_jsonl,
-            automation=automation,
-        )
-    except (LiveViewUnavailableError, RealSenseUnavailableError, AutoGrabError) as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    return 0
+    return int(pick_box(args))
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def run_handler(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """Run one parsed subcommand and turn faults into the right exit code.
+
+    Separate from main so box_picking.py can parse, attach the sequence it owns, and
+    still get identical error handling.
+    """
+
     try:
         return int(args.handler(args))
     except KeyboardInterrupt:
@@ -327,6 +303,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
         return 2
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return run_handler(parser, args)
 
 
 if __name__ == "__main__":
