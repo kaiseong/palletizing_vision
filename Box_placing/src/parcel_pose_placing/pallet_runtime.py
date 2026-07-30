@@ -2171,6 +2171,253 @@ def _decide_base_motion(
         stationary_source=stationary_source,
     )
 
+@dataclass(frozen=True)
+class _PlacementStep:
+    """What the placement sequencer did this frame, and the state it carries on.
+
+    The five carried fields are the whole memory of the placement: whether the
+    lowering and the release have been started, when the alignment first became
+    ready, and the last output kept for telemetry.
+    """
+
+    decision: Any
+    dispatch_result: Any
+    placement_output: Any
+    placement_runtime_diagnostics: Any
+    last_placement_output: Any
+    last_placement_runtime_diagnostics: Any
+    placement_alignment_ready_since_s: Any
+    placement_lowering_started: Any
+    placement_release_started: Any
+
+
+def _advance_placement(
+    *,
+    authority: Any,
+    auto_place_slot1: Any,
+    containment: Any,
+    controller: Any,
+    decision_now_s: Any,
+    decision_owner: Any,
+    decision_source_max_age_s: Any,
+    decision_source_timestamp_s: Any,
+    estimator_config: Any,
+    execute: Any,
+    frame: Any,
+    frame_source_monotonic_s: Any,
+    motion_interlocks_ok: Any,
+    placement_config: Any,
+    placement_motion_active: Any,
+    placement_sequencer: Any,
+    root_config: Any,
+    scene: Any,
+    stationary: Any,
+    vision_release_policy_enabled: Any,
+    last_placement_output: Any,
+    last_placement_runtime_diagnostics: Any,
+    placement_alignment_ready_since_s: Any,
+    placement_lowering_started: Any,
+    placement_release_started: Any,
+) -> _PlacementStep:
+    """Advance the placement one frame: wait for alignment, lower, release, retreat.
+
+    Called once per frame with the decision the base already made.  A wrong seating
+    or a wrong retreat is diagnosed here; the postures themselves come from the
+    slot configuration.
+    """
+
+    decision = None
+    dispatch_result = None
+    placement_output = None
+    placement_runtime_diagnostics = None
+
+    if execute:
+        assert controller is not None
+        dispatch_result = _dispatch_live_decision(
+            controller,
+            authority,
+            decision_owner,
+            decision,
+            motion_interlocks_ok=motion_interlocks_ok,
+            source_timestamp_s=decision_source_timestamp_s,
+            source_max_age_s=decision_source_max_age_s,
+        )
+
+    placement_arrival_wait_reason: str | None = None
+    placement_arrived_ready = bool(
+        decision_owner is PalletControlOwner.FINE_SLOT1_SERVO
+        and decision.state is PalletServoState.ARRIVED_HOLD
+        and decision.arrived
+    )
+    placement_alignment_feature_ready = (
+        _scene_has_metric_alignment_feature(
+            scene,
+            estimator_config.geometry,
+        )
+    )
+    if placement_motion_active:
+        placement_alignment_ready_since_s = None
+        placement_alignment_dwell_ready = True
+    elif placement_arrived_ready and placement_alignment_feature_ready:
+        if placement_alignment_ready_since_s is None:
+            placement_alignment_ready_since_s = decision_now_s
+        placement_alignment_elapsed_s = (
+            decision_now_s - placement_alignment_ready_since_s
+        )
+        placement_alignment_dwell_ready = (
+            placement_alignment_elapsed_s
+            >= placement_config.alignment_hold_before_place_s
+        )
+        if not placement_alignment_dwell_ready:
+            placement_arrival_wait_reason = (
+                "alignment_hold_before_place"
+            )
+    else:
+        placement_alignment_ready_since_s = None
+        placement_alignment_dwell_ready = False
+        if placement_arrived_ready:
+            placement_arrival_wait_reason = (
+                "alignment_feature_unavailable"
+            )
+    placement_output: PlacementOutput | None = None
+    placement_runtime_diagnostics: dict[str, Any] | None = None
+    if (
+        execute
+        and auto_place_slot1
+        and placement_sequencer is not None
+        and (
+            placement_motion_active
+            or (
+                placement_arrived_ready
+                and placement_alignment_dwell_ready
+            )
+        )
+        and dispatch_result
+        in {"state_requires_persistent_zero", "exact_zero_decision"}
+    ):
+        assert controller is not None
+        sample, placement_runtime_diagnostics = _placement_input(
+            root_config,
+            scene,
+            controller,
+            now_s=time.monotonic(),
+            gap_observation_timestamp_s=frame_source_monotonic_s,
+            gap_observation_sequence=frame.depth_frame_number,
+            decision=decision,
+            zero_acknowledged=_zero_command_acknowledged(controller),
+            stationary=stationary,
+            allow_vision_geometry_release=vision_release_policy_enabled,
+        )
+        placement_output = placement_sequencer.update(sample)
+        fault_dispatch = _dispatch_placement_fault_hold_if_needed(
+            controller,
+            placement_output,
+            lowering_started=placement_lowering_started,
+            release_started=placement_release_started,
+        )
+        if fault_dispatch is not None:
+            placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                fault_dispatch
+            )
+        elif (
+            placement_output.request
+            is PlacementRequest.LOWER_CARTESIAN_PLANNED
+            and not placement_lowering_started
+        ):
+            descent_plan = placement_output.descent_plan
+            if descent_plan is None or not descent_plan.valid:
+                raise RuntimeError(
+                    "planned Cartesian lowering requires a valid frozen "
+                    "PlacementDescentPlan"
+                )
+            controller.start_cartesian_lowering_hold(
+                descent_plan=descent_plan
+            )
+            placement_lowering_started = True
+            assert containment is not None
+            containment.mark_robot_touch()
+            containment.mark_destination_commanded()
+            placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                "start_cartesian_lowering_hold"
+            )
+        elif (
+            placement_output.request is PlacementRequest.SPREAD_RELEASE
+            and not placement_release_started
+        ):
+            controller.start_cartesian_release_hold()
+            placement_release_started = True
+            assert containment is not None
+            containment.mark_robot_touch()
+            containment.mark_destination_commanded()
+            placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                "start_cartesian_release_hold"
+            )
+        else:
+            placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                "none"
+            )
+        last_placement_output = placement_output
+        last_placement_runtime_diagnostics = placement_runtime_diagnostics
+        decision = _annotate_placement_output(
+            decision,
+            placement_output,
+            placement_runtime_diagnostics,
+        )
+    elif (
+        auto_place_slot1
+        and placement_arrival_wait_reason is not None
+        and placement_sequencer is not None
+    ):
+        diagnostics = dict(decision.diagnostics)
+        diagnostics["placement_wait"] = {
+            "reason": placement_arrival_wait_reason,
+            "alignment_hold_before_place_s": (
+                placement_config.alignment_hold_before_place_s
+            ),
+            "alignment_hold_elapsed_s": (
+                0.0
+                if placement_alignment_ready_since_s is None
+                else max(
+                    0.0,
+                    decision_now_s
+                    - placement_alignment_ready_since_s,
+                )
+            ),
+            "metric_alignment_feature_ready": (
+                placement_alignment_feature_ready
+            ),
+        }
+        decision = PalletServoOutput(
+            command=decision.command,
+            state=decision.state,
+            arrived=decision.arrived,
+            hold_body=decision.hold_body,
+            measurement_accepted=decision.measurement_accepted,
+            reason=(
+                f"{decision.reason}; "
+                f"placement_wait:{placement_arrival_wait_reason}"
+            ),
+            diagnostics=diagnostics,
+        )
+    elif last_placement_output is not None:
+        decision = _annotate_placement_output(
+            decision,
+            last_placement_output,
+            last_placement_runtime_diagnostics,
+        )
+
+    return _PlacementStep(
+        decision=decision,
+        dispatch_result=dispatch_result,
+        placement_output=placement_output,
+        placement_runtime_diagnostics=placement_runtime_diagnostics,
+        last_placement_output=last_placement_output,
+        last_placement_runtime_diagnostics=last_placement_runtime_diagnostics,
+        placement_alignment_ready_since_s=placement_alignment_ready_since_s,
+        placement_lowering_started=placement_lowering_started,
+        placement_release_started=placement_release_started,
+    )
+
 def run_pallet_live(
     root_config: Mapping[str, Any],
     *,
@@ -2339,6 +2586,9 @@ def run_pallet_live(
     )
     authority = CoarseFineAuthority()
     shutdown_pending = False
+    # The alignment dwell used to depend on the first frame never reaching the
+    # arrived branch; state it instead.
+    placement_alignment_ready_since_s: float | None = None
     placement_lowering_started = False
     placement_release_started = False
     last_placement_output: PlacementOutput | None = None
@@ -2544,181 +2794,42 @@ def run_pallet_live(
                 placement_motion_active = base_motion.placement_motion_active
                 stationary = base_motion.stationary
                 stationary_source = base_motion.stationary_source
-                if execute:
-                    assert controller is not None
-                    dispatch_result = _dispatch_live_decision(
-                        controller,
-                        authority,
-                        decision_owner,
-                        decision,
-                        motion_interlocks_ok=motion_interlocks_ok,
-                        source_timestamp_s=decision_source_timestamp_s,
-                        source_max_age_s=decision_source_max_age_s,
-                    )
-
-                placement_arrival_wait_reason: str | None = None
-                placement_arrived_ready = bool(
-                    decision_owner is PalletControlOwner.FINE_SLOT1_SERVO
-                    and decision.state is PalletServoState.ARRIVED_HOLD
-                    and decision.arrived
+                placement_step = _advance_placement(
+                    authority=authority,
+                    auto_place_slot1=auto_place_slot1,
+                    containment=containment,
+                    controller=controller,
+                    decision_now_s=decision_now_s,
+                    decision_owner=decision_owner,
+                    decision_source_max_age_s=decision_source_max_age_s,
+                    decision_source_timestamp_s=decision_source_timestamp_s,
+                    estimator_config=estimator_config,
+                    execute=execute,
+                    frame=frame,
+                    frame_source_monotonic_s=frame_source_monotonic_s,
+                    motion_interlocks_ok=motion_interlocks_ok,
+                    placement_config=placement_config,
+                    placement_motion_active=placement_motion_active,
+                    placement_sequencer=placement_sequencer,
+                    root_config=root_config,
+                    scene=scene,
+                    stationary=stationary,
+                    vision_release_policy_enabled=vision_release_policy_enabled,
+                    last_placement_output=last_placement_output,
+                    last_placement_runtime_diagnostics=last_placement_runtime_diagnostics,
+                    placement_alignment_ready_since_s=placement_alignment_ready_since_s,
+                    placement_lowering_started=placement_lowering_started,
+                    placement_release_started=placement_release_started,
                 )
-                placement_alignment_feature_ready = (
-                    _scene_has_metric_alignment_feature(
-                        scene,
-                        estimator_config.geometry,
-                    )
-                )
-                if placement_motion_active:
-                    placement_alignment_ready_since_s = None
-                    placement_alignment_dwell_ready = True
-                elif placement_arrived_ready and placement_alignment_feature_ready:
-                    if placement_alignment_ready_since_s is None:
-                        placement_alignment_ready_since_s = decision_now_s
-                    placement_alignment_elapsed_s = (
-                        decision_now_s - placement_alignment_ready_since_s
-                    )
-                    placement_alignment_dwell_ready = (
-                        placement_alignment_elapsed_s
-                        >= placement_config.alignment_hold_before_place_s
-                    )
-                    if not placement_alignment_dwell_ready:
-                        placement_arrival_wait_reason = (
-                            "alignment_hold_before_place"
-                        )
-                else:
-                    placement_alignment_ready_since_s = None
-                    placement_alignment_dwell_ready = False
-                    if placement_arrived_ready:
-                        placement_arrival_wait_reason = (
-                            "alignment_feature_unavailable"
-                        )
-                placement_output: PlacementOutput | None = None
-                placement_runtime_diagnostics: dict[str, Any] | None = None
-                if (
-                    execute
-                    and auto_place_slot1
-                    and placement_sequencer is not None
-                    and (
-                        placement_motion_active
-                        or (
-                            placement_arrived_ready
-                            and placement_alignment_dwell_ready
-                        )
-                    )
-                    and dispatch_result
-                    in {"state_requires_persistent_zero", "exact_zero_decision"}
-                ):
-                    assert controller is not None
-                    sample, placement_runtime_diagnostics = _placement_input(
-                        root_config,
-                        scene,
-                        controller,
-                        now_s=time.monotonic(),
-                        gap_observation_timestamp_s=frame_source_monotonic_s,
-                        gap_observation_sequence=frame.depth_frame_number,
-                        decision=decision,
-                        zero_acknowledged=_zero_command_acknowledged(controller),
-                        stationary=stationary,
-                        allow_vision_geometry_release=vision_release_policy_enabled,
-                    )
-                    placement_output = placement_sequencer.update(sample)
-                    fault_dispatch = _dispatch_placement_fault_hold_if_needed(
-                        controller,
-                        placement_output,
-                        lowering_started=placement_lowering_started,
-                        release_started=placement_release_started,
-                    )
-                    if fault_dispatch is not None:
-                        placement_runtime_diagnostics["runtime_request_dispatched"] = (
-                            fault_dispatch
-                        )
-                    elif (
-                        placement_output.request
-                        is PlacementRequest.LOWER_CARTESIAN_PLANNED
-                        and not placement_lowering_started
-                    ):
-                        descent_plan = placement_output.descent_plan
-                        if descent_plan is None or not descent_plan.valid:
-                            raise RuntimeError(
-                                "planned Cartesian lowering requires a valid frozen "
-                                "PlacementDescentPlan"
-                            )
-                        controller.start_cartesian_lowering_hold(
-                            descent_plan=descent_plan
-                        )
-                        placement_lowering_started = True
-                        assert containment is not None
-                        containment.mark_robot_touch()
-                        containment.mark_destination_commanded()
-                        placement_runtime_diagnostics["runtime_request_dispatched"] = (
-                            "start_cartesian_lowering_hold"
-                        )
-                    elif (
-                        placement_output.request is PlacementRequest.SPREAD_RELEASE
-                        and not placement_release_started
-                    ):
-                        controller.start_cartesian_release_hold()
-                        placement_release_started = True
-                        assert containment is not None
-                        containment.mark_robot_touch()
-                        containment.mark_destination_commanded()
-                        placement_runtime_diagnostics["runtime_request_dispatched"] = (
-                            "start_cartesian_release_hold"
-                        )
-                    else:
-                        placement_runtime_diagnostics["runtime_request_dispatched"] = (
-                            "none"
-                        )
-                    last_placement_output = placement_output
-                    last_placement_runtime_diagnostics = placement_runtime_diagnostics
-                    decision = _annotate_placement_output(
-                        decision,
-                        placement_output,
-                        placement_runtime_diagnostics,
-                    )
-                elif (
-                    auto_place_slot1
-                    and placement_arrival_wait_reason is not None
-                    and placement_sequencer is not None
-                ):
-                    diagnostics = dict(decision.diagnostics)
-                    diagnostics["placement_wait"] = {
-                        "reason": placement_arrival_wait_reason,
-                        "alignment_hold_before_place_s": (
-                            placement_config.alignment_hold_before_place_s
-                        ),
-                        "alignment_hold_elapsed_s": (
-                            0.0
-                            if placement_alignment_ready_since_s is None
-                            else max(
-                                0.0,
-                                decision_now_s
-                                - placement_alignment_ready_since_s,
-                            )
-                        ),
-                        "metric_alignment_feature_ready": (
-                            placement_alignment_feature_ready
-                        ),
-                    }
-                    decision = PalletServoOutput(
-                        command=decision.command,
-                        state=decision.state,
-                        arrived=decision.arrived,
-                        hold_body=decision.hold_body,
-                        measurement_accepted=decision.measurement_accepted,
-                        reason=(
-                            f"{decision.reason}; "
-                            f"placement_wait:{placement_arrival_wait_reason}"
-                        ),
-                        diagnostics=diagnostics,
-                    )
-                elif last_placement_output is not None:
-                    decision = _annotate_placement_output(
-                        decision,
-                        last_placement_output,
-                        last_placement_runtime_diagnostics,
-                    )
-
+                decision = placement_step.decision
+                dispatch_result = placement_step.dispatch_result
+                placement_output = placement_step.placement_output
+                placement_runtime_diagnostics = placement_step.placement_runtime_diagnostics
+                last_placement_output = placement_step.last_placement_output
+                last_placement_runtime_diagnostics = placement_step.last_placement_runtime_diagnostics
+                placement_alignment_ready_since_s = placement_step.placement_alignment_ready_since_s
+                placement_lowering_started = placement_step.placement_lowering_started
+                placement_release_started = placement_step.placement_release_started
                 loop_finished_monotonic_s = time.monotonic()
                 loop_timing = {
                     "capture_age_s": float(validated_frame_age_s),
