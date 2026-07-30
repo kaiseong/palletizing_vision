@@ -50,6 +50,7 @@ from .pallet_models import (
     PalletSceneObservation,
     Slot1HoleReference,
     load_slot1_hole_reference,
+    require_slot_member,
 )
 from .pallet_control import MobilityCommand
 from .pallet_place import (
@@ -2503,6 +2504,7 @@ def run_pallet_live(
     execute: bool = False,
     auto_place_slot1: bool = False,
     ensure_slot1_ready: bool = False,
+    slot: int | None = None,
     robot_address: str = "192.168.30.1:50051",
     robot_power: str = ".*",
     warmup_frames: int = 30,
@@ -2542,6 +2544,18 @@ def run_pallet_live(
     # Five acknowledgement flags never blocked an unsafe run; they only produced
     # runs that failed on a wrong flag combination.  The config still has to
     # enable each capability, so an unreviewed config cannot move the robot.
+    # Resolve the slot before anything else prints or imports: an undemonstrated
+    # slot is a configuration error, and a warning ahead of it only obscures it.
+    pallet_block = _section(root_config, "pallet")
+    selected_slot = int(
+        pallet_block.get("default_slot", 1) if slot is None else slot
+    )
+    for member in ("hole_reference", "ready_pose_rad"):
+        require_slot_member(root_config, selected_slot, member)
+    if execute:
+        for member in ("place_pose_deg", "retreat_pose_deg"):
+            require_slot_member(root_config, selected_slot, member)
+
     calibration = _section(root_config, "calibration")
     if execute and not bool(calibration.get("absolute_base_validated", False)):
         # Not a blocker: the empirical registration is what every commissioning
@@ -2614,7 +2628,7 @@ def run_pallet_live(
 
     estimator_config = load_pallet_estimator_config(root_config)
     estimator = PalletStackEstimator(estimator_config)
-    slot1_hole_reference = load_slot1_hole_reference(root_config)
+    slot1_hole_reference = load_slot1_hole_reference(root_config, selected_slot)
     acquisition_config = AcquisitionConfig.from_root_config(root_config)
     acquisition_servo = ForwardAcquireServo(acquisition_config)
     perception_config = _section(root_config, "perception")
@@ -2708,6 +2722,7 @@ def run_pallet_live(
                     config=PalletControlConfig.from_root_config(
                         root_config,
                         address_override=robot_address,
+                        slot=selected_slot,
                     ),
                 )
             containment = ActuationContainmentState(controller)

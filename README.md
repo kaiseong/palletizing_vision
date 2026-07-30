@@ -37,13 +37,24 @@ python box_picking.py --headless
 
 팔레트 slot-1 정렬/배치 개발 명령은 기존 subcommand와 safety flag를 유지합니다.
 
+기본 실행은 인식 전용이며 로봇에 연결하지 않습니다.
+
 ```bash
 cd Box_placing
-python pallet.py live --headless --ensure-slot1-ready --auto-palletize-slot1
+python box_pallet.py live --headless
 ```
 
-실제 mobile/arm 동작을 켤 때 필요한 placing 쪽 승인 플래그와 옵션은
-`python pallet.py live --help`를 기준으로 확인합니다.
+`--execute`를 주면 준비 자세 확인, 비전 정렬, 시연 자세로 내려놓기, 손 빼기까지
+로봇에서 실행합니다. `--slot N`으로 팔레트 슬롯을 고릅니다. 아직 시연되지 않은
+슬롯은 이름과 함께 거부되며 로봇은 움직이지 않습니다.
+
+```bash
+python box_pallet.py live --headless --execute --slot 1
+```
+
+커미셔닝 정책은 CLI가 아니라 설정에 있습니다. `grip_interlock.
+fixed_ready_geometry_only_commissioning_enabled`, `placement.enabled`,
+`placement.vision_geometry_release_enabled`가 켜져 있어야 `--execute`가 통과합니다.
 
 ## Recording
 

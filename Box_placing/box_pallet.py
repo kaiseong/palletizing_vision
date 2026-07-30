@@ -1,4 +1,10 @@
-"""Short entry point for the supervised RB-Y1 pallet slot-1 hover MVP."""
+"""One-command box-placing facade for the RB-Y1 pallet interlock workflow.
+
+``python box_pallet.py`` runs perception only.  ``--execute`` runs the sequence on
+the robot: verify the ready posture, align the base on the pallet hole, seat the
+carton with the demonstrated placement posture, then withdraw the hands.
+``--slot N`` selects the pallet slot; an undemonstrated slot is refused by name.
+"""
 
 from __future__ import annotations
 

@@ -152,6 +152,16 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--output-mp4", type=Path)
     live.add_argument("--log-jsonl", type=Path)
     live.add_argument(
+        "--slot",
+        type=int,
+        default=None,
+        help=(
+            "pallet slot to align to and place into; defaults to "
+            "pallet.default_slot. A slot nobody has demonstrated is refused by "
+            "name before the robot is touched"
+        ),
+    )
+    live.add_argument(
         "--execute",
         action="store_true",
         help=(
@@ -266,6 +276,7 @@ def _run_live(args: argparse.Namespace) -> int:
             execute=bool(args.execute),
             auto_place_slot1=bool(args.execute),
             ensure_slot1_ready=bool(args.execute),
+            slot=args.slot,
             robot_address=str(args.robot_address),
             robot_power=str(args.robot_power),
             warmup_frames=int(args.warmup_frames),

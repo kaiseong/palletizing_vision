@@ -79,3 +79,38 @@ def test_the_hole_reference_is_read_per_slot() -> None:
     assert reference.center_base_xy_m == pytest.approx((0.865, 0.139523))
     with pytest.raises(ValueError, match="slot 5 has no demonstrated hole_reference"):
         load_slot1_hole_reference(root_config(), 5)
+
+
+# --------------------------------------------------------------------------- #
+# the operator entry point selects a slot
+# --------------------------------------------------------------------------- #
+def test_the_live_command_accepts_a_slot() -> None:
+    from parcel_pose_placing.pallet_cli import build_parser
+
+    args = build_parser().parse_args(["live", "--headless", "--execute", "--slot", "5"])
+    assert args.slot == 5
+    assert args.execute is True
+
+    default = build_parser().parse_args(["live"])
+    assert default.slot is None, "no slot means pallet.default_slot"
+    assert default.execute is False, "perception only by default"
+
+
+def test_running_an_undemonstrated_slot_is_refused_before_the_sdk_loads() -> None:
+    """The refusal must precede every import and print, or it gets buried."""
+
+    import sys
+
+    from parcel_pose_placing.pallet_runtime import run_pallet_live
+
+    before = set(sys.modules)
+    with pytest.raises(ValueError, match="slot 5 has no demonstrated hole_reference"):
+        run_pallet_live(root_config(), execute=True, ensure_slot1_ready=True, slot=5)
+    assert "rby1_sdk" not in set(sys.modules) - before
+
+
+def test_running_an_undeclared_slot_lists_the_declared_ones() -> None:
+    from parcel_pose_placing.pallet_runtime import run_pallet_live
+
+    with pytest.raises(ValueError, match="declared slots are 1, 2, 5, 6"):
+        run_pallet_live(root_config(), slot=3)
