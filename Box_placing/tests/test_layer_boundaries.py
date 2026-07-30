@@ -46,13 +46,25 @@ def test_the_drawing_module_cannot_reach_the_control_loop() -> None:
 
 
 def test_the_control_loop_keeps_shrinking() -> None:
-    """A ratchet, not a target: the loop had 3,457 lines before the split."""
+    """run_pallet_live is the thing that has to get shorter, not the file.
 
-    lines = len(
-        (SOURCE_DIR / "pallet_runtime.py").read_text(encoding="utf-8").splitlines()
+    Extracting a phase adds a dataclass and a signature, so the module grows while
+    the loop shrinks.  Ratchet the loop, which is what somebody has to read to find
+    a wrong motion.
+    """
+
+    source = (SOURCE_DIR / "pallet_runtime.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    lengths = {
+        node.name: node.end_lineno - node.lineno + 1
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.end_lineno is not None
+    }
+    assert "run_pallet_live" in lengths, "run_pallet_live disappeared; update this test"
+    assert lengths["run_pallet_live"] <= 720, (
+        f"run_pallet_live grew back to {lengths['run_pallet_live']} lines; "
+        "extract the next phase instead of adding to the loop"
     )
-    assert lines < 2900, f"pallet_runtime.py grew back to {lines} lines"
-
 
 def test_perception_is_one_call_in_the_control_loop() -> None:
     """The loop must read as control flow, not as depth scaling."""

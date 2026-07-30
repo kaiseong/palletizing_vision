@@ -1828,6 +1828,349 @@ def _prepare_loaded_ready_actuation(
     controller.reverify_wheel_stop_after_stream_start(timeout_s=2.0)
 
 
+@dataclass(frozen=True)
+class _BaseMotionDecision:
+    """What one frame decided about the base, and the evidence behind it.
+
+    Every field is produced fresh each frame; nothing here carries over, which is
+    why the decision can be a function rather than a stage of a long method.
+    """
+
+    acquisition_output: Any
+    bridge_diagnostics: Any
+    decision: Any
+    decision_owner: Any
+    decision_source_max_age_s: Any
+    decision_source_timestamp_s: Any
+    dispatch_result: Any
+    grip_result: Any
+    hole_status: Any
+    l_status: Any
+    motion_interlock_reason: Any
+    motion_interlocks_ok: Any
+    odometry: Any
+    odometry_error: Any
+    placement_motion_active: Any
+    stationary: Any
+    stationary_source: Any
+
+
+def _decide_base_motion(
+    *,
+    acquisition_config: Any,
+    acquisition_servo: Any,
+    authority: Any,
+    auto_place_slot1: Any,
+    controller: Any,
+    decision_now_s: Any,
+    estimator_config: Any,
+    execute: Any,
+    frame_result_fresh: Any,
+    frame_source_monotonic_s: Any,
+    geometry_only_policy_enabled: Any,
+    hole_gate: Any,
+    l_corner_gate: Any,
+    placement_lowering_started: Any,
+    placement_release_started: Any,
+    placement_sequencer: Any,
+    scene: Any,
+    scene_window: Any,
+    servo: Any,
+    servo_bridge: Any,
+    shutdown_pending: Any,
+    slot1_hole_reference: Any,
+) -> _BaseMotionDecision:
+    """Decide what the base does this frame: acquire, servo, hold or stop.
+
+    Pure per-frame: the caller owns the loop and the persistent placement flags,
+    so a wrong base motion is diagnosed here and nowhere else.
+    """
+
+    acquisition_output = None
+    bridge_diagnostics = None
+    decision = None
+    decision_owner = None
+    decision_source_max_age_s = None
+    decision_source_timestamp_s = None
+    dispatch_result = None
+    grip_result = None
+    hole_status = None
+    l_status = None
+    motion_interlock_reason = None
+    motion_interlocks_ok = None
+    odometry = None
+    odometry_error = None
+    placement_motion_active = None
+    stationary = None
+    stationary_source = None
+    zero_acknowledged = None
+
+    if execute:
+        assert controller is not None
+        wheel_status = controller.wheel_stop_status()
+        wheel = _wheel_measurement(wheel_status, decision_now_s)
+        stationary = bool(
+            getattr(wheel_status, "feedback_fresh", False)
+            and getattr(wheel_status, "stopped", False)
+        )
+        stationary_at_capture = _stationary_at_capture(
+            wheel_status,
+            frame_source_monotonic_s,
+            decision_now_s,
+        )
+        stationary_source = "measured_wheel_stop_dwell"
+        odometry, odometry_error = _odometry_sample(
+            controller,
+            decision_now_s,
+        )
+        zero_acknowledged = _zero_command_acknowledged(controller)
+        if scene_window:
+            grip_result = controller.evaluate_grip_and_clearance_dwell(
+                list(scene_window),
+                allow_fixed_ready_geometry_only=(
+                    geometry_only_policy_enabled
+                ),
+            )
+            motion_interlocks_ok = bool(
+                getattr(grip_result, "passed", False)
+            )
+            grip_reasons = tuple(
+                getattr(grip_result, "reasons", ())
+            )
+            motion_interlock_reason = (
+                "" if motion_interlocks_ok else ";".join(grip_reasons)
+            )
+        else:
+            motion_interlocks_ok = False
+            motion_interlock_reason = "clearance_evidence_unavailable"
+    else:
+        wheel_status = None
+        wheel = None
+        stationary = True
+        stationary_at_capture = True
+        stationary_source = "dry_run_assumed_stationary_no_actuation"
+        odometry = None
+        odometry_error = "dry_run_has_no_robot_odometry"
+        zero_acknowledged = True
+        motion_interlocks_ok = False
+        motion_interlock_reason = "dry_run_no_robot_commands"
+
+    stationary_for_vision = stationary_at_capture and frame_result_fresh
+    coarse = scene.coarse
+    raw_l_corner_visible = bool(
+        frame_result_fresh
+        and coarse is not None
+        and (
+            coarse.valid
+            or coarse.forward_acquisition_valid
+        )
+    )
+    raw_metric_proxy_visible = bool(
+        frame_result_fresh
+        and coarse is not None
+        and coarse.fixed_outer_center_base(
+            estimator_config.geometry.outer_size_m
+        )
+        is not None
+    )
+    raw_l_corner_timestamp_s = (
+        float(coarse.timestamp_s)
+        if raw_l_corner_visible and coarse is not None
+        else None
+    )
+    raw_hole_visible, raw_hole_timestamp_s = (
+        _raw_complete_hole_evidence(
+            scene,
+            frame_result_fresh=frame_result_fresh,
+        )
+    )
+    l_status = l_corner_gate.update(
+        coarse,
+        stationary=stationary_for_vision,
+    )
+    hole_status = hole_gate.update(
+        scene,
+        stationary=stationary_for_vision,
+    )
+    acquisition_output: AcquisitionOutput | None = None
+    bridge_diagnostics: dict[str, Any] = {
+        "odometry_prediction_used": False,
+        "dropout_age_s": None,
+        "prediction_ttl_s": _MAX_ODOMETRY_PREDICTION_AGE_S,
+        "prediction_reason": "fine_servo_not_active",
+    }
+    decision_source_timestamp_s = frame_source_monotonic_s
+    if shutdown_pending:
+        decision = _shutdown_hold_output("shutdown_handoff_pending")
+        decision_owner = PalletControlOwner.SHUTDOWN_HOLD
+    elif authority.owner is PalletControlOwner.FINE_SLOT1_SERVO:
+        raw_measurement = (
+            _servo_measurement(
+                scene,
+                slot1_hole_reference,
+                frame_source_monotonic_s,
+                estimator_config.geometry,
+            )
+            if frame_result_fresh
+            else PalletServoObservation.invalid(
+                frame_source_monotonic_s,
+                "frame_processing_stale",
+                reference_source=(
+                    slot1_hole_reference.reference_source
+                ),
+            )
+        )
+        measurement, bridge_diagnostics = servo_bridge.resolve(
+            raw_measurement,
+            odometry,
+            now_s=decision_now_s,
+        )
+        fine_output = servo.update(measurement, decision_now_s, wheel)
+        if frame_result_fresh and raw_measurement.valid:
+            servo_bridge.commit(
+                raw_measurement,
+                odometry,
+                fine_output,
+                now_s=decision_now_s,
+            )
+        decision_source_timestamp_s = float(measurement.timestamp_s)
+        decision = _annotate_fine_output(
+            fine_output,
+            measurement_source=(
+                "odometry_predicted_metric_stack"
+                if bridge_diagnostics.get("odometry_prediction_used")
+                else _servo_measurement_source(
+                    scene,
+                    estimator_config.geometry,
+                )
+            ),
+            bridge_diagnostics=bridge_diagnostics,
+        )
+        decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
+    else:
+        acquisition_decision = AcquisitionDecision(
+            now_s=decision_now_s,
+            odometry=odometry,
+            # Raw per-frame evidence remains a moving-step safety
+            # predicate.  Only the stationary gate may authorize a
+            # new step or a coarse-to-fine transition.
+            l_corner_visible=raw_l_corner_visible,
+            l_corner_stable=l_status.stable,
+            l_corner_stationary_frames=l_status.stationary_frames,
+            l_corner_window_started_at_s=l_status.window_started_at_s,
+            l_corner_timestamp_s=raw_l_corner_timestamp_s,
+            l_corner_topology_branch=(
+                coarse.topology_branch
+                if raw_l_corner_visible and coarse is not None
+                else None
+            ),
+            metric_proxy_visible=raw_metric_proxy_visible,
+            metric_proxy_stable=(
+                l_status.metric_proxy_stable
+                and raw_metric_proxy_visible
+            ),
+            metric_proxy_timestamp_s=(
+                float(coarse.timestamp_s)
+                if raw_metric_proxy_visible and coarse is not None
+                else None
+            ),
+            hole_visible=raw_hole_visible,
+            hole_visible_timestamp_s=raw_hole_timestamp_s,
+            hole_dwell_complete=hole_status.dwell_complete,
+            hole_window_started_at_s=(
+                hole_status.window_started_at_s
+                if hole_status.dwell_complete
+                else None
+            ),
+            hole_timestamp_s=(
+                hole_status.window_ended_at_s
+                if hole_status.dwell_complete
+                else None
+            ),
+            motion_interlocks_ok=motion_interlocks_ok,
+            interlock_reason=motion_interlock_reason,
+            wheel_stopped=stationary,
+            wheel_timestamp_s=(decision_now_s if stationary else None),
+            zero_command_acknowledged=zero_acknowledged,
+        )
+        acquisition_output = acquisition_servo.update(acquisition_decision)
+        if acquisition_output.fine_handoff_requested:
+            if acquisition_config.budget_m <= 0.0:
+                raise RuntimeError(
+                    "zero acquisition budget cannot transfer motion authority"
+                )
+            if not acquisition_output.is_exact_zero or not stationary:
+                raise RuntimeError(
+                    "coarse-to-fine handoff requires exact zero and "
+                    "measured wheel stop"
+                )
+            authority.handoff_to_fine(
+                acquisition_output,
+                zero_command_acknowledged=zero_acknowledged,
+                wheel_stopped=stationary,
+            )
+            decision = _annotate_fine_output(
+                servo.start(decision_now_s),
+                handoff_started=True,
+                measurement_source=_servo_measurement_source(
+                    scene,
+                    estimator_config.geometry,
+                ),
+                bridge_diagnostics=bridge_diagnostics,
+            )
+            decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
+        else:
+            decision = _acquisition_as_servo_output(
+                acquisition_output, l_status, hole_status
+            )
+            decision_owner = PalletControlOwner.FORWARD_ACQUISITION
+
+    placement_motion_active = bool(
+        auto_place_slot1
+        and placement_sequencer is not None
+        and not shutdown_pending
+        and (
+            placement_lowering_started
+            or placement_release_started
+            or placement_sequencer.state
+            is not PlacementState.PRE_PLACE_VERIFY
+        )
+    )
+    if placement_motion_active:
+        decision = _placement_zero_hold_output(decision)
+        decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
+        motion_interlocks_ok = True
+        motion_interlock_reason = (
+            "placement_cartesian_motion_exact_zero_base"
+        )
+
+    decision_source_max_age_s = (
+        _MAX_ODOMETRY_PREDICTION_AGE_S
+        if bridge_diagnostics.get("odometry_prediction_used")
+        else _MAX_LIVE_CONTROL_RESULT_AGE_S
+    )
+    dispatch_result = "dry_run_no_actuation"
+
+    return _BaseMotionDecision(
+        acquisition_output=acquisition_output,
+        bridge_diagnostics=bridge_diagnostics,
+        decision=decision,
+        decision_owner=decision_owner,
+        decision_source_max_age_s=decision_source_max_age_s,
+        decision_source_timestamp_s=decision_source_timestamp_s,
+        dispatch_result=dispatch_result,
+        grip_result=grip_result,
+        hole_status=hole_status,
+        l_status=l_status,
+        motion_interlock_reason=motion_interlock_reason,
+        motion_interlocks_ok=motion_interlocks_ok,
+        odometry=odometry,
+        odometry_error=odometry_error,
+        placement_motion_active=placement_motion_active,
+        stationary=stationary,
+        stationary_source=stationary_source,
+    )
+
 def run_pallet_live(
     root_config: Mapping[str, Any],
     *,
@@ -2160,251 +2503,47 @@ def run_pallet_live(
                     fresh_sample=fresh_scene_sample,
                 )
                 grip_result: Any | None = None
-                if execute:
-                    assert controller is not None
-                    wheel_status = controller.wheel_stop_status()
-                    wheel = _wheel_measurement(wheel_status, decision_now_s)
-                    stationary = bool(
-                        getattr(wheel_status, "feedback_fresh", False)
-                        and getattr(wheel_status, "stopped", False)
-                    )
-                    stationary_at_capture = _stationary_at_capture(
-                        wheel_status,
-                        frame_source_monotonic_s,
-                        decision_now_s,
-                    )
-                    stationary_source = "measured_wheel_stop_dwell"
-                    odometry, odometry_error = _odometry_sample(
-                        controller,
-                        decision_now_s,
-                    )
-                    zero_acknowledged = _zero_command_acknowledged(controller)
-                    if scene_window:
-                        grip_result = controller.evaluate_grip_and_clearance_dwell(
-                            list(scene_window),
-                            allow_fixed_ready_geometry_only=(
-                                geometry_only_policy_enabled
-                            ),
-                        )
-                        motion_interlocks_ok = bool(
-                            getattr(grip_result, "passed", False)
-                        )
-                        grip_reasons = tuple(
-                            getattr(grip_result, "reasons", ())
-                        )
-                        motion_interlock_reason = (
-                            "" if motion_interlocks_ok else ";".join(grip_reasons)
-                        )
-                    else:
-                        motion_interlocks_ok = False
-                        motion_interlock_reason = "clearance_evidence_unavailable"
-                else:
-                    wheel_status = None
-                    wheel = None
-                    stationary = True
-                    stationary_at_capture = True
-                    stationary_source = "dry_run_assumed_stationary_no_actuation"
-                    odometry = None
-                    odometry_error = "dry_run_has_no_robot_odometry"
-                    zero_acknowledged = True
-                    motion_interlocks_ok = False
-                    motion_interlock_reason = "dry_run_no_robot_commands"
-
-                stationary_for_vision = stationary_at_capture and frame_result_fresh
-                coarse = scene.coarse
-                raw_l_corner_visible = bool(
-                    frame_result_fresh
-                    and coarse is not None
-                    and (
-                        coarse.valid
-                        or coarse.forward_acquisition_valid
-                    )
+                base_motion = _decide_base_motion(
+                    acquisition_config=acquisition_config,
+                    acquisition_servo=acquisition_servo,
+                    authority=authority,
+                    auto_place_slot1=auto_place_slot1,
+                    controller=controller,
+                    decision_now_s=decision_now_s,
+                    estimator_config=estimator_config,
+                    execute=execute,
+                    frame_result_fresh=frame_result_fresh,
+                    frame_source_monotonic_s=frame_source_monotonic_s,
+                    geometry_only_policy_enabled=geometry_only_policy_enabled,
+                    hole_gate=hole_gate,
+                    l_corner_gate=l_corner_gate,
+                    placement_lowering_started=placement_lowering_started,
+                    placement_release_started=placement_release_started,
+                    placement_sequencer=placement_sequencer,
+                    scene=scene,
+                    scene_window=scene_window,
+                    servo=servo,
+                    servo_bridge=servo_bridge,
+                    shutdown_pending=shutdown_pending,
+                    slot1_hole_reference=slot1_hole_reference,
                 )
-                raw_metric_proxy_visible = bool(
-                    frame_result_fresh
-                    and coarse is not None
-                    and coarse.fixed_outer_center_base(
-                        estimator_config.geometry.outer_size_m
-                    )
-                    is not None
-                )
-                raw_l_corner_timestamp_s = (
-                    float(coarse.timestamp_s)
-                    if raw_l_corner_visible and coarse is not None
-                    else None
-                )
-                raw_hole_visible, raw_hole_timestamp_s = (
-                    _raw_complete_hole_evidence(
-                        scene,
-                        frame_result_fresh=frame_result_fresh,
-                    )
-                )
-                l_status = l_corner_gate.update(
-                    coarse,
-                    stationary=stationary_for_vision,
-                )
-                hole_status = hole_gate.update(
-                    scene,
-                    stationary=stationary_for_vision,
-                )
-                acquisition_output: AcquisitionOutput | None = None
-                bridge_diagnostics: dict[str, Any] = {
-                    "odometry_prediction_used": False,
-                    "dropout_age_s": None,
-                    "prediction_ttl_s": _MAX_ODOMETRY_PREDICTION_AGE_S,
-                    "prediction_reason": "fine_servo_not_active",
-                }
-                decision_source_timestamp_s = frame_source_monotonic_s
-                if shutdown_pending:
-                    decision = _shutdown_hold_output("shutdown_handoff_pending")
-                    decision_owner = PalletControlOwner.SHUTDOWN_HOLD
-                elif authority.owner is PalletControlOwner.FINE_SLOT1_SERVO:
-                    raw_measurement = (
-                        _servo_measurement(
-                            scene,
-                            slot1_hole_reference,
-                            frame_source_monotonic_s,
-                            estimator_config.geometry,
-                        )
-                        if frame_result_fresh
-                        else PalletServoObservation.invalid(
-                            frame_source_monotonic_s,
-                            "frame_processing_stale",
-                            reference_source=(
-                                slot1_hole_reference.reference_source
-                            ),
-                        )
-                    )
-                    measurement, bridge_diagnostics = servo_bridge.resolve(
-                        raw_measurement,
-                        odometry,
-                        now_s=decision_now_s,
-                    )
-                    fine_output = servo.update(measurement, decision_now_s, wheel)
-                    if frame_result_fresh and raw_measurement.valid:
-                        servo_bridge.commit(
-                            raw_measurement,
-                            odometry,
-                            fine_output,
-                            now_s=decision_now_s,
-                        )
-                    decision_source_timestamp_s = float(measurement.timestamp_s)
-                    decision = _annotate_fine_output(
-                        fine_output,
-                        measurement_source=(
-                            "odometry_predicted_metric_stack"
-                            if bridge_diagnostics.get("odometry_prediction_used")
-                            else _servo_measurement_source(
-                                scene,
-                                estimator_config.geometry,
-                            )
-                        ),
-                        bridge_diagnostics=bridge_diagnostics,
-                    )
-                    decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
-                else:
-                    acquisition_decision = AcquisitionDecision(
-                        now_s=decision_now_s,
-                        odometry=odometry,
-                        # Raw per-frame evidence remains a moving-step safety
-                        # predicate.  Only the stationary gate may authorize a
-                        # new step or a coarse-to-fine transition.
-                        l_corner_visible=raw_l_corner_visible,
-                        l_corner_stable=l_status.stable,
-                        l_corner_stationary_frames=l_status.stationary_frames,
-                        l_corner_window_started_at_s=l_status.window_started_at_s,
-                        l_corner_timestamp_s=raw_l_corner_timestamp_s,
-                        l_corner_topology_branch=(
-                            coarse.topology_branch
-                            if raw_l_corner_visible and coarse is not None
-                            else None
-                        ),
-                        metric_proxy_visible=raw_metric_proxy_visible,
-                        metric_proxy_stable=(
-                            l_status.metric_proxy_stable
-                            and raw_metric_proxy_visible
-                        ),
-                        metric_proxy_timestamp_s=(
-                            float(coarse.timestamp_s)
-                            if raw_metric_proxy_visible and coarse is not None
-                            else None
-                        ),
-                        hole_visible=raw_hole_visible,
-                        hole_visible_timestamp_s=raw_hole_timestamp_s,
-                        hole_dwell_complete=hole_status.dwell_complete,
-                        hole_window_started_at_s=(
-                            hole_status.window_started_at_s
-                            if hole_status.dwell_complete
-                            else None
-                        ),
-                        hole_timestamp_s=(
-                            hole_status.window_ended_at_s
-                            if hole_status.dwell_complete
-                            else None
-                        ),
-                        motion_interlocks_ok=motion_interlocks_ok,
-                        interlock_reason=motion_interlock_reason,
-                        wheel_stopped=stationary,
-                        wheel_timestamp_s=(decision_now_s if stationary else None),
-                        zero_command_acknowledged=zero_acknowledged,
-                    )
-                    acquisition_output = acquisition_servo.update(acquisition_decision)
-                    if acquisition_output.fine_handoff_requested:
-                        if acquisition_config.budget_m <= 0.0:
-                            raise RuntimeError(
-                                "zero acquisition budget cannot transfer motion authority"
-                            )
-                        if not acquisition_output.is_exact_zero or not stationary:
-                            raise RuntimeError(
-                                "coarse-to-fine handoff requires exact zero and "
-                                "measured wheel stop"
-                            )
-                        authority.handoff_to_fine(
-                            acquisition_output,
-                            zero_command_acknowledged=zero_acknowledged,
-                            wheel_stopped=stationary,
-                        )
-                        decision = _annotate_fine_output(
-                            servo.start(decision_now_s),
-                            handoff_started=True,
-                            measurement_source=_servo_measurement_source(
-                                scene,
-                                estimator_config.geometry,
-                            ),
-                            bridge_diagnostics=bridge_diagnostics,
-                        )
-                        decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
-                    else:
-                        decision = _acquisition_as_servo_output(
-                            acquisition_output, l_status, hole_status
-                        )
-                        decision_owner = PalletControlOwner.FORWARD_ACQUISITION
-
-                placement_motion_active = bool(
-                    auto_place_slot1
-                    and placement_sequencer is not None
-                    and not shutdown_pending
-                    and (
-                        placement_lowering_started
-                        or placement_release_started
-                        or placement_sequencer.state
-                        is not PlacementState.PRE_PLACE_VERIFY
-                    )
-                )
-                if placement_motion_active:
-                    decision = _placement_zero_hold_output(decision)
-                    decision_owner = PalletControlOwner.FINE_SLOT1_SERVO
-                    motion_interlocks_ok = True
-                    motion_interlock_reason = (
-                        "placement_cartesian_motion_exact_zero_base"
-                    )
-
-                decision_source_max_age_s = (
-                    _MAX_ODOMETRY_PREDICTION_AGE_S
-                    if bridge_diagnostics.get("odometry_prediction_used")
-                    else _MAX_LIVE_CONTROL_RESULT_AGE_S
-                )
-                dispatch_result = "dry_run_no_actuation"
+                acquisition_output = base_motion.acquisition_output
+                bridge_diagnostics = base_motion.bridge_diagnostics
+                decision = base_motion.decision
+                decision_owner = base_motion.decision_owner
+                decision_source_max_age_s = base_motion.decision_source_max_age_s
+                decision_source_timestamp_s = base_motion.decision_source_timestamp_s
+                dispatch_result = base_motion.dispatch_result
+                grip_result = base_motion.grip_result
+                hole_status = base_motion.hole_status
+                l_status = base_motion.l_status
+                motion_interlock_reason = base_motion.motion_interlock_reason
+                motion_interlocks_ok = base_motion.motion_interlocks_ok
+                odometry = base_motion.odometry
+                odometry_error = base_motion.odometry_error
+                placement_motion_active = base_motion.placement_motion_active
+                stationary = base_motion.stationary
+                stationary_source = base_motion.stationary_source
                 if execute:
                     assert controller is not None
                     dispatch_result = _dispatch_live_decision(
