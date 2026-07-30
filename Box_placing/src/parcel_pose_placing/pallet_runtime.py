@@ -2676,53 +2676,20 @@ class _LiveOutcome:
 
 def _align_and_place(
     *,
-    accepted_scene_sequence: Any,
     controller: Any,
-    frame_count: Any,
-    last_placement_output: Any,
-    last_placement_runtime_diagnostics: Any,
-    placement_alignment_ready_since_s: Any,
-    placement_lowering_started: Any,
-    placement_release_started: Any,
-    video_writer: Any,
-    T_base_depth: Any,
-    calibration_status: Any,
-    containment: Any,
-    held_proxy: Any,
-    log_stream: Any,
-    shutdown_pending: Any,
-    window_created: Any,
-    acquisition_config: Any,
-    acquisition_servo: Any,
-    authority: Any,
     auto_place_slot1: Any,
-    box_bottom_uncertainty_m: Any,
     ensure_slot1_ready: Any,
-    estimator: Any,
-    estimator_config: Any,
     execute: Any,
-    fps: Any,
-    frame_gate: Any,
-    geometry_only_policy_enabled: Any,
+    plan: _LivePlan,
+    state: _RunState,
+    stack: _LiveStack,
     headless: Any,
-    hole_gate: Any,
-    l_corner_gate: Any,
     log_jsonl: Any,
     max_frames: Any,
-    maximum_box_height_m: Any,
     output_mp4: Any,
-    placement_config: Any,
-    placement_sequencer: Any,
     robot_address: Any,
     robot_power: Any,
     root_config: Any,
-    scene_window: Any,
-    selected_slot: Any,
-    servo: Any,
-    servo_bridge: Any,
-    slot1_hole_reference: Any,
-    stream_config: Any,
-    vision_release_policy_enabled: Any,
     window_name: Any,
 ) -> _LiveOutcome:
     """Open the camera, drive the base onto the slot, place the carton, tear down.
@@ -2731,6 +2698,26 @@ def _align_and_place(
     records and draws.  The finally clause releases the artifacts and says plainly
     that releasing them does not disarm a loaded robot.
     """
+
+    T_base_depth = state.T_base_depth
+    accepted_scene_sequence = state.accepted_scene_sequence
+    box_bottom_uncertainty_m = state.box_bottom_uncertainty_m
+    calibration_status = state.calibration_status
+    containment = state.containment
+    frame_count = state.frame_count
+    frame_gate = state.frame_gate
+    held_proxy = state.held_proxy
+    last_placement_output = state.last_placement_output
+    last_placement_runtime_diagnostics = state.last_placement_runtime_diagnostics
+    log_stream = state.log_stream
+    maximum_box_height_m = state.maximum_box_height_m
+    placement_alignment_ready_since_s = state.placement_alignment_ready_since_s
+    placement_lowering_started = state.placement_lowering_started
+    placement_release_started = state.placement_release_started
+    scene_window = state.scene_window
+    shutdown_pending = state.shutdown_pending
+    video_writer = state.video_writer
+    window_created = state.window_created
 
 
     try:
@@ -2753,7 +2740,7 @@ def _align_and_place(
                     config=PalletControlConfig.from_root_config(
                         root_config,
                         address_override=robot_address,
-                        slot=selected_slot,
+                        slot=plan.selected_slot,
                     ),
                 )
             containment = ActuationContainmentState(controller)
@@ -2780,7 +2767,7 @@ def _align_and_place(
             )
 
         log_stream = _open_log(None if log_jsonl is None else Path(log_jsonl))
-        with RealSenseAdapter(stream_config) as camera:
+        with RealSenseAdapter(plan.stream_config) as camera:
             contract = validate_live_camera_profile(
                 camera.active_profile_metadata(), root_config
             )
@@ -2807,11 +2794,11 @@ def _align_and_place(
                             file=sys.stderr,
                         )
                         break
-                    was_fine = authority.owner is PalletControlOwner.FINE_SLOT1_SERVO
-                    authority.request_shutdown_hold()
+                    was_fine = stack.authority.owner is PalletControlOwner.FINE_SLOT1_SERVO
+                    stack.authority.request_shutdown_hold()
                     shutdown_pending = True
                     if was_fine:
-                        servo.request_shutdown_hold(time.monotonic())
+                        stack.servo.request_shutdown_hold(time.monotonic())
                     print(
                         "warning: first interrupt entered SHUTDOWN_PENDING_HOLD; "
                         "body hold remains active and a successor acknowledgement is "
@@ -2831,7 +2818,7 @@ def _align_and_place(
                     frame,
                     root_config=root_config,
                     contract=contract,
-                    estimator=estimator,
+                    estimator=stack.estimator,
                     controller=controller if execute else None,
                     calibration_status=calibration_status,
                     configured_T_base_depth=T_base_depth,
@@ -2862,28 +2849,28 @@ def _align_and_place(
                 )
                 grip_result: Any | None = None
                 base_motion = _decide_base_motion(
-                    acquisition_config=acquisition_config,
-                    acquisition_servo=acquisition_servo,
-                    authority=authority,
+                    acquisition_config=stack.acquisition_config,
+                    acquisition_servo=stack.acquisition_servo,
+                    authority=stack.authority,
                     auto_place_slot1=auto_place_slot1,
                     controller=controller,
                     decision_now_s=decision_now_s,
-                    estimator_config=estimator_config,
+                    estimator_config=stack.estimator_config,
                     execute=execute,
                     frame_result_fresh=frame_result_fresh,
                     frame_source_monotonic_s=frame_source_monotonic_s,
-                    geometry_only_policy_enabled=geometry_only_policy_enabled,
-                    hole_gate=hole_gate,
-                    l_corner_gate=l_corner_gate,
+                    geometry_only_policy_enabled=plan.geometry_only_policy_enabled,
+                    hole_gate=stack.hole_gate,
+                    l_corner_gate=stack.l_corner_gate,
                     placement_lowering_started=placement_lowering_started,
                     placement_release_started=placement_release_started,
-                    placement_sequencer=placement_sequencer,
+                    placement_sequencer=stack.placement_sequencer,
                     scene=scene,
                     scene_window=scene_window,
-                    servo=servo,
-                    servo_bridge=servo_bridge,
+                    servo=stack.servo,
+                    servo_bridge=stack.servo_bridge,
                     shutdown_pending=shutdown_pending,
-                    slot1_hole_reference=slot1_hole_reference,
+                    slot1_hole_reference=stack.slot1_hole_reference,
                 )
                 acquisition_output = base_motion.acquisition_output
                 bridge_diagnostics = base_motion.bridge_diagnostics
@@ -2903,7 +2890,7 @@ def _align_and_place(
                 stationary = base_motion.stationary
                 stationary_source = base_motion.stationary_source
                 placement_step = _advance_placement(
-                    authority=authority,
+                    authority=stack.authority,
                     auto_place_slot1=auto_place_slot1,
                     containment=containment,
                     controller=controller,
@@ -2911,18 +2898,18 @@ def _align_and_place(
                     decision_owner=decision_owner,
                     decision_source_max_age_s=decision_source_max_age_s,
                     decision_source_timestamp_s=decision_source_timestamp_s,
-                    estimator_config=estimator_config,
+                    estimator_config=stack.estimator_config,
                     execute=execute,
                     frame=frame,
                     frame_source_monotonic_s=frame_source_monotonic_s,
                     motion_interlocks_ok=motion_interlocks_ok,
-                    placement_config=placement_config,
+                    placement_config=stack.placement_config,
                     placement_motion_active=placement_motion_active,
-                    placement_sequencer=placement_sequencer,
+                    placement_sequencer=stack.placement_sequencer,
                     root_config=root_config,
                     scene=scene,
                     stationary=stationary,
-                    vision_release_policy_enabled=vision_release_policy_enabled,
+                    vision_release_policy_enabled=plan.vision_release_policy_enabled,
                     last_placement_output=last_placement_output,
                     last_placement_runtime_diagnostics=last_placement_runtime_diagnostics,
                     placement_alignment_ready_since_s=placement_alignment_ready_since_s,
@@ -2955,13 +2942,13 @@ def _align_and_place(
                 overlay = draw_live_overlay(
                     color,
                     scene,
-                    estimator.last_evidence,
+                    stack.estimator.last_evidence,
                     held_proxy,
                     decision,
                     T_base_depth,
                     contract.depth_intrinsics,
-                    slot1_hole_reference,
-                    estimator_config.geometry,
+                    stack.slot1_hole_reference,
+                    stack.estimator_config.geometry,
                     execute=execute,
                     acquisition=acquisition_output,
                     l_gate=l_status,
@@ -2976,7 +2963,7 @@ def _align_and_place(
                     ),
                 )
                 if video_writer is None and output_mp4 is not None:
-                    video_writer = _open_video(Path(output_mp4), overlay.shape[:2], fps)
+                    video_writer = _open_video(Path(output_mp4), overlay.shape[:2], plan.fps)
                 if video_writer is not None:
                     video_writer.write(overlay)
                 record = _telemetry_record(
@@ -2998,19 +2985,19 @@ def _align_and_place(
                     grip_result=grip_result,
                     dispatch_result=dispatch_result,
                     T_base_depth=T_base_depth,
-                    slot1_hole_reference=slot1_hole_reference,
+                    slot1_hole_reference=stack.slot1_hole_reference,
                     placement=placement_output or last_placement_output,
                     placement_runtime_diagnostics=(
                         placement_runtime_diagnostics
                         or last_placement_runtime_diagnostics
                     ),
                     loop_timing=loop_timing,
-                    geometry=estimator_config.geometry,
-                    estimator_config=estimator_config,
+                    geometry=stack.estimator_config.geometry,
+                    estimator_config=stack.estimator_config,
                     bridge_diagnostics=bridge_diagnostics,
                 )
                 _write_record(log_stream, record)
-                if frame_count % fps == 0:
+                if frame_count % plan.fps == 0:
                     placement_suffix = (
                         ""
                         if (placement_output or last_placement_output) is None
@@ -3048,12 +3035,12 @@ def _align_and_place(
                         )
                         if not should_exit:
                             was_fine = (
-                                authority.owner is PalletControlOwner.FINE_SLOT1_SERVO
+                                stack.authority.owner is PalletControlOwner.FINE_SLOT1_SERVO
                             )
-                            authority.request_shutdown_hold()
+                            stack.authority.request_shutdown_hold()
                             shutdown_pending = True
                             if was_fine:
-                                servo.request_shutdown_hold(time.monotonic())
+                                stack.servo.request_shutdown_hold(time.monotonic())
                             print(
                                 "warning: shutdown is pending; press q again only for "
                                 "unsafe best-effort cancellation without successor",
@@ -3100,6 +3087,127 @@ def _align_and_place(
     )
 
 
+@dataclass(frozen=True)
+class _RunState:
+    """What the frame loop starts with and keeps updating."""
+
+    T_base_depth: Any
+    accepted_scene_sequence: Any
+    box_bottom_uncertainty_m: Any
+    calibration_status: Any
+    containment: Any
+    frame_count: Any
+    frame_gate: Any
+    held_proxy: Any
+    last_placement_output: Any
+    last_placement_runtime_diagnostics: Any
+    log_stream: Any
+    maximum_box_height_m: Any
+    placement_alignment_ready_since_s: Any
+    placement_lowering_started: Any
+    placement_release_started: Any
+    scene_window: Any
+    shutdown_pending: Any
+    video_writer: Any
+    window_created: Any
+
+
+def _initial_run_state(
+    *,
+    plan: Any,
+    root_config: Any,
+) -> _RunState:
+    """The mutable state one run starts with, stated in one place.
+
+    Every field here is updated by the frame loop.  Naming them together is how a
+    stale camera transform or an unset placement flag stops being an accident of
+    which branch happened to run first.
+    """
+
+    T_base_depth = None
+    accepted_scene_sequence = None
+    box_bottom_uncertainty_m = None
+    calibration_status = None
+    containment = None
+    frame_count = None
+    frame_gate = None
+    held_proxy = None
+    last_placement_output = None
+    last_placement_runtime_diagnostics = None
+    log_stream = None
+    maximum_box_height_m = None
+    placement_alignment_ready_since_s = None
+    placement_lowering_started = None
+    placement_release_started = None
+    scene_window = None
+    shutdown_pending = None
+    video_writer = None
+    window_created = None
+
+    shutdown_pending = False
+    # The alignment dwell used to depend on the first frame never reaching the
+    # arrived branch; state it instead.
+    placement_alignment_ready_since_s: float | None = None
+    placement_lowering_started = False
+    placement_release_started = False
+    last_placement_output: PlacementOutput | None = None
+    last_placement_runtime_diagnostics: dict[str, Any] | None = None
+    scene_window: deque[dict[str, Any]] = deque(maxlen=30)
+    calibration_status = "nominal_ready_assumed"
+    T_base_depth = configured_T_base_from_depth(root_config)
+    held_config = _section(root_config, "held_box")
+    maximum_box_height_m = float(held_config.get("maximum_height_m", 0.164))
+    box_bottom_uncertainty_m = float(
+        held_config.get("fixed_ready_box_bottom_uncertainty_m", 0.015)
+    )
+    if not math.isfinite(maximum_box_height_m) or maximum_box_height_m <= 0.0:
+        raise ValueError("held_box.maximum_height_m must be finite and positive")
+    if (
+        not math.isfinite(box_bottom_uncertainty_m)
+        or box_bottom_uncertainty_m < 0.0
+    ):
+        raise ValueError(
+            "held_box.fixed_ready_box_bottom_uncertainty_m must be finite and "
+            "non-negative"
+        )
+    held_proxy = _nominal_held_pose(root_config)
+
+    video_writer: Any | None = None
+    log_stream: TextIO | None = None
+    window_created = False
+    frame_count = 0
+    accepted_scene_sequence = 0
+    frame_gate = LiveFrameGate(
+        maximum_capture_age_s=float(plan.camera_config.get("frame_fresh_after_s", 0.20)),
+        maximum_rgb_depth_timestamp_skew_s=float(
+            plan.camera_config.get("maximum_rgb_depth_timestamp_skew_s", 0.05)
+        ),
+    )
+    containment: ActuationContainmentState | None = None
+
+    return _RunState(
+        T_base_depth=T_base_depth,
+        accepted_scene_sequence=accepted_scene_sequence,
+        box_bottom_uncertainty_m=box_bottom_uncertainty_m,
+        calibration_status=calibration_status,
+        containment=containment,
+        frame_count=frame_count,
+        frame_gate=frame_gate,
+        held_proxy=held_proxy,
+        last_placement_output=last_placement_output,
+        last_placement_runtime_diagnostics=last_placement_runtime_diagnostics,
+        log_stream=log_stream,
+        maximum_box_height_m=maximum_box_height_m,
+        placement_alignment_ready_since_s=placement_alignment_ready_since_s,
+        placement_lowering_started=placement_lowering_started,
+        placement_release_started=placement_release_started,
+        scene_window=scene_window,
+        shutdown_pending=shutdown_pending,
+        video_writer=video_writer,
+        window_created=window_created,
+    )
+
+
 def run_pallet_live(
     root_config: Mapping[str, Any],
     *,
@@ -3137,125 +3245,38 @@ def run_pallet_live(
         slot=slot,
         warmup_frames=warmup_frames,
     )
-    camera_config = plan.camera_config
-    fps = plan.fps
-    geometry_only_policy_enabled = plan.geometry_only_policy_enabled
-    selected_slot = plan.selected_slot
-    stream_config = plan.stream_config
-    vision_release_policy_enabled = plan.vision_release_policy_enabled
 
     # Imports stay below the standalone execute interlock.  In dry-run this is
     # still pure camera/perception code and cannot import rby1_sdk.
     stack = _assemble_live_stack(
         auto_place_slot1=auto_place_slot1,
         root_config=root_config,
-        selected_slot=selected_slot,
+        selected_slot=plan.selected_slot,
     )
-    acquisition_config = stack.acquisition_config
-    acquisition_servo = stack.acquisition_servo
-    authority = stack.authority
-    estimator = stack.estimator
-    estimator_config = stack.estimator_config
-    hole_gate = stack.hole_gate
-    l_corner_gate = stack.l_corner_gate
-    placement_config = stack.placement_config
-    placement_sequencer = stack.placement_sequencer
-    servo = stack.servo
-    servo_bridge = stack.servo_bridge
-    slot1_hole_reference = stack.slot1_hole_reference
-    shutdown_pending = False
-    # The alignment dwell used to depend on the first frame never reaching the
-    # arrived branch; state it instead.
-    placement_alignment_ready_since_s: float | None = None
-    placement_lowering_started = False
-    placement_release_started = False
-    last_placement_output: PlacementOutput | None = None
-    last_placement_runtime_diagnostics: dict[str, Any] | None = None
-    scene_window: deque[dict[str, Any]] = deque(maxlen=30)
-    calibration_status = "nominal_ready_assumed"
-    T_base_depth = configured_T_base_from_depth(root_config)
-    held_config = _section(root_config, "held_box")
-    maximum_box_height_m = float(held_config.get("maximum_height_m", 0.164))
-    box_bottom_uncertainty_m = float(
-        held_config.get("fixed_ready_box_bottom_uncertainty_m", 0.015)
+    state = _initial_run_state(
+        plan=plan,
+        root_config=root_config,
     )
-    if not math.isfinite(maximum_box_height_m) or maximum_box_height_m <= 0.0:
-        raise ValueError("held_box.maximum_height_m must be finite and positive")
-    if (
-        not math.isfinite(box_bottom_uncertainty_m)
-        or box_bottom_uncertainty_m < 0.0
-    ):
-        raise ValueError(
-            "held_box.fixed_ready_box_bottom_uncertainty_m must be finite and "
-            "non-negative"
-        )
-    held_proxy = _nominal_held_pose(root_config)
-
-    video_writer: Any | None = None
-    log_stream: TextIO | None = None
-    window_created = False
-    frame_count = 0
-    accepted_scene_sequence = 0
-    frame_gate = LiveFrameGate(
-        maximum_capture_age_s=float(camera_config.get("frame_fresh_after_s", 0.20)),
-        maximum_rgb_depth_timestamp_skew_s=float(
-            camera_config.get("maximum_rgb_depth_timestamp_skew_s", 0.05)
-        ),
-    )
-    containment: ActuationContainmentState | None = None
     _align_and_place(
-        accepted_scene_sequence=accepted_scene_sequence,
         controller=controller,
-        frame_count=frame_count,
-        last_placement_output=last_placement_output,
-        last_placement_runtime_diagnostics=last_placement_runtime_diagnostics,
-        placement_alignment_ready_since_s=placement_alignment_ready_since_s,
-        placement_lowering_started=placement_lowering_started,
-        placement_release_started=placement_release_started,
-        video_writer=video_writer,
-        T_base_depth=T_base_depth,
-        calibration_status=calibration_status,
-        containment=containment,
-        held_proxy=held_proxy,
-        log_stream=log_stream,
-        shutdown_pending=shutdown_pending,
-        window_created=window_created,
-        acquisition_config=acquisition_config,
-        acquisition_servo=acquisition_servo,
-        authority=authority,
         auto_place_slot1=auto_place_slot1,
-        box_bottom_uncertainty_m=box_bottom_uncertainty_m,
         ensure_slot1_ready=ensure_slot1_ready,
-        estimator=estimator,
-        estimator_config=estimator_config,
         execute=execute,
-        fps=fps,
-        frame_gate=frame_gate,
-        geometry_only_policy_enabled=geometry_only_policy_enabled,
+        plan=plan,
+        state=state,
+        stack=stack,
         headless=headless,
-        hole_gate=hole_gate,
-        l_corner_gate=l_corner_gate,
         log_jsonl=log_jsonl,
         max_frames=max_frames,
-        maximum_box_height_m=maximum_box_height_m,
         output_mp4=output_mp4,
-        placement_config=placement_config,
-        placement_sequencer=placement_sequencer,
         robot_address=robot_address,
         robot_power=robot_power,
         root_config=root_config,
-        scene_window=scene_window,
-        selected_slot=selected_slot,
-        servo=servo,
-        servo_bridge=servo_bridge,
-        slot1_hole_reference=slot1_hole_reference,
-        stream_config=stream_config,
-        vision_release_policy_enabled=vision_release_policy_enabled,
         window_name=window_name,
     )
-        # Never imply that resource cleanup preserves a loaded robot.  The
-        # execute path remains open unless explicit forced cancellation or a
-        # separately acknowledged owner handoff closes it.
+
+    # Returning zero never implies the robot was disarmed.  The execute path stays
+    # open unless forced cancellation or an acknowledged owner handoff closes it.
     return 0
 
 

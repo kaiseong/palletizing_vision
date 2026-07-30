@@ -61,7 +61,7 @@ def test_the_control_loop_keeps_shrinking() -> None:
         if isinstance(node, ast.FunctionDef) and node.end_lineno is not None
     }
     assert "run_pallet_live" in lengths, "run_pallet_live disappeared; update this test"
-    assert lengths["run_pallet_live"] <= 160, (
+    assert lengths["run_pallet_live"] <= 75, (
         f"run_pallet_live grew back to {lengths['run_pallet_live']} lines; "
         "extract the next phase instead of adding to the loop"
     )
