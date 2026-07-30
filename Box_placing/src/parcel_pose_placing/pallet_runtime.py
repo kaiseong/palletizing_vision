@@ -2418,29 +2418,44 @@ def _advance_placement(
         placement_release_started=placement_release_started,
     )
 
-def run_pallet_live(
-    root_config: Mapping[str, Any],
-    *,
-    execute: bool = False,
-    auto_place_slot1: bool = False,
-    ensure_slot1_ready: bool = False,
-    slot: int | None = None,
-    robot_address: str = "192.168.30.1:50051",
-    robot_power: str = ".*",
-    warmup_frames: int = 30,
-    max_frames: int | None = None,
-    headless: bool = False,
-    window_name: str = "RB-Y1 Pallet Slot-1",
-    output_mp4: str | Path | None = None,
-    log_jsonl: str | Path | None = None,
-    controller: _ControllerLike | None = None,
-) -> int:
-    """Run pallet perception, loaded-box slot-1 alignment, and gated placement.
+@dataclass(frozen=True)
+class _LivePlan:
+    """What a validated live request resolved to."""
 
-    Execution is a standalone post-pick boundary: the previous process must be
-    stopped, the configured loaded ready posture is verified, and this process
-    becomes the sole combined body/mobility stream owner.
+    camera_config: Any
+    fps: Any
+    geometry_only_policy_enabled: Any
+    selected_slot: Any
+    stream_config: Any
+    vision_release_policy_enabled: Any
+
+
+def _resolve_live_plan(
+    *,
+    auto_place_slot1: Any,
+    controller: Any,
+    ensure_slot1_ready: Any,
+    execute: Any,
+    headless: Any,
+    log_jsonl: Any,
+    max_frames: Any,
+    output_mp4: Any,
+    root_config: Any,
+    slot: Any,
+    warmup_frames: Any,
+) -> _LivePlan:
+    """Check the request and the config, then hand back what the run needs.
+
+    Pure: every refusal here happens before the camera opens or the robot moves,
+    which is why an undemonstrated slot or a disabled policy costs nothing.
     """
+
+    camera_config = None
+    fps = None
+    geometry_only_policy_enabled = None
+    selected_slot = None
+    stream_config = None
+    vision_release_policy_enabled = None
 
     if not isinstance(root_config, Mapping):
         raise TypeError("root_config must be a mapping")
@@ -2541,8 +2556,59 @@ def run_pallet_live(
         warmup_frames=int(warmup_frames),
     )
 
-    # Imports stay below the standalone execute interlock.  In dry-run this is
-    # still pure camera/perception code and cannot import rby1_sdk.
+    return _LivePlan(
+        camera_config=camera_config,
+        fps=fps,
+        geometry_only_policy_enabled=geometry_only_policy_enabled,
+        selected_slot=selected_slot,
+        stream_config=stream_config,
+        vision_release_policy_enabled=vision_release_policy_enabled,
+    )
+
+
+@dataclass(frozen=True)
+class _LiveStack:
+    """The estimator, gates, servo and sequencer a live run holds for its whole life."""
+
+    acquisition_config: Any
+    acquisition_servo: Any
+    authority: Any
+    estimator: Any
+    estimator_config: Any
+    hole_gate: Any
+    l_corner_gate: Any
+    placement_config: Any
+    placement_sequencer: Any
+    servo: Any
+    servo_bridge: Any
+    slot1_hole_reference: Any
+
+
+def _assemble_live_stack(
+    *,
+    auto_place_slot1: Any,
+    root_config: Any,
+    selected_slot: Any,
+) -> _LiveStack:
+    """Build the long-lived objects one run needs, once.
+
+    Nothing here depends on a frame, so a wrong gate threshold or a wrong servo
+    limit is found in this one place rather than partway down a control loop.
+    """
+
+    acquisition_config = None
+    acquisition_servo = None
+    authority = None
+    estimator = None
+    estimator_config = None
+    hole_gate = None
+    l_corner_gate = None
+    placement_config = None
+    placement_sequencer = None
+    servo = None
+    servo_bridge = None
+    slot1_hole_reference = None
+
     from .pallet_geometry import PalletStackEstimator
     from .pallet_models import load_pallet_estimator_config
 
@@ -2585,6 +2651,86 @@ def run_pallet_live(
         Slot1PlacementSequencer(placement_config) if auto_place_slot1 else None
     )
     authority = CoarseFineAuthority()
+
+    return _LiveStack(
+        acquisition_config=acquisition_config,
+        acquisition_servo=acquisition_servo,
+        authority=authority,
+        estimator=estimator,
+        estimator_config=estimator_config,
+        hole_gate=hole_gate,
+        l_corner_gate=l_corner_gate,
+        placement_config=placement_config,
+        placement_sequencer=placement_sequencer,
+        servo=servo,
+        servo_bridge=servo_bridge,
+        slot1_hole_reference=slot1_hole_reference,
+    )
+
+
+def run_pallet_live(
+    root_config: Mapping[str, Any],
+    *,
+    execute: bool = False,
+    auto_place_slot1: bool = False,
+    ensure_slot1_ready: bool = False,
+    slot: int | None = None,
+    robot_address: str = "192.168.30.1:50051",
+    robot_power: str = ".*",
+    warmup_frames: int = 30,
+    max_frames: int | None = None,
+    headless: bool = False,
+    window_name: str = "RB-Y1 Pallet Slot-1",
+    output_mp4: str | Path | None = None,
+    log_jsonl: str | Path | None = None,
+    controller: _ControllerLike | None = None,
+) -> int:
+    """Run pallet perception, loaded-box slot-1 alignment, and gated placement.
+
+    Execution is a standalone post-pick boundary: the previous process must be
+    stopped, the configured loaded ready posture is verified, and this process
+    becomes the sole combined body/mobility stream owner.
+    """
+
+    plan = _resolve_live_plan(
+        auto_place_slot1=auto_place_slot1,
+        controller=controller,
+        ensure_slot1_ready=ensure_slot1_ready,
+        execute=execute,
+        headless=headless,
+        log_jsonl=log_jsonl,
+        max_frames=max_frames,
+        output_mp4=output_mp4,
+        root_config=root_config,
+        slot=slot,
+        warmup_frames=warmup_frames,
+    )
+    camera_config = plan.camera_config
+    fps = plan.fps
+    geometry_only_policy_enabled = plan.geometry_only_policy_enabled
+    selected_slot = plan.selected_slot
+    stream_config = plan.stream_config
+    vision_release_policy_enabled = plan.vision_release_policy_enabled
+
+    # Imports stay below the standalone execute interlock.  In dry-run this is
+    # still pure camera/perception code and cannot import rby1_sdk.
+    stack = _assemble_live_stack(
+        auto_place_slot1=auto_place_slot1,
+        root_config=root_config,
+        selected_slot=selected_slot,
+    )
+    acquisition_config = stack.acquisition_config
+    acquisition_servo = stack.acquisition_servo
+    authority = stack.authority
+    estimator = stack.estimator
+    estimator_config = stack.estimator_config
+    hole_gate = stack.hole_gate
+    l_corner_gate = stack.l_corner_gate
+    placement_config = stack.placement_config
+    placement_sequencer = stack.placement_sequencer
+    servo = stack.servo
+    servo_bridge = stack.servo_bridge
+    slot1_hole_reference = stack.slot1_hole_reference
     shutdown_pending = False
     # The alignment dwell used to depend on the first frame never reaching the
     # arrived branch; state it instead.
