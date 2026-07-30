@@ -12,6 +12,26 @@ Palletizing/
 └── Common/        # D435 recording, calibration, geometry, serialization 공통 코드
 ```
 
+## 코드를 어디서 고치나
+
+두 진입점이 각각 전체 시퀀스를 담고 있습니다. 모션이 잘못되면 여기부터 봅니다.
+
+| 파일 | 함수 | 흐름 |
+|---|---|---|
+| `Box_picking/box_picking.py` | `pick_box` | 설정 로드 → 파지 자동화 생성 → `resolve_live_view_plan` → `watch_and_grab` |
+| `Box_placing/box_pallet.py` | `place_box` | `resolve_live_plan` → `assemble_live_stack` → `initial_run_state` → `align_and_place` |
+
+`align_and_place` 안에서 매 프레임은 `observe_pallet_frame` → `decide_base_motion`
+→ `advance_placement` → 텔레메트리 → 오버레이 순서입니다. 고칠 곳은 이렇습니다.
+
+- **자세를 바꾼다** → `pallet.slots.<N>` 설정 (아래 "슬롯 추가하기")
+- **주행 판정을 바꾼다** → `pallet_runtime.decide_base_motion`
+- **앉히기·손빼기를 바꾼다** → `pallet_runtime.advance_placement`
+- **파지 동작을 바꾼다** → `parcel_pose_picking.auto_grab`
+
+Containment(Ctrl-C 두 번, DANGER), 스트림 만료, 텔레메트리, 오버레이는
+라이브러리에 남겨 뒀습니다. 흐름이 아니라 보장이기 때문입니다.
+
 ## Box Picking
 
 기본 실행은 기존 자동 파지 시퀀스를 바로 시작합니다. 기존
