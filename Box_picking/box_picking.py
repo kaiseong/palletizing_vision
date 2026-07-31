@@ -1,8 +1,13 @@
-"""Readable orchestration for the authorized RB-Y1 parcel-picking demo.
+"""Explicit RB-Y1 parcel-picking orchestration.
 
-The entrypoint owns branch selection, high-level target/tolerance values, and
-stage order. Lower services retain camera, perception, servo, SDK, stream,
-grasp, and teardown details.
+``_run_authorized_horizontal_pick`` visibly owns the complete authorized run:
+ready, acquire one frame, perceive once, make one x/y/yaw decision, record,
+choose loop continuation or exit, close acquisition, stop/release alignment,
+grasp/lift, and teardown.
+
+Lower services retain D435/SDK resources, estimator internals, servo and safety
+algorithms, mobility-stream evidence, command construction, telemetry, overlay,
+and idempotent robot cleanup.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any, Sequence
 
 
@@ -28,7 +34,12 @@ PICKING_STAGE_ORDER = (
     "authorize",
     "initialize",
     "ready",
-    "acquire_perceive_error_align",
+    "acquire",
+    "perceive",
+    "decide_x_y_yaw",
+    "record",
+    "loop_exit",
+    "stop_release_alignment",
     "grasp_lift",
     "teardown",
 )
@@ -200,18 +211,41 @@ def _alignment_session_kwargs(
 
 
 def _run_authorized_horizontal_pick(args: Any) -> int:
-    """Run initialize → ready → align → evidence/grasp → teardown."""
+    """Run the complete frame and manipulation orchestration in this entrypoint."""
+
     prepared = _prepare_horizontal_pick(args)
     automation = prepared.automation
     try:
         try:
-            # Prepare and close camera/profile resources before the body handoff.
+            # Camera/profile resources are lower-owned, but this entrypoint owns
+            # every frame iteration and every continue/exit decision.
             with prepared.open_alignment_session(
                 **_alignment_session_kwargs(prepared, args)
             ) as session:
                 automation.start()  # ready
-                outcome = session.watch(automation)  # acquire/perceive/x-y-yaw align
+                try:
+                    while session.has_frame_budget():
+                        frame = session.acquire_frame()  # acquire exactly one
+                        observation = session.perceive_frame(frame)  # perceive once
+                        handoff_ready = automation.update(  # decide x/y/yaw once
+                            observation.base_pose,
+                            pose_timestamp_s=observation.pose_result.timestamp_s,
+                            now_s=time.monotonic(),
+                        )
+                        session.record_frame(  # telemetry/display, never loop policy
+                            observation,
+                            handoff_ready=handoff_ready,
+                        )
 
+                        if session.user_cancelled:
+                            break
+                        if handoff_ready:
+                            break
+                except KeyboardInterrupt:
+                    session.cancel()
+                outcome = session.outcome()
+
+            # Camera acquisition is closed before ownership transfers to grasp.
             if outcome.handoff_ready and not outcome.user_cancelled:
                 evidence = automation.stop_alignment_for_grasp()
                 automation.execute_grasp(evidence)  # grasp/lift

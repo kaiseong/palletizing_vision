@@ -18,11 +18,14 @@ Palletizing/
 
 | 파일 | 함수 | 흐름 |
 |---|---|---|
-| `Box_picking/box_picking.py` | `pick_box` | 설정 로드 → 파지 자동화 생성 → `resolve_live_view_plan` → `watch_and_grab` |
-| `Box_placing/box_pallet.py` | `place_box` | `resolve_live_plan` → `assemble_live_stack` → `initial_run_state` → `align_and_place` |
+| `Box_picking/box_picking.py` | `_run_authorized_horizontal_pick` | `acquire_frame` → `perceive_frame` → `automation.update`(x/y/yaw) → `record_frame` → loop exit → stop/release → grasp/lift |
+| `Box_placing/box_pallet.py` | `_run_placing_flow` | alignment frame loop → stop → place → release-authorization frame loop → retreat |
 
-`align_and_place` 안에서 매 프레임은 `observe_pallet_frame` → `decide_base_motion`
-→ `advance_placement` → 텔레메트리 → 오버레이 순서입니다. 고칠 곳은 이렇습니다.
+두 파일의 `while`이 frame budget, 취소, handoff/place/release exit를 직접
+결정합니다. Placing의 매 프레임은 `acquire_frame` → `perceive_frame` →
+`decide_base_motion` → `advance_placement` → `record_frame` 순서이며,
+place 뒤 release 승인도 같은 순서를 `box_pallet.py` 안에서 다시 수행합니다.
+고칠 곳은 이렇습니다.
 
 - **자세를 바꾼다** → `pallet.slots.<N>` 설정 (아래 "슬롯 추가하기")
 - **주행 판정을 바꾼다** → `pallet_runtime.decide_base_motion`

@@ -14,7 +14,8 @@
 | Phase 4 lifecycle/orchestration | 40 tests, exit 0 | includes close exception/False pending latch and all later lifecycle operations/actuation 0 |
 | Phase 5 replay/authority | 34 tests, exit 0 | manifest, deterministic bounded replay, REPLAY/DRY_RUN zero construction/actuation |
 | Phase 6 targeted equivalence | 73 tests, exit 0 | valid SHA unchanged; named invalid traces, lifecycle/authority and perception boundaries |
-| full suite after Phase 6/final docs | 320 passed, exit 0 | JUnit: tests 320, failures/errors/skipped 0; warning count exactly 14 (existing forced stream cancellation warnings) |
+| pre-corrective Phase 7 baseline full suite | 320 passed, exit 0 | JUnit: tests 320, failures/errors/skipped 0; warning count exactly 14 |
+| corrective explicit-entrypoint orchestration full suite | 322 passed, exit 0 | JUnit: tests 322, failures/errors/skipped 0; warnings exactly 14; architecture and safety reviewers both `CLEAR` |
 | forbidden perception AST/dependency matches | 0 accepted matches | recursive adversarial boundary tests pass |
 | incomplete live branches | constructors 0, dependent operations 0 | vertical and slot 2/5/6 authority integration tests pass |
 | slot-5 offline branches | robot/controller/ready/stream/sequencer 0; place/retreat actuation 0 | authority tests plus replay artifact `actuation` blocks |
@@ -33,8 +34,8 @@ Both artifacts report complete manifests, valid intrinsics, mutually inverse fac
 
 ## Ownership and cleanup
 
-- Picking high-level orientation/target/tolerance effective values are supplied by `box_picking.py`; picking JSON has no duplicate high-level values.
-- Placing stage/slot selection is resolved by `box_pallet.py`; independently demonstrated slot records have one canonical config location and no cross-slot/global fallback.
+- Picking orientation/target/tolerance와 `acquire → perceive → x/y/yaw decision → record → loop exit → stop/release → grasp/lift` 순서는 `box_picking.py`가 직접 소유한다; picking JSON에는 중복 high-level 값이 없다.
+- Placing slot 선택, alignment frame loop, stop/place, post-place release-authorization frame loop, retreat 순서는 `box_pallet.py`가 직접 소유한다. Execute와 perception-only 모두 이 flow를 사용하며, entrypoint는 `session.align`, `session.await_release_authorization`, `pallet_runtime.align_and_place`를 호출하지 않는다. Independently demonstrated slot records는 canonical config 한 곳만 사용하며 cross-slot/global fallback이 없다.
 - Config keeps geometry/calibration/tuning/safety detail and bulky posture arrays.
 - Phase 6 removed only redundant exception-union members. The before/after bounded artifact SHA remained `a2ba539d254154dc7f8068761c9e103524f6ef0909c2eb42d55aaf2f26f1f98e`.
 - Safety-relevant or uncertain removals: 0. Independent Phase 6 reviewer verdict: `CLEAR`.

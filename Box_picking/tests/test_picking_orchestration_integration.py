@@ -101,6 +101,8 @@ def _install_staged_fakes(
     close_failure: str | None = None,
 ) -> None:
     evidence = object()
+    fake_frame = object()
+    fake_base_pose = object()
 
     class FakeAutoGrabConfig:
         def __init__(self, **kwargs: Any) -> None:
@@ -124,6 +126,18 @@ def _install_staged_fakes(
             trace.constructions["stream"] += 1
             trace.constructions["sequencer"] += 1
             trace.add("ready")
+
+        def update(
+            self,
+            base_pose: object,
+            *,
+            pose_timestamp_s: float,
+            now_s: float,
+        ) -> bool:
+            assert base_pose is fake_base_pose
+            assert pose_timestamp_s <= now_s
+            trace.add("decide_xy_yaw")
+            return handoff_ready
 
         def stop_alignment_for_grasp(self) -> object:
             trace.add("grasp_alignment_stop_requested")
@@ -150,6 +164,11 @@ def _install_staged_fakes(
     monkeypatch.setitem(sys.modules, "parcel_pose_picking.auto_grab", auto_grab_module)
 
     class FakeAlignmentSession:
+        def __init__(self) -> None:
+            self.processed_frames = 0
+            self.handoff_ready = False
+            self.user_cancelled = False
+
         def __enter__(self) -> "FakeAlignmentSession":
             trace.constructions["acquisition"] += 1
             trace.add("acquisition_ready")
@@ -158,15 +177,53 @@ def _install_staged_fakes(
         def __exit__(self, *_exc_info: Any) -> None:
             trace.add("acquisition_closed")
 
-        def watch(self, automation: FakeAutoGrabRuntime) -> SimpleNamespace:
-            assert isinstance(automation, FakeAutoGrabRuntime)
-            trace.add("alignment_active")
-            trace.add("handoff_ready" if handoff_ready else "no_handoff")
+        def has_frame_budget(self) -> bool:
+            return self.processed_frames < 4
+
+        def acquire_frame(self) -> object:
+            trace.add("acquire_frame")
+            return fake_frame
+
+        def perceive_frame(self, frame: object) -> SimpleNamespace:
+            assert frame is fake_frame
+            trace.add("perceive_frame")
             return SimpleNamespace(
-                processed_frames=4,
-                handoff_ready=handoff_ready,
-                user_cancelled=False,
+                base_pose=fake_base_pose,
+                pose_result=SimpleNamespace(timestamp_s=1.0),
             )
+
+        def record_frame(
+            self,
+            observation: SimpleNamespace,
+            *,
+            handoff_ready: bool,
+        ) -> None:
+            assert observation.base_pose is fake_base_pose
+            self.processed_frames += 1
+            self.handoff_ready = handoff_ready
+            trace.add("record_frame")
+            if handoff_ready:
+                trace.add("handoff_ready")
+            elif not self.has_frame_budget():
+                trace.add("no_handoff")
+
+        def cancel(self) -> None:
+            self.user_cancelled = True
+            self.handoff_ready = False
+            trace.add("cancel")
+
+        def outcome(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                processed_frames=self.processed_frames,
+                handoff_ready=self.handoff_ready,
+                user_cancelled=self.user_cancelled,
+            )
+
+        def watch(self, *_args: Any, **_kwargs: Any) -> None:
+            pytest.fail("box_picking must own the frame loop, not call session.watch")
+
+        def watch_for_alignment(self, *_args: Any, **_kwargs: Any) -> None:
+            pytest.fail("box_picking must not call watch_for_alignment")
 
     def resolve_live_view_plan(**_kwargs: Any) -> SimpleNamespace:
         trace.add("preflight")
@@ -234,7 +291,10 @@ def test_authorized_horizontal_pick_closes_acquisition_before_grasp_handoff(
         "initialize",
         "acquisition_ready",
         "ready",
-        "alignment_active",
+        "acquire_frame",
+        "perceive_frame",
+        "decide_xy_yaw",
+        "record_frame",
         "handoff_ready",
         "acquisition_closed",
         "grasp_alignment_stopped_and_released",
@@ -247,7 +307,10 @@ def test_authorized_horizontal_pick_closes_acquisition_before_grasp_handoff(
         "initialize",
         "acquisition_ready",
         "ready",
-        "alignment_active",
+        "acquire_frame",
+        "perceive_frame",
+        "decide_xy_yaw",
+        "record_frame",
         "handoff_ready",
         "acquisition_closed",
         "grasp_alignment_stopped_and_released",
@@ -323,3 +386,33 @@ def test_no_handoff_close_failure_returns_two_without_grasp_or_traceback(
     captured = capsys.readouterr()
     assert captured.err.strip() == "robot teardown failed after no handoff"
     assert "Traceback" not in captured.err
+
+
+def test_entrypoint_source_owns_picking_loop_and_forbids_hidden_runners() -> None:
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(box_picking._run_authorized_horizontal_pick))
+    )
+    called_attributes = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert len([node for node in ast.walk(tree) if isinstance(node, ast.While)]) == 1
+    assert {
+        "has_frame_budget",
+        "acquire_frame",
+        "perceive_frame",
+        "update",
+        "record_frame",
+    } <= called_attributes
+    assert len([node for node in ast.walk(tree) if isinstance(node, ast.Break)]) >= 2
+    assert {
+        "watch",
+        "watch_for_alignment",
+        "watch_and_grab",
+    }.isdisjoint(called_attributes)

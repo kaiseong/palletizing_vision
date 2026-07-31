@@ -6,8 +6,8 @@
 
 | 바꾸려는 것 | 단일 유효 owner / 진입점 | lower-service 경계 |
 |---|---|---|
-| picking orientation, horizontal target, high-level arrival radius/yaw | `Box_picking/box_picking.py`: `HORIZONTAL_PICK_*`, `pick_box` | estimator/servo tuning, freshness, hysteresis, stop/stream/grasp detail은 `parcel_pose_picking`과 `Common` |
-| placing slot 선택과 stage order | `Box_placing/box_pallet.py`: `_selected_slot`, `PLACING_STAGE_ORDER`, `place_box` | slot 데이터 검증은 `slot_contract.py`; controller/stream/ack는 lower service |
+| picking orientation, horizontal target, frame loop와 handoff/exit 결정 | `Box_picking/box_picking.py`: `HORIZONTAL_PICK_*`, `_run_authorized_horizontal_pick`, `pick_box` | camera/perception resource, estimator/servo tuning, freshness, hysteresis, stop/stream/grasp detail은 `parcel_pose_picking`과 `Common` |
+| placing slot 선택, alignment/release frame loops와 stage/exit 결정 | `Box_placing/box_pallet.py`: `_selected_slot`, `PLACING_STAGE_ORDER`, `_run_placing_flow`, `place_box` | slot 데이터 검증은 `slot_contract.py`; camera/controller/stream/ack·servo/safety implementation은 lower service |
 | slot별 시연 reference/ready/place/retreat 데이터 | `Box_placing/configs/placing_config.json#/pallet/slots/<N>` | 다른 slot/global 값으로 fallback, mirror, synthesis 금지 |
 | slot-1 x/y/yaw servo와 low-level safety tuning | `placing_config.json#/servo`, `#/perception`, `#/placement`, `#/safety` | entrypoint는 선택 및 stage를 소유하고 lower service가 gate를 집행 |
 | 공통 mode/readiness authority | `Common/src/parcel_pose_common/operation_authority.py` | verdict 전 robot/controller/ready/stream/sequencer construction 금지 |
@@ -16,7 +16,7 @@
 | perception façade | `box_perception.py`, `pallet_perception_adapter.py` | SDK/robot/stream/command side effect 금지; `PoseResult`만 반환 |
 | slot-5 offline diagnostics | `Box_placing/src/parcel_pose_placing/slot5_replay.py` | replay/dry-run authority만 허용; live reference/place/retreat를 만들지 않음 |
 
-Picking의 공개 순서는 `preflight → authorize → initialize → ready → acquire/perceive/error/align → grasp/lift → teardown`이다. Placing의 공개 순서는 `preflight → authorize → initialize → ready → acquire/perceive/error/align → place-alignment-stop → place → ack/release → retreat → teardown`이다. 실제 command 구성과 lifecycle side effect를 entrypoint로 옮기지 않는다.
+Picking의 공개 순서는 `preflight → authorize → initialize → ready → acquire → perceive → x/y/yaw decision → record → loop exit → stop/release alignment → grasp/lift → teardown`이며, 이 frame `while`과 handoff/cancel 분기는 `_run_authorized_horizontal_pick`에 있다. Placing은 `_run_placing_flow` 안의 alignment `while`에서 `acquire → perceive → x/y/yaw decision → placement advance → record → loop exit`를 수행한 뒤 `stop → place`로 넘어간다. Place 이후에는 같은 파일의 release-authorization `while`이 다시 `acquire → perceive → x/y/yaw decision → placement advance → record`를 수행해 승인되면 `retreat → teardown`으로 진행한다. 실제 command 구성과 lifecycle side effect, camera/SDK resource, servo/safety/containment 구현은 entrypoint로 옮기지 않는다.
 
 ## 2. Branch별 데이터 상태
 

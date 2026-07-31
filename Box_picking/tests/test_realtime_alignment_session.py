@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -190,7 +191,18 @@ def test_prepared_session_calls_one_facade_and_one_decision_per_frame(
             "estimator_constructed",
         ]
         automation.start()
-        outcome = session.watch(automation)
+        while session.has_frame_budget():
+            frame = session.acquire_frame()
+            observation = session.perceive_frame(frame)
+            handoff_ready = automation.update(
+                observation.base_pose,
+                pose_timestamp_s=observation.pose_result.timestamp_s,
+                now_s=time.monotonic(),
+            )
+            session.record_frame(observation, handoff_ready=handoff_ready)
+            if session.user_cancelled or handoff_ready:
+                break
+        outcome = session.outcome()
 
     automation.close()
 

@@ -46,41 +46,64 @@ def test_the_drawing_module_cannot_reach_the_control_loop() -> None:
 
 
 def test_the_entry_point_owns_the_sequence() -> None:
-    """box_pallet.py has to hold the flow, short enough to read in one screen.
-
-    Anyone fixing a motion opens this file first, so place_box stays a list of named
-    stages.  Growth here means a stage was inlined instead of named.
-    """
-
-    import ast
+    """box_pallet.py must visibly own alignment and release loop policy."""
 
     entry = pathlib.Path(__file__).resolve().parents[1] / "box_pallet.py"
     tree = ast.parse(entry.read_text(encoding="utf-8"))
-    lengths = {
-        node.name: node.end_lineno - node.lineno + 1
+    flows = [
+        node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.end_lineno is not None
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_placing_flow"
+    ]
+    assert len(flows) == 1
+    flow = flows[0]
+    assert len([node for node in ast.walk(flow) if isinstance(node, ast.While)]) == 2
+    called = {
+        node.func.attr
+        for node in ast.walk(flow)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    assert "place_box" in lengths, "place_box disappeared from box_pallet.py"
-    assert lengths["place_box"] <= 90, (
-        f"place_box grew to {lengths['place_box']} lines; name the next stage "
-        "instead of inlining it"
+    assert {
+        "acquire_frame",
+        "perceive_frame",
+        "decide_base_motion",
+        "advance_placement",
+        "record_frame",
+        "execute_place",
+        "execute_retreat",
+    } <= called
+    assert {"align", "await_release_authorization", "align_and_place"}.isdisjoint(
+        called
     )
 
 
 def test_the_stages_are_public_so_the_entry_point_can_call_them() -> None:
-    """The four stages are the seam between the entry point and the library."""
+    """Planning remains public, while frame policy uses loop-free primitives."""
 
     from parcel_pose_placing import pallet_runtime
+    from parcel_pose_placing.placing_session import PlacingSession
 
     for stage in (
         "resolve_live_plan",
         "assemble_live_stack",
         "initial_run_state",
-        "align_and_place",
+        "open_placing_session",
     ):
         assert stage in pallet_runtime.__all__, f"{stage} must be public"
         assert callable(getattr(pallet_runtime, stage))
+    for primitive in (
+        "has_frame_budget",
+        "open_acquisition",
+        "acquire_frame",
+        "perceive_frame",
+        "decide_base_motion",
+        "advance_placement",
+        "record_frame",
+        "finish_frame",
+        "accept_descent_plan",
+        "begin_release_observation",
+    ):
+        assert callable(getattr(PlacingSession, primitive))
     assert not hasattr(pallet_runtime, "run_pallet_live"), (
         "the old monolith must not come back alongside place_box"
     )
@@ -175,29 +198,43 @@ def test_perception_only_runs_keep_the_configured_camera_pose(
 
 
 def test_the_picking_entry_point_owns_its_sequence_too() -> None:
-    """box_picking.py holds the picking flow for the same reason box_pallet.py does."""
-
-    import ast
+    """box_picking.py visibly owns frame continuation and handoff decisions."""
 
     entry = (
         pathlib.Path(__file__).resolve().parents[2] / "Box_picking" / "box_picking.py"
     )
     tree = ast.parse(entry.read_text(encoding="utf-8"))
-    lengths = {
-        node.name: node.end_lineno - node.lineno + 1
+    flows = [
+        node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.end_lineno is not None
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_run_authorized_horizontal_pick"
+    ]
+    assert len(flows) == 1
+    flow = flows[0]
+    assert len([node for node in ast.walk(flow) if isinstance(node, ast.While)]) == 1
+    called = {
+        node.func.attr
+        for node in ast.walk(flow)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    assert "pick_box" in lengths, "pick_box disappeared from box_picking.py"
-    assert lengths["pick_box"] <= 75, (
-        f"pick_box grew to {lengths['pick_box']} lines; name the next stage instead "
-        "of inlining it"
-    )
+    assert {"acquire_frame", "perceive_frame", "update", "record_frame"} <= called
+    assert {"watch", "watch_for_alignment", "watch_and_grab"}.isdisjoint(called)
 
     from parcel_pose_picking import realtime
+    from parcel_pose_picking.realtime import AlignmentSession
 
-    for stage in ("resolve_live_view_plan", "watch_and_grab"):
+    for stage in ("resolve_live_view_plan", "open_alignment_session"):
         assert stage in realtime.__all__, f"{stage} must be public"
+    for primitive in (
+        "has_frame_budget",
+        "acquire_frame",
+        "perceive_frame",
+        "record_frame",
+        "cancel",
+        "outcome",
+    ):
+        assert callable(getattr(AlignmentSession, primitive))
     assert not hasattr(realtime, "run_live_view"), (
         "the old monolith must not come back alongside pick_box"
     )

@@ -32,7 +32,12 @@ def test_entrypoint_declares_the_requested_picking_stage_order() -> None:
         "authorize",
         "initialize",
         "ready",
-        "acquire_perceive_error_align",
+        "acquire",
+        "perceive",
+        "decide_x_y_yaw",
+        "record",
+        "loop_exit",
+        "stop_release_alignment",
         "grasp_lift",
         "teardown",
     )

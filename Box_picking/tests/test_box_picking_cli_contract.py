@@ -139,6 +139,8 @@ def test_no_arg_and_headless_run_authorized_horizontal_staged_flow_without_hardw
     session_calls: list[dict[str, object]] = []
     automation_configs: list[tuple[str, str, bool, object]] = []
     stopped_and_released = object()
+    fake_frame = object()
+    fake_base_pose = object()
 
     class FakeLiveError(RuntimeError):
         pass
@@ -158,6 +160,18 @@ def test_no_arg_and_headless_run_authorized_horizontal_staged_flow_without_hardw
         def start(self) -> None:
             lifecycle.append("ready")
 
+        def update(
+            self,
+            base_pose: object,
+            *,
+            pose_timestamp_s: float,
+            now_s: float,
+        ) -> bool:
+            assert base_pose is fake_base_pose
+            assert pose_timestamp_s <= now_s
+            lifecycle.append("decide_xy_yaw")
+            return True
+
         def stop_alignment_for_grasp(self) -> object:
             lifecycle.append("grasp_alignment_stopped_and_released")
             return stopped_and_released
@@ -176,18 +190,54 @@ def test_no_arg_and_headless_run_authorized_horizontal_staged_flow_without_hardw
     monkeypatch.setitem(sys.modules, "parcel_pose_picking.auto_grab", auto_grab_module)
 
     class FakeAlignmentSession:
+        def __init__(self) -> None:
+            self.processed_frames = 0
+            self.handoff_ready = False
+            self.user_cancelled = False
+
         def __enter__(self) -> "FakeAlignmentSession":
             lifecycle.append("acquisition_prepared")
             return self
 
-        def watch(self, automation: FakeAutoGrabRuntime) -> SimpleNamespace:
-            assert isinstance(automation, FakeAutoGrabRuntime)
-            lifecycle.append("acquire_perceive_error_align")
+        def has_frame_budget(self) -> bool:
+            return self.processed_frames < 1
+
+        def acquire_frame(self) -> object:
+            lifecycle.append("acquire_frame")
+            return fake_frame
+
+        def perceive_frame(self, frame: object) -> SimpleNamespace:
+            assert frame is fake_frame
+            lifecycle.append("perceive_frame")
             return SimpleNamespace(
-                processed_frames=1,
-                handoff_ready=True,
-                user_cancelled=False,
+                base_pose=fake_base_pose,
+                pose_result=SimpleNamespace(timestamp_s=1.0),
             )
+
+        def record_frame(
+            self,
+            observation: SimpleNamespace,
+            *,
+            handoff_ready: bool,
+        ) -> None:
+            assert observation.base_pose is fake_base_pose
+            lifecycle.append("record_frame")
+            self.processed_frames += 1
+            self.handoff_ready = handoff_ready
+
+        def cancel(self) -> None:
+            self.user_cancelled = True
+            self.handoff_ready = False
+
+        def outcome(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                processed_frames=self.processed_frames,
+                handoff_ready=self.handoff_ready,
+                user_cancelled=self.user_cancelled,
+            )
+
+        def watch(self, *_args: Any, **_kwargs: Any) -> None:
+            pytest.fail("box_picking CLI must not delegate to session.watch")
 
         def __exit__(self, *_exc_info: Any) -> None:
             lifecycle.append("acquisition_teardown")
@@ -260,7 +310,10 @@ def test_no_arg_and_headless_run_authorized_horizontal_staged_flow_without_hardw
     assert lifecycle == [
         "acquisition_prepared",
         "ready",
-        "acquire_perceive_error_align",
+        "acquire_frame",
+        "perceive_frame",
+        "decide_xy_yaw",
+        "record_frame",
         "acquisition_teardown",
         "grasp_alignment_stopped_and_released",
         "grasp_and_lift",

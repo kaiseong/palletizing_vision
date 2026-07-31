@@ -39,8 +39,19 @@ class _ProcessedFrame:
     decision: Any
 
 
+@dataclass(frozen=True, slots=True)
+class PerceivedPlacingFrame:
+    """One captured frame after freshness validation and one facade call."""
+
+    frame: Any
+    observed: Any
+    estimator_started_s: float
+    validated_age_s: float
+    source_s: float
+
+
 class PlacingSession:
-    """Own one camera/frame-loop session without owning public stage order."""
+    """Own camera/per-frame services without owning entrypoint loop policy."""
 
     def __init__(
         self,
@@ -191,47 +202,51 @@ class PlacingSession:
             flush=True,
         )
 
-    def align(self, lifecycle: Any | None) -> PlacingAlignmentOutcome:
-        """Acquire, perceive, decide x/y/yaw, and align until a place plan exists."""
+    @property
+    def user_cancelled(self) -> bool:
+        """Expose cancellation state so the entrypoint owns loop exit."""
 
-        if self._execute and lifecycle is None:
-            raise RuntimeError("live alignment requires the placement lifecycle")
+        return self._user_cancelled
+
+    def has_frame_budget(self) -> bool:
+        """Return whether the entrypoint may acquire another frame."""
+
+        return self._max_frames is None or self._frame_count < self._max_frames
+
+    def open_acquisition(self) -> None:
+        """Open camera/telemetry resources without consuming a frame."""
+
         if self._execute and not self._prepared:
-            raise RuntimeError("placement lifecycle must start before alignment")
+            raise RuntimeError("placement lifecycle must start before acquisition")
         self._ensure_acquisition_open()
 
-        while not self._frame_limit_reached():
-            processed = self._process_next_frame()
-            if processed is None:
-                break
-            placement = processed.placement_output
-            if placement is not None and placement.faulted:
-                raise RuntimeError(
-                    f"slot-1 placement sequencer faulted: {placement.reason}"
-                )
-            if (
-                placement is not None
-                and placement.request is PlacementRequest.LOWER_CARTESIAN_PLANNED
-            ):
-                plan = placement.descent_plan
-                if plan is None or not plan.valid:
-                    raise RuntimeError(
-                        "placement sequencer returned no valid descent plan"
-                    )
-                self._pending_descent_plan = plan
-                return PlacingAlignmentOutcome(
-                    descent_plan=plan,
-                    handoff_ready=True,
-                    place_ready=True,
-                    user_cancelled=False,
-                )
+    def acquire_frame(self) -> Any:
+        """Capture exactly one frame; the entrypoint chooses loop continuation."""
 
-        return PlacingAlignmentOutcome(
-            descent_plan=None,
-            handoff_ready=False,
-            place_ready=False,
-            user_cancelled=self._user_cancelled,
-        )
+        self._ensure_acquisition_open()
+        assert self._camera is not None
+        return self._camera.capture()
+
+    def handle_interrupt(self) -> None:
+        """Apply containment for one interrupt without hiding the exit branch."""
+
+        self._user_cancelled = True
+        if not self._execute:
+            return
+        assert self._containment is not None
+        if self._containment.request_shutdown_hold(
+            next_owner="operator-successor-required"
+        ):
+            return
+        self._stack.authority.request_shutdown_hold()
+        self._shutdown_pending = True
+
+    def accept_descent_plan(self, plan: Any) -> None:
+        """Record the entrypoint-validated alignment handoff plan."""
+
+        if plan is None or not bool(getattr(plan, "valid", False)):
+            raise RuntimeError("placement sequencer returned no valid descent plan")
+        self._pending_descent_plan = plan
 
     def release_alignment(self) -> bool:
         """Revoke nonzero base authority while retaining exact-zero body support."""
@@ -244,17 +259,78 @@ class PlacingSession:
         self._alignment_released = True
         return True
 
-    def await_release_authorization(self) -> bool:
-        """Advance fresh frames after place until the sequencer authorizes retreat."""
+    def begin_release_observation(self) -> None:
+        """Enter post-place observation after stopped alignment is proven."""
 
         if not self._alignment_released or self._pending_descent_plan is None:
             raise RuntimeError("release authorization requires stopped alignment")
         self._placement_lowering_started = True
-        while not self._frame_limit_reached():
-            processed = self._process_next_frame()
-            if processed is None:
+
+    def align(self, lifecycle: Any | None) -> PlacingAlignmentOutcome:
+        """Legacy wrapper assembled from loop-free primitives.
+
+        Public entrypoints must own this loop directly; this remains only for
+        callers outside the operator entrypoint during migration.
+        """
+
+        if self._execute and lifecycle is None:
+            raise RuntimeError("live alignment requires the placement lifecycle")
+        self.open_acquisition()
+        while self.has_frame_budget():
+            try:
+                frame = self.acquire_frame()
+            except KeyboardInterrupt:
+                self.handle_interrupt()
+                break
+            perceived = self.perceive_frame(frame)
+            base_motion = self.decide_base_motion(perceived)
+            placement_step = self.advance_placement(perceived, base_motion)
+            self.record_frame(perceived, base_motion, placement_step)
+            self.finish_frame()
+            placement = placement_step.placement_output
+            if self._user_cancelled:
+                break
+            if placement is not None and placement.faulted:
+                raise RuntimeError(
+                    f"slot-1 placement sequencer faulted: {placement.reason}"
+                )
+            if (
+                placement is not None
+                and placement.request is PlacementRequest.LOWER_CARTESIAN_PLANNED
+            ):
+                self.accept_descent_plan(placement.descent_plan)
+                return PlacingAlignmentOutcome(
+                    descent_plan=placement.descent_plan,
+                    handoff_ready=True,
+                    place_ready=True,
+                    user_cancelled=False,
+                )
+
+        return PlacingAlignmentOutcome(
+            descent_plan=None,
+            handoff_ready=False,
+            place_ready=False,
+            user_cancelled=self._user_cancelled,
+        )
+
+    def await_release_authorization(self) -> bool:
+        """Legacy wrapper for entrypoint-owned post-place frame stepping."""
+
+        self.begin_release_observation()
+        while self.has_frame_budget():
+            try:
+                frame = self.acquire_frame()
+            except KeyboardInterrupt:
+                self.handle_interrupt()
                 return False
-            placement = processed.placement_output
+            perceived = self.perceive_frame(frame)
+            base_motion = self.decide_base_motion(perceived)
+            placement_step = self.advance_placement(perceived, base_motion)
+            self.record_frame(perceived, base_motion, placement_step)
+            self.finish_frame()
+            placement = placement_step.placement_output
+            if self._user_cancelled:
+                return False
             if placement is None:
                 continue
             if placement.faulted:
@@ -317,23 +393,10 @@ class PlacingSession:
             self._window_created = True
         self._acquisition_open = True
 
-    def _process_next_frame(self) -> _ProcessedFrame | None:
-        assert self._camera is not None and self._camera_contract is not None
-        try:
-            frame = self._camera.capture()
-        except KeyboardInterrupt:
-            self._user_cancelled = True
-            if not self._execute:
-                return None
-            assert self._containment is not None
-            if self._containment.request_shutdown_hold(
-                next_owner="operator-successor-required"
-            ):
-                return None
-            self._stack.authority.request_shutdown_hold()
-            self._shutdown_pending = True
-            return None
+    def perceive_frame(self, frame: Any) -> PerceivedPlacingFrame:
+        """Validate and perceive exactly one already-acquired frame."""
 
+        assert self._camera_contract is not None
         received_s = time.monotonic()
         estimator_started_s = received_s
         validated_age_s = self._frame_gate.validate(frame)
@@ -361,8 +424,19 @@ class PlacingSession:
             frame_result_fresh=observed.result_fresh,
             fresh_sample=observed.scene_sample,
         )
+        return PerceivedPlacingFrame(
+            frame=frame,
+            observed=observed,
+            estimator_started_s=estimator_started_s,
+            validated_age_s=validated_age_s,
+            source_s=source_s,
+        )
 
-        base_motion = _runtime._decide_base_motion(
+    def decide_base_motion(self, perceived: PerceivedPlacingFrame) -> Any:
+        """Run exactly one x/y/yaw base decision for a perceived frame."""
+
+        observed = perceived.observed
+        return _runtime._decide_base_motion(
             acquisition_config=self._stack.acquisition_config,
             acquisition_servo=self._stack.acquisition_servo,
             authority=self._stack.authority,
@@ -372,7 +446,7 @@ class PlacingSession:
             estimator_config=self._stack.estimator_config,
             execute=self._execute,
             frame_result_fresh=observed.result_fresh,
-            frame_source_monotonic_s=source_s,
+            frame_source_monotonic_s=perceived.source_s,
             geometry_only_policy_enabled=self._plan.geometry_only_policy_enabled,
             hole_gate=self._stack.hole_gate,
             l_corner_gate=self._stack.l_corner_gate,
@@ -387,6 +461,15 @@ class PlacingSession:
             shutdown_pending=self._shutdown_pending,
             slot1_hole_reference=self._stack.slot1_hole_reference,
         )
+
+    def advance_placement(
+        self,
+        perceived: PerceivedPlacingFrame,
+        base_motion: Any,
+    ) -> Any:
+        """Advance safety/sequencer state once without dispatching manipulation."""
+
+        observed = perceived.observed
         placement_step = _runtime._advance_placement(
             authority=self._stack.authority,
             auto_place_slot1=self._auto_place_slot1,
@@ -399,8 +482,8 @@ class PlacingSession:
             decision_source_timestamp_s=base_motion.decision_source_timestamp_s,
             estimator_config=self._stack.estimator_config,
             execute=self._execute,
-            frame=frame,
-            frame_source_monotonic_s=source_s,
+            frame=perceived.frame,
+            frame_source_monotonic_s=perceived.source_s,
             motion_interlocks_ok=base_motion.motion_interlocks_ok,
             placement_config=self._stack.placement_config,
             placement_motion_active=base_motion.placement_motion_active,
@@ -429,15 +512,26 @@ class PlacingSession:
         )
         self._placement_lowering_started = placement_step.placement_lowering_started
         self._placement_release_started = placement_step.placement_release_started
-        self._record_frame(
-            frame,
-            observed,
-            base_motion,
-            placement_step,
-            estimator_started_s=estimator_started_s,
-            validated_age_s=validated_age_s,
-        )
+        return placement_step
+
+    def finish_frame(self) -> None:
+        """Commit one fully recorded frame to the session budget."""
+
         self._frame_count += 1
+
+    def _process_next_frame(self) -> _ProcessedFrame | None:
+        """Legacy one-frame wrapper built from the public primitives."""
+
+        try:
+            frame = self.acquire_frame()
+        except KeyboardInterrupt:
+            self.handle_interrupt()
+            return None
+        perceived = self.perceive_frame(frame)
+        base_motion = self.decide_base_motion(perceived)
+        placement_step = self.advance_placement(perceived, base_motion)
+        self.record_frame(perceived, base_motion, placement_step)
+        self.finish_frame()
         if self._user_cancelled:
             return None
         return _ProcessedFrame(
@@ -445,18 +539,18 @@ class PlacingSession:
             decision=placement_step.decision,
         )
 
-    def _record_frame(
+    def record_frame(
         self,
-        frame: Any,
-        observed: Any,
+        perceived: PerceivedPlacingFrame,
         base_motion: Any,
         placement_step: Any,
-        *,
-        estimator_started_s: float,
-        validated_age_s: float,
     ) -> None:
-        """Keep the existing overlay and telemetry as observability, not control."""
+        """Keep overlay/telemetry as observability, never loop policy."""
 
+        frame = perceived.frame
+        observed = perceived.observed
+        estimator_started_s = perceived.estimator_started_s
+        validated_age_s = perceived.validated_age_s
         color = (
             frame.color_on_depth_bgr
             if frame.color_on_depth_bgr is not None
@@ -595,4 +689,9 @@ def open_placing_session(
     )
 
 
-__all__ = ["PlacingAlignmentOutcome", "PlacingSession", "open_placing_session"]
+__all__ = [
+    "PerceivedPlacingFrame",
+    "PlacingAlignmentOutcome",
+    "PlacingSession",
+    "open_placing_session",
+]

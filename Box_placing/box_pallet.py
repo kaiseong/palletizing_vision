@@ -1,22 +1,17 @@
-"""One-command box-placing facade for the RB-Y1 pallet interlock workflow.
+"""Explicit RB-Y1 pallet placing orchestration.
 
-``python box_pallet.py`` runs perception only.  ``--execute`` runs the sequence on
-the robot: verify the ready posture, align the base on the pallet hole, seat the
-carton with the demonstrated placement posture, then withdraw the hands.
-``--slot N`` selects the pallet slot; an undemonstrated slot is refused by name.
+``place_box`` owns slot preflight, authority, initialization, readiness, both
+frame loops, every continue/exit decision, evidence-gated place, release
+observation, retreat, and teardown order.  Read ``_run_placing_flow`` from top
+to bottom to see the complete run:
 
-The sequence lives in place_box below, four stages deep:
+    acquire_frame → perceive_frame → decide_base_motion
+    → advance_placement → record_frame → choose continue/exit
 
-    plan  = resolve_live_plan(...)    # refuse a bad request before anything moves
-    stack = assemble_live_stack(...)  # estimator, gates, servo, placement sequencer
-    state = initial_run_state(...)    # what the frame loop starts with
-            align_and_place(...)      # open camera, drive onto the slot, place, tear down
-
-Inside align_and_place every frame is observe, decide, advance, record, draw.  To
-change a motion, change the posture in the slot config; to change how the base
-decides to move, change decide_base_motion; to change the seating or the retreat,
-change advance_placement.  Containment, stream expiry, telemetry and the overlay
-stay in the library because they are guarantees, not flow.
+Lower services still own the mechanisms that must not be reimplemented here:
+D435/SDK resources, estimator internals, servo and safety gates, exact-zero and
+wheel-stop proof, command construction/acknowledgement, containment, telemetry,
+and display rendering.
 """
 
 from __future__ import annotations
@@ -40,10 +35,20 @@ PLACING_STAGE_ORDER = (
     "authorize",
     "initialize",
     "ready",
-    "acquire_perceive_error_align",
-    "place_alignment_stop",
+    "alignment_acquire",
+    "alignment_perceive",
+    "alignment_decide_x_y_yaw",
+    "alignment_advance_placement",
+    "alignment_record",
+    "alignment_loop_exit",
+    "stop_alignment",
     "place",
-    "ack_release",
+    "release_acquire",
+    "release_perceive",
+    "release_decide_x_y_yaw",
+    "release_advance_placement",
+    "release_record",
+    "release_authorized",
     "retreat",
     "teardown",
 )
@@ -131,35 +136,126 @@ def _live_stage_kwargs(
     }
 
 
-def _run_authorized_slot1_place(
+def _run_placing_flow(
     *,
     stage_kwargs: Mapping[str, Any],
     open_placing_session: Any,
-    lifecycle_type: Any,
+    lifecycle_type: Any | None,
 ) -> None:
-    """Run ready -> align -> evidence-gated place/retreat -> teardown."""
+    """Run every frame/stage transition visibly in this entrypoint."""
+
+    from parcel_pose_placing.pallet_place import PlacementRequest
 
     lifecycle = None
     try:
         with open_placing_session(**stage_kwargs) as session:
-            lifecycle = lifecycle_type(
-                controller=session.controller,
-                release_alignment=session.release_alignment,
-                prepare=session.prepare,
-            )
-            lifecycle.start()
-            alignment = session.align(lifecycle)
+            if lifecycle_type is not None:
+                lifecycle = lifecycle_type(
+                    controller=session.controller,
+                    release_alignment=session.release_alignment,
+                    prepare=session.prepare,
+                )
+                lifecycle.start()  # ready + lower-owned stream preparation
+            else:
+                session.prepare()  # perception-only no-op preparation
+
+            session.open_acquisition()
+            descent_plan = None
+
+            # Alignment loop: this file owns frame budget and every exit branch.
+            while session.has_frame_budget():
+                try:
+                    frame = session.acquire_frame()  # acquire exactly one
+                except KeyboardInterrupt:
+                    session.handle_interrupt()
+                    break
+
+                perceived = session.perceive_frame(frame)  # one facade call
+                base_motion = session.decide_base_motion(perceived)  # x/y/yaw once
+                placement_step = session.advance_placement(  # one sequencer step
+                    perceived,
+                    base_motion,
+                )
+                session.record_frame(  # telemetry/overlay only
+                    perceived,
+                    base_motion,
+                    placement_step,
+                )
+                session.finish_frame()
+
+                placement = placement_step.placement_output
+                if session.user_cancelled:
+                    break
+                if placement is not None and placement.faulted:
+                    raise RuntimeError(
+                        f"slot-1 placement sequencer faulted: {placement.reason}"
+                    )
+                if (
+                    bool(stage_kwargs["auto_place_slot1"])
+                    and placement is not None
+                    and placement.request
+                    is PlacementRequest.LOWER_CARTESIAN_PLANNED
+                ):
+                    descent_plan = placement.descent_plan
+                    if descent_plan is None or not descent_plan.valid:
+                        raise RuntimeError(
+                            "placement sequencer returned no valid descent plan"
+                        )
+                    session.accept_descent_plan(descent_plan)
+                    break
+
             if (
-                bool(stage_kwargs["auto_place_slot1"])
-                and alignment.handoff_ready
-                and alignment.place_ready
-                and not alignment.user_cancelled
+                lifecycle is not None
+                and descent_plan is not None
+                and not session.user_cancelled
             ):
                 stopped = lifecycle.stop_alignment_for_place()
+
+                def await_release_authorization() -> bool:
+                    """Post-place loop remains visible next to place/retreat."""
+
+                    session.begin_release_observation()
+                    while session.has_frame_budget():
+                        try:
+                            frame = session.acquire_frame()  # acquire exactly one
+                        except KeyboardInterrupt:
+                            session.handle_interrupt()
+                            return False
+
+                        perceived = session.perceive_frame(frame)  # perceive once
+                        base_motion = session.decide_base_motion(perceived)
+                        placement_step = session.advance_placement(
+                            perceived,
+                            base_motion,
+                        )
+                        session.record_frame(
+                            perceived,
+                            base_motion,
+                            placement_step,
+                        )
+                        session.finish_frame()
+
+                        placement = placement_step.placement_output
+                        if session.user_cancelled:
+                            return False
+                        if placement is None:
+                            continue
+                        if placement.faulted:
+                            raise RuntimeError(
+                                "slot-1 release authorization faulted: "
+                                f"{placement.reason}"
+                            )
+                        if (
+                            placement.request is PlacementRequest.SPREAD_RELEASE
+                            and placement.release_authorized
+                        ):
+                            return True
+                    return False
+
                 placed = lifecycle.execute_place(
                     stopped,
-                    descent_plan=alignment.descent_plan,
-                    await_release_authorization=session.await_release_authorization,
+                    descent_plan=descent_plan,
+                    await_release_authorization=await_release_authorization,
                 )
                 lifecycle.execute_retreat(placed)
     finally:
@@ -253,18 +349,17 @@ def place_box(
         window_name=window_name,
     )
 
+    lifecycle_type = None
     if execute:
         from parcel_pose_placing.placement_lifecycle import PlacementLifecycleRuntime
 
-        _run_authorized_slot1_place(
-            stage_kwargs=stage_kwargs,
-            open_placing_session=pallet_runtime.open_placing_session,
-            lifecycle_type=PlacementLifecycleRuntime,
-        )
-    else:
-        # Replay/perception-only compatibility remains non-actuating while the
-        # staged session is intentionally limited to the sole live slot-1 branch.
-        pallet_runtime.align_and_place(**stage_kwargs)
+        lifecycle_type = PlacementLifecycleRuntime
+
+    _run_placing_flow(
+        stage_kwargs=stage_kwargs,
+        open_placing_session=pallet_runtime.open_placing_session,
+        lifecycle_type=lifecycle_type,
+    )
 
     # Returning zero never implies the robot was disarmed.  The execute path stays
     # open unless forced cancellation or an acknowledged owner handoff closes it.

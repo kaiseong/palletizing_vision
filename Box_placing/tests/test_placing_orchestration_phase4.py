@@ -22,6 +22,7 @@ import pytest
 import box_pallet
 from parcel_pose_common.models import PoseResult
 from parcel_pose_placing import pallet_perception, pallet_perception_adapter
+from parcel_pose_placing.pallet_place import PlacementRequest
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "placing_config.json"
@@ -40,10 +41,12 @@ class _Trace:
 def _install_public_stage_fakes(
     monkeypatch: pytest.MonkeyPatch,
     trace: _Trace,
+    *,
+    execute: bool = True,
 ) -> tuple[object, object, object]:
     """Install the intended staged runtime without importing any hardware SDK."""
 
-    descent_plan = object()
+    descent_plan = SimpleNamespace(valid=True)
     alignment_evidence = object()
     place_evidence = object()
     retreat_evidence = object()
@@ -109,7 +112,7 @@ def _install_public_stage_fakes(
 
     def resolve_live_plan(**kwargs: Any) -> object:
         assert kwargs["slot"] == 1
-        assert kwargs["execute"] is True
+        assert kwargs["execute"] is execute
         trace.add("initialize")
         return plan
 
@@ -126,6 +129,10 @@ def _install_public_stage_fakes(
     class FakePlacingSession:
         def __init__(self, controller: object) -> None:
             self.controller = controller
+            self.user_cancelled = False
+            self._phase = "alignment"
+            self._finished_frames = 0
+            self._current_frame: object | None = None
 
         def __enter__(self) -> "FakePlacingSession":
             trace.add("acquisition_ready")
@@ -135,6 +142,9 @@ def _install_public_stage_fakes(
             trace.add("acquisition_closed")
 
         def prepare(self) -> None:
+            if not execute:
+                trace.add("perception_prepare")
+                return
             trace.constructions["robot_connection"] += 1
             trace.constructions["ready_posture"] += 1
             trace.constructions["stream"] += 1
@@ -143,25 +153,94 @@ def _install_public_stage_fakes(
         def release_alignment(self) -> bool:
             return True
 
-        def align(self, lifecycle: FakePlacementLifecycleRuntime) -> object:
-            assert isinstance(lifecycle, FakePlacementLifecycleRuntime)
-            trace.add("acquire_perceive_error_align")
-            return SimpleNamespace(
-                descent_plan=descent_plan,
-                handoff_ready=True,
-                place_ready=True,
-                user_cancelled=False,
-            )
+        def open_acquisition(self) -> None:
+            trace.add("acquisition_opened")
 
-        def await_release_authorization(self) -> bool:
+        def has_frame_budget(self) -> bool:
+            return self._finished_frames < 2
+
+        def acquire_frame(self) -> object:
+            self._current_frame = object()
+            trace.add(f"{self._phase}_acquire")
+            return self._current_frame
+
+        def perceive_frame(self, frame: object) -> SimpleNamespace:
+            assert frame is self._current_frame
+            trace.add(f"{self._phase}_perceive")
+            return SimpleNamespace(frame=frame, phase=self._phase)
+
+        def decide_base_motion(self, perceived: SimpleNamespace) -> object:
+            assert perceived.phase == self._phase
+            trace.add(f"{self._phase}_decide_xy_yaw")
+            return alignment_evidence
+
+        def advance_placement(
+            self,
+            perceived: SimpleNamespace,
+            base_motion: object,
+        ) -> SimpleNamespace:
+            assert perceived.phase == self._phase
+            assert base_motion is alignment_evidence
+            trace.add(f"{self._phase}_advance")
+            if self._phase == "alignment":
+                placement = SimpleNamespace(
+                    descent_plan=descent_plan,
+                    faulted=False,
+                    reason="",
+                    release_authorized=False,
+                    request=PlacementRequest.LOWER_CARTESIAN_PLANNED,
+                )
+            else:
+                placement = SimpleNamespace(
+                    descent_plan=None,
+                    faulted=False,
+                    reason="",
+                    release_authorized=True,
+                    request=PlacementRequest.SPREAD_RELEASE,
+                )
+            return SimpleNamespace(placement_output=placement)
+
+        def record_frame(
+            self,
+            perceived: SimpleNamespace,
+            base_motion: object,
+            placement_step: SimpleNamespace,
+        ) -> None:
+            assert perceived.phase == self._phase
+            assert base_motion is alignment_evidence
+            assert placement_step.placement_output is not None
+            trace.add(f"{self._phase}_record")
+
+        def finish_frame(self) -> None:
+            self._finished_frames += 1
+            trace.add(f"{self._phase}_finish")
+
+        def accept_descent_plan(self, received: object) -> None:
+            assert received is descent_plan
+            trace.add("descent_plan_accepted")
+
+        def begin_release_observation(self) -> None:
+            self._phase = "release"
             trace.add("ack_release")
-            return True
+
+        def handle_interrupt(self) -> None:
+            self.user_cancelled = True
+            trace.add("interrupt_handled")
+
+        def align(self, *_args: Any, **_kwargs: Any) -> None:
+            pytest.fail("box_pallet must own alignment, not call session.align")
+
+        def await_release_authorization(self) -> None:
+            pytest.fail("box_pallet must own the release-observation loop")
 
     def open_placing_session(**kwargs: Any) -> FakePlacingSession:
         assert kwargs["plan"] is plan
         assert kwargs["stack"] is stack
         assert kwargs["state"] is state
-        assert kwargs["controller"] is not None
+        if execute:
+            assert kwargs["controller"] is not None
+        else:
+            assert kwargs["controller"] is None
         trace.add("acquisition_open_requested")
         return FakePlacingSession(kwargs["controller"])
 
@@ -198,10 +277,20 @@ def test_entrypoint_declares_the_requested_placing_stage_order() -> None:
         "authorize",
         "initialize",
         "ready",
-        "acquire_perceive_error_align",
-        "place_alignment_stop",
+        "alignment_acquire",
+        "alignment_perceive",
+        "alignment_decide_x_y_yaw",
+        "alignment_advance_placement",
+        "alignment_record",
+        "alignment_loop_exit",
+        "stop_alignment",
         "place",
-        "ack_release",
+        "release_acquire",
+        "release_perceive",
+        "release_decide_x_y_yaw",
+        "release_advance_placement",
+        "release_record",
+        "release_authorized",
         "retreat",
         "teardown",
     )
@@ -252,10 +341,23 @@ def test_slot1_public_orchestration_preserves_the_semantic_success_order(
         "initialize",
         "acquisition_ready",
         "ready",
-        "acquire_perceive_error_align",
+        "acquisition_opened",
+        "alignment_acquire",
+        "alignment_perceive",
+        "alignment_decide_xy_yaw",
+        "alignment_advance",
+        "alignment_record",
+        "alignment_finish",
+        "descent_plan_accepted",
         "place_alignment_stopped_and_released",
         "place",
         "ack_release",
+        "release_acquire",
+        "release_perceive",
+        "release_decide_xy_yaw",
+        "release_advance",
+        "release_record",
+        "release_finish",
         "place_acknowledged_and_released",
         "retreat_completed",
         "acquisition_closed",
@@ -267,10 +369,23 @@ def test_slot1_public_orchestration_preserves_the_semantic_success_order(
         "initialize",
         "acquisition_ready",
         "ready",
-        "acquire_perceive_error_align",
+        "acquisition_opened",
+        "alignment_acquire",
+        "alignment_perceive",
+        "alignment_decide_xy_yaw",
+        "alignment_advance",
+        "alignment_record",
+        "alignment_finish",
+        "descent_plan_accepted",
         "place_alignment_stopped_and_released",
         "place",
         "ack_release",
+        "release_acquire",
+        "release_perceive",
+        "release_decide_xy_yaw",
+        "release_advance",
+        "release_record",
+        "release_finish",
         "place_acknowledged_and_released",
         "retreat_completed",
         "acquisition_closed",
@@ -376,22 +491,25 @@ def test_one_frame_runs_one_estimator_one_pose_facade_and_exposes_pose_result(
     ]
 
 
-def test_frame_loop_passes_pose_result_to_exactly_one_xy_yaw_decision() -> None:
-    """A rich scene may feed safety gates, but pose conversion/decision stay singular."""
+def test_decision_primitive_passes_pose_result_to_exactly_one_xy_yaw_decision() -> None:
+    """A rich scene may feed safety gates, but pose conversion stays singular."""
 
     import ast
     import inspect
     import textwrap
 
     from parcel_pose_placing import pallet_runtime
+    from parcel_pose_placing.placing_session import PlacingSession
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(pallet_runtime.align_and_place)))
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(PlacingSession.decide_base_motion))
+    )
     decision_calls = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_decide_base_motion"
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_decide_base_motion"
     ]
     assert len(decision_calls) == 1
     pose_keywords = [
@@ -400,8 +518,9 @@ def test_frame_loop_passes_pose_result_to_exactly_one_xy_yaw_decision() -> None:
         if keyword.arg == "pose_result"
     ]
     assert len(pose_keywords) == 1
-    assert isinstance(pose_keywords[0], ast.Attribute)
-    assert pose_keywords[0].attr == "pose_result"
+    pose_value = pose_keywords[0]
+    assert isinstance(pose_value, ast.Attribute) and pose_value.attr == "pose_result"
+    assert isinstance(pose_value.value, ast.Name) and pose_value.value.id == "observed"
 
     decision_tree = ast.parse(
         textwrap.dedent(inspect.getsource(pallet_runtime._decide_base_motion))
@@ -416,46 +535,50 @@ def test_frame_loop_passes_pose_result_to_exactly_one_xy_yaw_decision() -> None:
     assert {"x_m", "y_m", "yaw_rad"} <= pose_fields
 
 
-def test_real_session_processes_one_decision_and_one_non_dispatching_placement() -> None:
-    """The staged frame seam must observe/decide once and never manipulate."""
-
+def test_entrypoint_owns_both_placing_loops_and_lower_advance_never_dispatches() -> None:
     import ast
     import inspect
     import textwrap
 
     from parcel_pose_placing.placing_session import PlacingSession
 
-    tree = ast.parse(
-        textwrap.dedent(inspect.getsource(PlacingSession._process_next_frame))
-    )
-
-    def calls_named(name: str) -> list[ast.Call]:
-        return [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and (
-                (isinstance(node.func, ast.Name) and node.func.id == name)
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == name
-                )
-            )
-        ]
-
-    decisions = calls_named("_decide_base_motion")
-    assert len(decisions) == 1
-    pose_values = [
-        keyword.value
-        for keyword in decisions[0].keywords
-        if keyword.arg == "pose_result"
+    tree = ast.parse(textwrap.dedent(inspect.getsource(box_pallet._run_placing_flow)))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    called_attributes = [
+        node.func.attr for node in calls if isinstance(node.func, ast.Attribute)
     ]
-    assert len(pose_values) == 1
-    pose_value = pose_values[0]
-    assert isinstance(pose_value, ast.Attribute) and pose_value.attr == "pose_result"
-    assert isinstance(pose_value.value, ast.Name) and pose_value.value.id == "observed"
 
-    placement_calls = calls_named("_advance_placement")
+    assert len([node for node in ast.walk(tree) if isinstance(node, ast.While)]) == 2
+    for primitive in (
+        "acquire_frame",
+        "perceive_frame",
+        "decide_base_motion",
+        "advance_placement",
+        "record_frame",
+        "finish_frame",
+    ):
+        assert called_attributes.count(primitive) == 2
+    assert {
+        "open_acquisition",
+        "accept_descent_plan",
+        "stop_alignment_for_place",
+        "begin_release_observation",
+        "execute_place",
+        "execute_retreat",
+    } <= set(called_attributes)
+    assert {"align", "await_release_authorization"}.isdisjoint(called_attributes)
+    assert "align_and_place" not in called_attributes
+
+    advance_tree = ast.parse(
+        textwrap.dedent(inspect.getsource(PlacingSession.advance_placement))
+    )
+    placement_calls = [
+        node
+        for node in ast.walk(advance_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_advance_placement"
+    ]
     assert len(placement_calls) == 1
     dispatch_values = [
         keyword.value
@@ -599,3 +722,43 @@ def test_injected_controller_slot_mismatch_refuses_before_connect_or_initialize(
         )
 
     assert effects == []
+
+
+def test_perception_only_uses_entrypoint_loop_without_lifecycle_or_monolith(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace = _Trace()
+    _install_public_stage_fakes(monkeypatch, trace, execute=False)
+
+    class Allowed:
+        def require_authorized(self) -> "Allowed":
+            return self
+
+    monkeypatch.setattr(
+        box_pallet,
+        "authorize_slot_operation",
+        lambda _slot, _mode: Allowed(),
+    )
+
+    assert (
+        box_pallet.place_box(
+            {},
+            execute=False,
+            auto_place_slot1=False,
+            ensure_slot1_ready=False,
+            slot=1,
+            headless=True,
+            controller=None,
+        )
+        == 0
+    )
+
+    assert trace.constructions == Counter({"acquisition": 1, "sequencer": 1})
+    assert trace.commands == Counter()
+    assert trace.events.count("alignment_acquire") == 2
+    assert trace.events.count("alignment_perceive") == 2
+    assert trace.events.count("alignment_decide_xy_yaw") == 2
+    assert trace.events.count("alignment_advance") == 2
+    assert trace.events.count("alignment_record") == 2
+    assert "place" not in trace.events
+    assert "teardown" not in trace.events
