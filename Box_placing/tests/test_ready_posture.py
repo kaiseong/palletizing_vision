@@ -1,4 +1,4 @@
-"""Slot-1 ready posture: the approved posture must be locked in two places."""
+"""Selected-slot ready posture loading, with slot-1 values preserved exactly."""
 
 from __future__ import annotations
 
@@ -57,15 +57,44 @@ def test_the_shipped_config_carries_the_approved_posture() -> None:
     assert config.ready_pose.left_arm_rad == pytest.approx(READY_LEFT_ARM_RAD)
 
 
-def test_a_config_posture_that_differs_is_refused() -> None:
-    """The double lock is what stops an unapproved posture reaching the robot."""
+def test_legacy_robot_ready_pose_owner_is_absent_and_not_a_fallback() -> None:
+    """The selected slot is the ready posture's only repository owner."""
 
     root = root_config()
-    tampered = list(root["robot"]["ready_pose_rad"]["right_arm"])
-    tampered[0] += 0.02
-    root["robot"]["ready_pose_rad"]["right_arm"] = tampered
-    with pytest.raises(ValueError, match="differs from the approved slot-1 pose"):
+    assert "ready_pose_rad" not in root["robot"]
+
+    root["pallet"]["slots"]["1"]["ready_pose_rad"] = None
+    with pytest.raises(
+        ValueError,
+        match=r"pallet\.slots\.1\.ready_pose_rad must be a mapping",
+    ):
         PalletControlConfig.from_root_config(root)
+
+
+def test_selected_slot_one_ready_pose_tampering_is_refused() -> None:
+    root = root_config()
+    ready = root["pallet"]["slots"]["1"]["ready_pose_rad"]
+    ready["right_arm"][0] += 0.02
+
+    with pytest.raises(
+        ValueError,
+        match="differs from the approved slot-1 pose",
+    ):
+        PalletControlConfig.from_root_config(root, slot=1)
+
+
+def test_direct_default_slot_one_retains_the_exact_ready_lock() -> None:
+    right_arm = list(READY_RIGHT_ARM_RAD)
+    right_arm[0] += 0.02
+    tampered = ReadyPose(right_arm_rad=right_arm)
+
+    with pytest.raises(ValueError, match="ready pose must remain"):
+        PalletControlConfig(ready_pose=tampered)
+
+
+def test_non_slot_one_direct_config_cannot_inherit_slot_one_default() -> None:
+    with pytest.raises(ValueError, match="must be supplied independently"):
+        PalletControlConfig(selected_slot=5)
 
 
 def test_the_camera_carrying_joints_are_unchanged() -> None:

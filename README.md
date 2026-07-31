@@ -72,6 +72,23 @@ python box_pallet.py live --headless
 python box_pallet.py live --headless --execute --slot 1
 ```
 
+Slot 5는 live place가 아니라 recording 기반 진단만 허용됩니다. 아래 명령은
+robot/controller/camera에 연결하지 않고 12프레임만 replay하며, place/retreat
+actuation count는 항상 0입니다.
+
+```bash
+cd /home/kgs/palletizing_vision
+python Box_placing/box_pallet.py slot5-replay \
+  --session recordings/codex_640x480/pallet_slot5 \
+  --expected-frames 96 --max-frames 12 --dry-run \
+  --output-artifact /tmp/slot5-bounded-dry-run.json --overwrite
+```
+
+전체 authority matrix, branch별 required field, test/full replay 명령과 software 대
+commissioning 경계는 [`docs/palletizing-pick-place-refactor-handoff.md`](docs/palletizing-pick-place-refactor-handoff.md)를
+따릅니다. 최종 software evidence는
+[`docs/evidence/palletizing-refactor-software-gate.md`](docs/evidence/palletizing-refactor-software-gate.md)에 있습니다.
+
 커미셔닝 정책은 CLI가 아니라 설정에 있습니다. `grip_interlock.
 fixed_ready_geometry_only_commissioning_enabled`, `placement.enabled`,
 `placement.vision_geometry_release_enabled`가 켜져 있어야 `--execute`가 통과합니다.

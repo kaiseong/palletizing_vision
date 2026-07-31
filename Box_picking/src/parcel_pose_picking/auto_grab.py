@@ -14,7 +14,7 @@ import math
 import threading
 import time
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import numpy as np
 
@@ -42,6 +42,43 @@ EXPECTED_HEAD_POSITION_DEG = (0.0, 49.846)
 
 class AutoGrabError(RuntimeError):
     """Raised when mobile alignment cannot safely reach the grasp handoff."""
+
+
+@dataclass(frozen=True, slots=True)
+class GraspAlignmentStoppedAndReleased:
+    """Successful, runtime-bound prerequisite for the packaged grasp.
+
+    The lifecycle creates this value only after the active mobility command has
+    been latched to exact zero, measured wheel state has settled, the command
+    pump has reported healthy, and the mobility stream has been released.
+    ``AutoGrabRuntime.execute_grasp`` additionally requires the exact instance
+    emitted by that runtime; constructing an equal value cannot authorize arm
+    motion.
+    """
+
+    pump_send_count: int
+    pump_max_send_gap_s: float
+    grasp_alignment_stopped_and_released: Literal[True] = field(
+        default=True,
+        init=False,
+    )
+    exact_zero_latched: Literal[True] = field(default=True, init=False)
+    measured_wheel_stop: Literal[True] = field(default=True, init=False)
+    pump_healthy: Literal[True] = field(default=True, init=False)
+    stream_released: Literal[True] = field(default=True, init=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.pump_send_count, bool) or not isinstance(
+            self.pump_send_count,
+            int,
+        ):
+            raise TypeError("pump_send_count must be an integer")
+        if self.pump_send_count < 0:
+            raise ValueError("pump_send_count must be non-negative")
+        gap_s = float(self.pump_max_send_gap_s)
+        if not np.isfinite(gap_s) or gap_s < 0.0:
+            raise ValueError("pump_max_send_gap_s must be finite and non-negative")
+        object.__setattr__(self, "pump_max_send_gap_s", gap_s)
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +507,9 @@ class AutoGrabRuntime:
         self._started = False
         self._closed = False
         self._handoff_ready = False
+        self._grasp_alignment_evidence: (
+            GraspAlignmentStoppedAndReleased | None
+        ) = None
         self._grasp_invoked = False
         self._completed = False
         self._last_state: ServoState | None = None
@@ -618,8 +658,11 @@ class AutoGrabRuntime:
             self._handoff_ready = True
         return decision.handoff_ready
 
-    def handoff(self) -> None:
-        """Latch/settle/release mobility, then run the existing grasp once."""
+    def stop_alignment_for_grasp(self) -> GraspAlignmentStoppedAndReleased:
+        """Stop and release mobility, returning the successful grasp evidence."""
+
+        if self._grasp_alignment_evidence is not None:
+            return self._grasp_alignment_evidence
 
         if not self._started or self._closed:
             raise AutoGrabError("auto-grab runtime is not active")
@@ -657,10 +700,45 @@ class AutoGrabRuntime:
             ) from exc
         self._pump = None
         self._stream = None
+        evidence = GraspAlignmentStoppedAndReleased(
+            pump_send_count=pump_send_count,
+            pump_max_send_gap_s=pump_max_gap_s,
+        )
+        self._grasp_alignment_evidence = evidence
         print(
             "[auto-grab] mobility stream released for body handoff: "
             f"sends={pump_send_count}, max-gap={pump_max_gap_s * 1000.0:.1f} ms"
         )
+        return evidence
+
+    def execute_grasp(
+        self,
+        evidence: GraspAlignmentStoppedAndReleased,
+    ) -> None:
+        """Run the packaged grasp only with this runtime's successful evidence."""
+
+        if not self._started or self._closed:
+            raise AutoGrabError("auto-grab runtime is not active")
+        if not isinstance(evidence, GraspAlignmentStoppedAndReleased):
+            raise AutoGrabError(
+                "grasp requires GraspAlignmentStoppedAndReleased evidence"
+            )
+        if (
+            evidence is not self._grasp_alignment_evidence
+            or not evidence.grasp_alignment_stopped_and_released
+        ):
+            raise AutoGrabError(
+                "grasp alignment evidence was not emitted by this runtime"
+            )
+        if self._pump is not None or self._stream is not None:
+            raise AutoGrabError(
+                "grasp alignment stream is still active despite handoff evidence"
+            )
+        if self._grasp_invoked:
+            raise AutoGrabError("grasp sequence has already been invoked")
+        if self._robot is None or self._grabbing is None:
+            raise AutoGrabError("auto-grab handoff resources are unavailable")
+
         _validate_fixed_camera_posture(
             self._robot,
             self.config.fixed_posture_tolerance_deg,
@@ -677,6 +755,12 @@ class AutoGrabRuntime:
             raise AutoGrabError("packaged grasp sequence reported failure")
         self._completed = True
         print("[auto-grab] box grasp and lift completed")
+
+    def handoff(self) -> None:
+        """Compatibility wrapper: prove stopped/released, then grasp once."""
+
+        evidence = self.stop_alignment_for_grasp()
+        self.execute_grasp(evidence)
 
     def close(self) -> None:
         """Stop any active mobility stream and disconnect exactly once."""
@@ -701,7 +785,7 @@ class AutoGrabRuntime:
                     self._stream.close()
                 except Exception as exc:
                     stream_error = exc
-                finally:
+                else:
                     self._stream = None
         finally:
             if self._robot is not None:
@@ -778,4 +862,5 @@ __all__ = [
     "EXPECTED_ROBOT_VERSION",
     "EXPECTED_HEAD_POSITION_DEG",
     "EXPECTED_TORSO_POSITION_DEG",
+    "GraspAlignmentStoppedAndReleased",
 ]

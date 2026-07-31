@@ -121,6 +121,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay.set_defaults(handler=_run_replay)
 
+    slot5_replay = subparsers.add_parser(
+        "slot5-replay",
+        help=(
+            "audit the supplied slot-5 RGB-D recording as deterministic "
+            "offline diagnostics; never grant place authority"
+        ),
+    )
+    _add_single_session(slot5_replay)
+    slot5_replay.add_argument(
+        "--config",
+        type=Path,
+        default=_default_config_path(),
+    )
+    slot5_replay.add_argument(
+        "--output-artifact",
+        type=Path,
+        help="write the deterministic candidate/transition JSON artifact",
+    )
+    slot5_replay.add_argument(
+        "--expected-frames",
+        type=int,
+        help=(
+            "required manifest frame count; inferred for the two reviewed "
+            "pallet_slot5 recordings"
+        ),
+    )
+    slot5_replay.add_argument("--max-frames", type=int)
+    slot5_replay.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="use the equivalent dry_run offline-perception authority row",
+    )
+    slot5_replay.add_argument("--overwrite", action="store_true")
+    slot5_replay.set_defaults(handler=_run_slot5_replay)
+
     evaluate = subparsers.add_parser(
         "evaluate",
         help="evaluate one or more sessions and report temporal acceptance metrics",
@@ -226,6 +261,32 @@ def _run_replay(args: argparse.Namespace) -> int:
         overlay_text_panel=not bool(args.no_overlay_text),
     )
     print(dumps_strict(summary, indent=2))
+    return 0
+
+
+def _run_slot5_replay(args: argparse.Namespace) -> int:
+    from parcel_pose_common.operation_authority import OperationMode
+
+    from .slot5_replay import (
+        approved_slot5_frame_count,
+        replay_slot5_session,
+    )
+
+    session = _resolve_session(args)
+    expected_frames = args.expected_frames
+    if expected_frames is None:
+        expected_frames = approved_slot5_frame_count(session)
+    mode = OperationMode.DRY_RUN if bool(args.dry_run) else OperationMode.REPLAY
+    artifact = replay_slot5_session(
+        session,
+        _load_config(args.config),
+        mode=mode,
+        expected_frame_count=expected_frames,
+        max_frames=args.max_frames,
+        output_artifact=args.output_artifact,
+        overwrite=bool(args.overwrite),
+    )
+    print(dumps_strict(artifact, indent=2))
     return 0
 
 

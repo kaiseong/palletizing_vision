@@ -107,9 +107,13 @@ def test_the_camera_pose_is_an_explicit_input() -> None:
     assert "controller" in parameters
 
 
-def test_perception_only_runs_keep_the_configured_camera_pose() -> None:
+def test_perception_only_runs_keep_the_configured_camera_pose(
+    monkeypatch,
+) -> None:
     import numpy as np
 
+    from parcel_pose_common.models import PoseResult
+    from parcel_pose_placing import pallet_perception
     from parcel_pose_placing.pallet_perception import observe_pallet_frame
 
     configured = np.eye(4, dtype=np.float64)
@@ -137,8 +141,23 @@ def test_perception_only_runs_keep_the_configured_camera_pose() -> None:
         yaw_base_rad = 0.0
         source = "test"
 
+    monkeypatch.setattr(
+        pallet_perception,
+        "pallet_pose_result",
+        lambda _scene, *, slot, frame_id: PoseResult(
+            x_m=None,
+            y_m=None,
+            yaw_rad=None,
+            valid=False,
+            reason="test_scene_unavailable",
+            timestamp_s=1.0,
+            diagnostics={"slot": slot, "frame_id": frame_id},
+        ),
+    )
+
     observation = observe_pallet_frame(
         Frame(),
+        slot=1,
         root_config={},
         contract=Contract(),
         estimator=Estimator(),

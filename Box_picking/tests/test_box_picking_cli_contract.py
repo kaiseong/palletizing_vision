@@ -1,4 +1,4 @@
-"""CLI contract for the box-picking facade after the package split."""
+"""CLI contract for the staged box-picking facade."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import sys
+from typing import Any
 
 import pytest
 
@@ -24,6 +25,7 @@ def test_parser_defaults_to_auto_pick_without_public_ack_flags() -> None:
     assert "--headless" in help_text
     assert "--config" in help_text
     assert "--calibration" in help_text
+    assert "--orientation {horizontal,vertical}" in help_text
     assert "--robot-address" in help_text
     assert "--robot-power" in help_text
     assert "--output-mp4" in help_text
@@ -32,6 +34,7 @@ def test_parser_defaults_to_auto_pick_without_public_ack_flags() -> None:
     assert "--allow-nominal-registration" not in help_text
 
     args = parser.parse_args([])
+    assert args.orientation == "horizontal"
     assert args.headless is False
     assert args.output_mp4 is None
     assert args.log_jsonl is None
@@ -90,10 +93,8 @@ def test_non_live_diagnostic_subcommands_are_preserved() -> None:
 @pytest.mark.parametrize("flag", ["--auto-grab", "--allow-nominal-registration"])
 def test_removed_ack_flags_are_rejected(flag: str) -> None:
     parser = cli.build_parser()
-
     with pytest.raises(SystemExit) as excinfo:
         parser.parse_args([flag])
-
     assert excinfo.value.code == 2
 
 
@@ -101,7 +102,6 @@ def test_headless_only_changes_display_mode() -> None:
     parser = cli.build_parser()
     baseline = vars(parser.parse_args([]))
     headless = vars(parser.parse_args(["--headless"]))
-
     changed = {
         key: (baseline[key], headless[key])
         for key in sorted(baseline)
@@ -114,15 +114,13 @@ def test_explicit_output_paths_propagate_without_defaults(tmp_path: Path) -> Non
     parser = cli.build_parser()
     video = tmp_path / "overlay.mp4"
     telemetry = tmp_path / "pose.jsonl"
-
     args = parser.parse_args(["--output-mp4", str(video), "--log-jsonl", str(telemetry)])
-
     assert args.output_mp4 == video
     assert args.log_jsonl == telemetry
 
 
 @pytest.mark.parametrize("argv, expected_headless", [([], False), (["--headless"], True)])
-def test_no_arg_and_headless_build_auto_pick_without_camera_or_robot(
+def test_no_arg_and_headless_run_authorized_horizontal_staged_flow_without_hardware(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -136,34 +134,71 @@ def test_no_arg_and_headless_build_auto_pick_without_camera_or_robot(
     config.write_text("{}", encoding="utf-8")
     calibration.write_text("{}", encoding="utf-8")
 
-    run_calls: list[dict[str, object]] = []
-    automation_configs: list[tuple[str, str, bool]] = []
+    lifecycle: list[str] = []
+    plan_calls: list[dict[str, object]] = []
+    session_calls: list[dict[str, object]] = []
+    automation_configs: list[tuple[str, str, bool, object]] = []
+    stopped_and_released = object()
+
+    class FakeLiveError(RuntimeError):
+        pass
 
     class FakeAutoGrabConfig:
-        def __init__(self, *, address: str, power: str) -> None:
+        def __init__(self, *, address: str, power: str, servo: object) -> None:
             self.address = address
             self.power = power
+            self.servo = servo
 
     class FakeAutoGrabRuntime:
-        def __init__(self, config: FakeAutoGrabConfig, *, execute: bool) -> None:
-            automation_configs.append((config.address, config.power, execute))
+        def __init__(self, selected: FakeAutoGrabConfig, *, execute: bool) -> None:
+            automation_configs.append(
+                (selected.address, selected.power, execute, selected.servo)
+            )
+
+        def start(self) -> None:
+            lifecycle.append("ready")
+
+        def stop_alignment_for_grasp(self) -> object:
+            lifecycle.append("grasp_alignment_stopped_and_released")
+            return stopped_and_released
+
+        def execute_grasp(self, evidence: object) -> None:
+            assert evidence is stopped_and_released
+            lifecycle.append("grasp_and_lift")
+
+        def close(self) -> None:
+            lifecycle.append("robot_teardown")
 
     auto_grab_module = ModuleType("parcel_pose_picking.auto_grab")
     auto_grab_module.AutoGrabConfig = FakeAutoGrabConfig
-    auto_grab_module.AutoGrabError = RuntimeError
+    auto_grab_module.AutoGrabError = FakeLiveError
     auto_grab_module.AutoGrabRuntime = FakeAutoGrabRuntime
     monkeypatch.setitem(sys.modules, "parcel_pose_picking.auto_grab", auto_grab_module)
 
-    realtime_module = ModuleType("parcel_pose_picking.realtime")
-    realtime_module.LiveViewUnavailableError = RuntimeError
+    class FakeAlignmentSession:
+        def __enter__(self) -> "FakeAlignmentSession":
+            lifecycle.append("acquisition_prepared")
+            return self
 
-    plan_calls: list[dict[str, object]] = []
+        def watch(self, automation: FakeAutoGrabRuntime) -> SimpleNamespace:
+            assert isinstance(automation, FakeAutoGrabRuntime)
+            lifecycle.append("acquire_perceive_error_align")
+            return SimpleNamespace(
+                processed_frames=1,
+                handoff_ready=True,
+                user_cancelled=False,
+            )
+
+        def __exit__(self, *_exc_info: Any) -> None:
+            lifecycle.append("acquisition_teardown")
+
+    realtime_module = ModuleType("parcel_pose_picking.realtime")
+    realtime_module.LiveViewUnavailableError = FakeLiveError
 
     def fake_resolve_live_view_plan(**kwargs: object) -> SimpleNamespace:
         plan_calls.append(kwargs)
         return SimpleNamespace(
             handoff_ready=False,
-            handoff_started=False,
             log_stream=None,
             processed_frames=0,
             user_cancelled=False,
@@ -171,11 +206,12 @@ def test_no_arg_and_headless_build_auto_pick_without_camera_or_robot(
             window_created=False,
         )
 
-    def fake_watch_and_grab(**kwargs: object) -> None:
-        run_calls.append(kwargs)
+    def fake_open_alignment_session(**kwargs: object) -> FakeAlignmentSession:
+        session_calls.append(kwargs)
+        return FakeAlignmentSession()
 
     realtime_module.resolve_live_view_plan = fake_resolve_live_view_plan
-    realtime_module.watch_and_grab = fake_watch_and_grab
+    realtime_module.open_alignment_session = fake_open_alignment_session
     monkeypatch.setitem(sys.modules, "parcel_pose_picking.realtime", realtime_module)
 
     def fake_load_json(path: Path) -> dict[str, object]:
@@ -187,7 +223,9 @@ def test_no_arg_and_headless_build_auto_pick_without_camera_or_robot(
         return SimpleNamespace(absolute_base_validated=False)
 
     monkeypatch.setattr("parcel_pose_common.calibration.load_json", fake_load_json)
-    monkeypatch.setattr("parcel_pose_common.calibration.load_calibration", fake_load_calibration)
+    monkeypatch.setattr(
+        "parcel_pose_common.calibration.load_calibration", fake_load_calibration
+    )
     monkeypatch.setattr("parcel_pose_picking.cli._estimator_config", lambda _config: object())
     monkeypatch.setattr("parcel_pose_picking.cli._recording_context", lambda *_args: {})
 
@@ -207,18 +245,27 @@ def test_no_arg_and_headless_build_auto_pick_without_camera_or_robot(
         *argv,
     ]
 
-    # The sequence lives in box_picking.py, which attaches it to the handler.
     import box_picking
 
     assert box_picking.main(args) == 0
-    assert automation_configs == [("robot.test:50051", "main", True)]
+    assert len(automation_configs) == 1
+    assert automation_configs[0][:3] == ("robot.test:50051", "main", True)
     assert len(plan_calls) == 1
-    assert len(run_calls) == 1
+    assert len(session_calls) == 1
     assert plan_calls[0]["headless"] is expected_headless
     assert plan_calls[0]["output_mp4"] == video
     assert plan_calls[0]["log_jsonl"] == telemetry
-    assert run_calls[0]["headless"] is expected_headless
-    assert run_calls[0]["automation"] is not None
+    assert session_calls[0]["headless"] is expected_headless
+    assert session_calls[0]["processed_frames"] == 0
+    assert lifecycle == [
+        "acquisition_prepared",
+        "ready",
+        "acquire_perceive_error_align",
+        "acquisition_teardown",
+        "grasp_alignment_stopped_and_released",
+        "grasp_and_lift",
+        "robot_teardown",
+    ]
     captured = capsys.readouterr()
     assert "nominal_unverified camera registration" in captured.err
     assert "automatic RB-Y1 motion is enabled by the box_picking entrypoint" in captured.err
@@ -232,7 +279,6 @@ def test_foreign_cwd_facade_help_resolves_source_tree(monkeypatch: pytest.Monkey
     spec.loader.exec_module(module)
 
     monkeypatch.chdir("/")
-
     with pytest.raises(SystemExit) as excinfo:
         module.main(["--help"])
 

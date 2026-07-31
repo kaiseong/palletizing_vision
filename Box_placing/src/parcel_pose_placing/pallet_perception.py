@@ -24,12 +24,17 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from parcel_pose_common.models import PoseResult
+
+from .pallet_perception_adapter import pallet_pose_result
+
 
 @dataclass(frozen=True, slots=True)
 class PalletFrameObservation:
     """What one frame produced, including the pose it was measured against."""
 
     scene: Any
+    pose_result: PoseResult
     T_base_depth: np.ndarray
     held_proxy: Any
     estimator_finished_s: float
@@ -42,6 +47,7 @@ class PalletFrameObservation:
 def observe_pallet_frame(
     frame: Any,
     *,
+    slot: int,
     root_config: Mapping[str, Any],
     contract: Any,
     estimator: Any,
@@ -94,6 +100,11 @@ def observe_pallet_frame(
         held_box_hint=_held_hint(root_config, held_proxy),
         calibration_status=calibration_status,
     )
+    pose_result = pallet_pose_result(
+        scene,
+        slot=slot,
+        frame_id=frame.depth_frame_number,
+    )
     estimator_finished_s = time.monotonic()
     decision_now_s = time.monotonic()
     result_fresh = _live_result_fresh(capture_monotonic_s, decision_now_s)
@@ -124,6 +135,7 @@ def observe_pallet_frame(
 
     return PalletFrameObservation(
         scene=scene,
+        pose_result=pose_result,
         T_base_depth=T_base_depth,
         held_proxy=held_proxy,
         estimator_finished_s=estimator_finished_s,

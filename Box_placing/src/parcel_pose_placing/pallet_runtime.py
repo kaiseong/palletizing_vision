@@ -26,8 +26,11 @@ from typing import Any, Callable, Mapping, Protocol, TextIO
 
 import numpy as np
 
-from parcel_pose_common.angles import normalize_line_angle_rad
-from parcel_pose_common.models import CameraIntrinsics
+from parcel_pose_common.angles import (
+    line_angle_difference_rad,
+    normalize_line_angle_rad,
+)
+from parcel_pose_common.models import CameraIntrinsics, PoseResult
 from parcel_pose_common.mobile_servo import VelocityCommand
 from .pallet_acquisition import (
     AcquisitionConfig,
@@ -1873,6 +1876,7 @@ def _decide_base_motion(
     placement_lowering_started: Any,
     placement_release_started: Any,
     placement_sequencer: Any,
+    pose_result: PoseResult,
     scene: Any,
     scene_window: Any,
     servo: Any,
@@ -1904,6 +1908,34 @@ def _decide_base_motion(
     stationary = None
     stationary_source = None
     zero_acknowledged = None
+
+    if not isinstance(pose_result, PoseResult):
+        raise TypeError("pose_result must be a PoseResult")
+    pose_x_m = pose_result.x_m
+    pose_y_m = pose_result.y_m
+    pose_yaw_rad = pose_result.yaw_rad
+    if pose_result.frame != "base":
+        raise ValueError("pallet pose_result must use the base frame")
+    if pose_result.valid and any(
+        value is None for value in (pose_x_m, pose_y_m, pose_yaw_rad)
+    ):
+        raise ValueError("valid pallet pose_result requires x_m, y_m, and yaw_rad")
+    if any(
+        value is not None and not math.isfinite(float(value))
+        for value in (pose_x_m, pose_y_m, pose_yaw_rad)
+    ):
+        raise ValueError("pallet pose_result x_m, y_m, and yaw_rad must be finite")
+    if not pose_result.valid and not pose_result.reason:
+        raise ValueError("invalid pallet pose_result requires a reason")
+    pose_contract_diagnostics: dict[str, Any] = {
+        "valid": pose_result.valid,
+        "frame": pose_result.frame,
+        "x_m": pose_x_m,
+        "y_m": pose_y_m,
+        "yaw_rad": pose_yaw_rad,
+        "reason": pose_result.reason,
+        "scene_measurement_consistent": None,
+    }
 
     if execute:
         assert controller is not None
@@ -1984,6 +2016,9 @@ def _decide_base_motion(
             frame_result_fresh=frame_result_fresh,
         )
     )
+    if not pose_result.valid:
+        raw_hole_visible = False
+        raw_hole_timestamp_s = None
     l_status = l_corner_gate.update(
         coarse,
         stationary=stationary_for_vision,
@@ -1998,8 +2033,9 @@ def _decide_base_motion(
         "dropout_age_s": None,
         "prediction_ttl_s": _MAX_ODOMETRY_PREDICTION_AGE_S,
         "prediction_reason": "fine_servo_not_active",
+        "pose_result_contract": pose_contract_diagnostics,
     }
-    decision_source_timestamp_s = frame_source_monotonic_s
+    decision_source_timestamp_s = float(pose_result.timestamp_s)
     if shutdown_pending:
         decision = _shutdown_hold_output("shutdown_handoff_pending")
         decision_owner = PalletControlOwner.SHUTDOWN_HOLD
@@ -2020,11 +2056,33 @@ def _decide_base_motion(
                 ),
             )
         )
+        if pose_result.valid and raw_measurement.valid:
+            observed_center = raw_measurement.current_observed_feature_center_base
+            observed_yaw = raw_measurement.current_observed_feature_yaw_base_rad
+            assert observed_center is not None and observed_yaw is not None
+            pose_scene_consistent = bool(
+                math.isclose(float(pose_x_m), observed_center[0], abs_tol=1e-9)
+                and math.isclose(float(pose_y_m), observed_center[1], abs_tol=1e-9)
+                and abs(
+                    line_angle_difference_rad(float(pose_yaw_rad), observed_yaw)
+                )
+                <= 1e-9
+            )
+            pose_contract_diagnostics["scene_measurement_consistent"] = (
+                pose_scene_consistent
+            )
+            if not pose_scene_consistent:
+                raise RuntimeError(
+                    "pallet pose_result disagrees with the scene-derived fine "
+                    "servo measurement"
+                )
         measurement, bridge_diagnostics = servo_bridge.resolve(
             raw_measurement,
             odometry,
             now_s=decision_now_s,
         )
+        bridge_diagnostics = dict(bridge_diagnostics)
+        bridge_diagnostics["pose_result_contract"] = pose_contract_diagnostics
         fine_output = servo.update(measurement, decision_now_s, wheel)
         if frame_result_fresh and raw_measurement.valid:
             servo_bridge.commit(
@@ -2197,6 +2255,7 @@ def _advance_placement(
     auto_place_slot1: Any,
     containment: Any,
     controller: Any,
+    decision: Any,
     decision_now_s: Any,
     decision_owner: Any,
     decision_source_max_age_s: Any,
@@ -2218,6 +2277,7 @@ def _advance_placement(
     placement_alignment_ready_since_s: Any,
     placement_lowering_started: Any,
     placement_release_started: Any,
+    dispatch_manipulation: bool = True,
 ) -> _PlacementStep:
     """Advance the placement one frame: wait for alignment, lower, release, retreat.
 
@@ -2226,7 +2286,6 @@ def _advance_placement(
     slot configuration.
     """
 
-    decision = None
     dispatch_result = None
     placement_output = None
     placement_runtime_diagnostics = None
@@ -2330,28 +2389,38 @@ def _advance_placement(
                     "planned Cartesian lowering requires a valid frozen "
                     "PlacementDescentPlan"
                 )
-            controller.start_cartesian_lowering_hold(
-                descent_plan=descent_plan
-            )
-            placement_lowering_started = True
-            assert containment is not None
-            containment.mark_robot_touch()
-            containment.mark_destination_commanded()
-            placement_runtime_diagnostics["runtime_request_dispatched"] = (
-                "start_cartesian_lowering_hold"
-            )
+            if dispatch_manipulation:
+                controller.start_cartesian_lowering_hold(
+                    descent_plan=descent_plan
+                )
+                placement_lowering_started = True
+                assert containment is not None
+                containment.mark_robot_touch()
+                containment.mark_destination_commanded()
+                placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                    "start_cartesian_lowering_hold"
+                )
+            else:
+                placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                    "deferred_to_placement_lifecycle"
+                )
         elif (
             placement_output.request is PlacementRequest.SPREAD_RELEASE
             and not placement_release_started
         ):
-            controller.start_cartesian_release_hold()
-            placement_release_started = True
-            assert containment is not None
-            containment.mark_robot_touch()
-            containment.mark_destination_commanded()
-            placement_runtime_diagnostics["runtime_request_dispatched"] = (
-                "start_cartesian_release_hold"
-            )
+            if dispatch_manipulation:
+                controller.start_cartesian_release_hold()
+                placement_release_started = True
+                assert containment is not None
+                containment.mark_robot_touch()
+                containment.mark_destination_commanded()
+                placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                    "start_cartesian_release_hold"
+                )
+            else:
+                placement_runtime_diagnostics["runtime_request_dispatched"] = (
+                    "deferred_to_placement_lifecycle"
+                )
         else:
             placement_runtime_diagnostics["runtime_request_dispatched"] = (
                 "none"
@@ -2699,6 +2768,11 @@ def align_and_place(
     that releasing them does not disarm a loaded robot.
     """
 
+    if execute:
+        raise RuntimeError(
+            "live slot-1 placement requires the staged open_placing_session lifecycle"
+        )
+
     T_base_depth = state.T_base_depth
     accepted_scene_sequence = state.accepted_scene_sequence
     box_bottom_uncertainty_m = state.box_bottom_uncertainty_m
@@ -2728,6 +2802,7 @@ def align_and_place(
                 root_config,
                 address=robot_address,
                 power=robot_power,
+                slot=plan.selected_slot,
                 prepare_for_stream=execute,
             )
             calibration_status = "nominal_unverified_ready_posture_checked_at_start"
@@ -2816,6 +2891,7 @@ def align_and_place(
 
                 observed = observe_pallet_frame(
                     frame,
+                    slot=plan.selected_slot,
                     root_config=root_config,
                     contract=contract,
                     estimator=stack.estimator,
@@ -2865,6 +2941,7 @@ def align_and_place(
                     placement_lowering_started=placement_lowering_started,
                     placement_release_started=placement_release_started,
                     placement_sequencer=stack.placement_sequencer,
+                    pose_result=observed.pose_result,
                     scene=scene,
                     scene_window=scene_window,
                     servo=stack.servo,
@@ -2894,6 +2971,7 @@ def align_and_place(
                     auto_place_slot1=auto_place_slot1,
                     containment=containment,
                     controller=controller,
+                    decision=decision,
                     decision_now_s=decision_now_s,
                     decision_owner=decision_owner,
                     decision_source_max_age_s=decision_source_max_age_s,
@@ -3209,6 +3287,17 @@ def initial_run_state(
 
 
 
+def open_placing_session(**kwargs: Any) -> Any:
+    """Open the staged lower-service session used by box_pallet.
+
+    The local import avoids a cycle while placing_session reuses the existing
+    frame, gate, telemetry, and containment helpers in this module.
+    """
+
+    from .placing_session import open_placing_session as open_session
+
+    return open_session(**kwargs)
+
 
 __all__ = [
     "ActuationContainmentState",
@@ -3221,6 +3310,7 @@ __all__ = [
     "align_and_place",
     "assemble_live_stack",
     "initial_run_state",
+    "open_placing_session",
     "resolve_live_plan",
     "validate_live_camera_profile",
 ]

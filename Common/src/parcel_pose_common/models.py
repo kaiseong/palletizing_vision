@@ -722,6 +722,80 @@ class PoseEstimate:
         return self.absolute_valid
 
 
+@dataclass(frozen=True, slots=True)
+class PoseResult:
+    """Dependency-neutral base-frame pose returned by perception facades.
+
+    ``x_m`` and ``y_m`` are metres in the RB-Y1 ``base`` frame. ``yaw_rad``
+    is the observed line orientation in radians: angles separated by ``pi``
+    describe the same physical axis. Consumers must therefore compare yaw
+    with the existing modulo-``pi`` line-angle helpers rather than as a
+    directed heading.
+
+    Invalid results may retain finite partial pose values for inspection, but
+    must carry a non-empty ``reason``. Estimator quality and input provenance
+    belong in ``diagnostics`` so adapting to this narrow contract does not
+    discard evidence.
+    """
+
+    x_m: float | None
+    y_m: float | None
+    yaw_rad: float | None
+    valid: bool
+    reason: str
+    timestamp_s: float
+    diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    frame: str = "base"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.valid, bool):
+            raise ValueError("valid must be a bool")
+
+        for name in ("x_m", "y_m", "yaw_rad"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _finite_float(value, name))
+
+        timestamp_s = _finite_float(self.timestamp_s, "timestamp_s")
+        if timestamp_s < 0.0:
+            raise ValueError("timestamp_s must be non-negative")
+        object.__setattr__(self, "timestamp_s", timestamp_s)
+
+        frame = str(self.frame).strip()
+        if frame != "base":
+            raise ValueError("PoseResult must be expressed in the RB-Y1 'base' frame")
+        object.__setattr__(self, "frame", frame)
+
+        if not isinstance(self.reason, str):
+            raise ValueError("reason must be a string")
+        reason = self.reason.strip()
+        if not self.valid and not reason:
+            raise ValueError("an invalid PoseResult requires a non-empty reason")
+        if self.valid and any(
+            getattr(self, name) is None for name in ("x_m", "y_m", "yaw_rad")
+        ):
+            raise ValueError("a valid PoseResult requires x_m, y_m, and yaw_rad")
+        object.__setattr__(self, "reason", reason)
+
+        if not isinstance(self.diagnostics, Mapping):
+            raise ValueError("diagnostics must be a mapping")
+        object.__setattr__(self, "diagnostics", dict(self.diagnostics))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a structured dictionary representation for trace events."""
+
+        return {
+            "x_m": self.x_m,
+            "y_m": self.y_m,
+            "yaw_rad": self.yaw_rad,
+            "valid": self.valid,
+            "reason": self.reason,
+            "timestamp_s": self.timestamp_s,
+            "frame": self.frame,
+            "diagnostics": dict(self.diagnostics),
+        }
+
+
 __all__ = [
     "BoxDimensionPrior",
     "BoxModel",
@@ -732,4 +806,5 @@ __all__ = [
     "ObservabilityState",
     "Plane",
     "PoseEstimate",
+    "PoseResult",
 ]

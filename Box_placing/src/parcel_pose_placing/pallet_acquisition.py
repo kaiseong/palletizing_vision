@@ -970,6 +970,7 @@ class CoarseFineAuthority:
     def __init__(self) -> None:
         self._owner = PalletControlOwner.FORWARD_ACQUISITION
         self._coarse_revoked = False
+        self._placement_locked = False
 
     @property
     def owner(self) -> PalletControlOwner:
@@ -978,6 +979,10 @@ class CoarseFineAuthority:
     @property
     def coarse_revoked(self) -> bool:
         return self._coarse_revoked
+
+    @property
+    def placement_locked(self) -> bool:
+        return self._placement_locked
 
     def handoff_to_fine(
         self,
@@ -1001,9 +1006,18 @@ class CoarseFineAuthority:
         self._owner = PalletControlOwner.FINE_SLOT1_SERVO
         self._coarse_revoked = True
 
+    def release_alignment_for_placement(self) -> bool:
+        if self._owner is not PalletControlOwner.FINE_SLOT1_SERVO:
+            raise RuntimeError(
+                "placement alignment release requires fine slot-1 servo ownership"
+            )
+        self._placement_locked = True
+        return True
+
     def request_shutdown_hold(self) -> None:
         self._owner = PalletControlOwner.SHUTDOWN_HOLD
         self._coarse_revoked = True
+        self._placement_locked = True
 
     def assert_publish(self, owner: PalletControlOwner, command: Any) -> None:
         if owner is not self._owner:
@@ -1018,6 +1032,8 @@ class CoarseFineAuthority:
             raise RuntimeError("published mobility command is malformed") from exc
         if not all(math.isfinite(value) for value in (vx, vy, wz)):
             raise RuntimeError("published mobility command is nonfinite")
+        if self._placement_locked and (vx != 0.0 or vy != 0.0 or wz != 0.0):
+            raise RuntimeError("released placement alignment permits exact zero only")
         if owner is PalletControlOwner.FORWARD_ACQUISITION and (
             vx < 0.0 or vx > MAX_ACQUISITION_SPEED_MPS + 1e-12 or vy != 0.0 or wz != 0.0
         ):

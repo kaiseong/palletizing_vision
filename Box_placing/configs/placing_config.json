@@ -5,38 +5,6 @@
     "model": "M",
     "version": "1.2",
     "default_address": "192.168.30.1:50051",
-    "ready_pose_rad": {
-      "torso": [
-        0.0,
-        1.41,
-        -1.514,
-        0.6295,
-        0.0,
-        0.0
-      ],
-      "right_arm": [
-        -1.12,
-        -0.383,
-        -0.048,
-        -1.066,
-        -0.824,
-        1.109,
-        0.157
-      ],
-      "left_arm": [
-        -1.12,
-        0.383,
-        0.048,
-        -1.066,
-        0.824,
-        1.109,
-        -0.157
-      ],
-      "head": [
-        0.0,
-        0.87
-      ]
-    },
     "ready_transition_minimum_time_s": 3.0,
     "ready_tolerance_deg": 1.0,
     "arm_joint_impedance_stiffness_nm_per_rad": [
@@ -331,7 +299,38 @@
         "hole_reference": null,
         "offset_right_far_m": null,
         "long_axis": null,
-        "ready_pose_rad": null,
+        "ready_pose_rad": {
+          "torso": [
+            0.0,
+            1.427,
+            -1.099,
+            -0.214,
+            0.0,
+            -0.0
+          ],
+          "right_arm": [
+            -1.124,
+            -0.362,
+            -0.149,
+            -0.906,
+            -0.858,
+            1.359,
+            -0.038
+          ],
+          "left_arm": [
+            -1.129,
+            0.335,
+            0.16,
+            -0.914,
+            0.827,
+            1.359,
+            0.05
+          ],
+          "head": [
+            0.0,
+            0.87
+          ]
+        },
         "place_pose_deg": null,
         "retreat_pose_deg": null
       },

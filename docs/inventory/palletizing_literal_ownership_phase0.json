@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "scope": "G001 Phase-0 current-truth ownership inventory; this file records existing behavior and does not activate future ownership or hardware paths.",
+  "values": [
+    {
+      "id": "selection.pick_orientation",
+      "current_owner": "Common/src/parcel_pose_common/mobile_servo.py#ServoConfig.target_long_axis_yaw_rad via AutoGrabConfig.servo default_factory",
+      "value": "horizontal",
+      "unit": "orientation_name",
+      "source_literal": null,
+      "fallback": "No CLI/config selection exists; box_picking.py constructs AutoGrabConfig without servo, so ServoConfig yaw pi/2 is the effective implicit selection.",
+      "action_planned": "Later move the explicit default/selection to Box_picking/box_picking.py; Phase 0 makes no runtime change.",
+      "test": "test_literal_rows_match_current_sources"
+    },
+    {
+      "id": "selection.placing_slot",
+      "current_owner": "Box_placing/src/parcel_pose_placing/pallet_runtime.py#resolve_live_plan + Box_placing/configs/placing_config.json#/pallet/default_slot",
+      "value": 1,
+      "unit": "slot_number",
+      "source_literal": 1,
+      "fallback": "Explicit --slot/programmatic slot wins; otherwise selected config pallet.default_slot; if absent, code fallback 1.",
+      "action_planned": "Later move the entrypoint default to Box_placing/box_pallet.py while preserving current behavior; Phase 0 does not change precedence.",
+      "test": "test_current_cli_and_loader_precedence_is_recorded_truthfully"
+    },
+    {
+      "id": "pick.target.x_m",
+      "current_owner": "Common/src/parcel_pose_common/mobile_servo.py#ServoConfig.target_xy_m[0]",
+      "value": 0.74,
+      "unit": "m",
+      "source_literal": 0.74,
+      "fallback": "ServoConfig constructor default; picking JSON and CLI cannot override it in the current entrypoint.",
+      "action_planned": "Later migrate unchanged to the picking entrypoint branch table.",
+      "test": "test_literal_rows_match_current_sources"
+    },
+    {
+      "id": "pick.target.y_m",
+      "current_owner": "Common/src/parcel_pose_common/mobile_servo.py#ServoConfig.target_xy_m[1]",
+      "value": 0.0,
+      "unit": "m",
+      "source_literal": 0.0,
+      "fallback": "ServoConfig constructor default; picking JSON and CLI cannot override it in the current entrypoint.",
+      "action_planned": "Later migrate unchanged to the picking entrypoint branch table.",
+      "test": "test_literal_rows_match_current_sources"
+    },
+    {
+      "id": "pick.target.yaw_rad",
+      "current_owner": "Common/src/parcel_pose_common/mobile_servo.py#ServoConfig.target_long_axis_yaw_rad",
+      "value": 1.5707963267948966,
+      "unit": "rad_line_yaw",
+      "source_literal": "math.pi / 2.0",
+      "fallback": "ServoConfig constructor default; normalized modulo pi; no current CLI/config override.",
+      "action_planned": "Later migrate unchanged to the horizontal picking entrypoint branch; do not synthesize a vertical target.",
+      "test": "test_literal_rows_match_current_sources"
+    },
+    {
+      "id": "pick.tolerance.x_m",
+      "current_owner": "Common/src/parcel_pose_common/mobile_servo.py#ServoConfig.arrival_inner_m (Euclidean XY radius, not an x-axis tolerance)",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "No independent x tolerance exists; current gate is Euclidean XY inner/outer radius 0.010/0.015 m.",
+      "action_planned": "Leave unresolved until a later phase preserves or explicitly replaces radial semantics; do not copy 0.010 into x by assumption.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "pick.tolerance.y_m",
+      "current_owner": "Common/src/parcel_pose_common/mobile_servo.py#ServoConfig.arrival_inner_m (Euclidean XY radius, not a y-axis tolerance)",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "No independent y tolerance exists; current gate is Euclidean XY inner/outer radius 0.010/0.015 m.",
+      "action_planned": "Leave unresolved until a later phase preserves or explicitly replaces radial semantics; do not copy 0.010 into y by assumption.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "pick.tolerance.yaw_rad",
+      "current_owner": "Common/src/parcel_pose_common/mobile_servo.py#ServoConfig.arrival_yaw_inner_rad",
+      "value": 0.05235987755982989,
+      "unit": "rad_line_yaw",
+      "source_literal": "math.radians(3.0)",
+      "fallback": "ServoConfig default; outer hysteresis is separately 0.08726646259971647 rad; AutoGrabConfig also has an earlier 8 deg grasp-family residual gate.",
+      "action_planned": "Later move only the high-level inner yaw tolerance to the entrypoint and retain lower-level hysteresis/safety detail.",
+      "test": "test_literal_rows_match_current_sources"
+    },
+    {
+      "id": "place.slot1.target.x_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/1/hole_reference/center_base_xy_m/0",
+      "value": 0.865,
+      "unit": "m_base_at_configured_slot1_ready_pose",
+      "source_literal": 0.865,
+      "fallback": "Required selected-slot hole_reference member; missing/null is a named refusal and never falls back to another slot.",
+      "action_planned": "Later migrate unchanged to the placing entrypoint slot table.",
+      "test": "test_literal_rows_match_current_sources"
+    },
+    {
+      "id": "place.slot1.target.y_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/1/hole_reference/center_base_xy_m/1",
+      "value": 0.139523,
+      "unit": "m_base_at_configured_slot1_ready_pose",
+      "source_literal": 0.139523,
+      "fallback": "Required selected-slot hole_reference member; missing/null is a named refusal and never falls back to another slot.",
+      "action_planned": "Later migrate unchanged to the placing entrypoint slot table.",
+      "test": "test_literal_rows_match_current_sources"
+    },
+    {
+      "id": "place.slot1.target.yaw_deg",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/1/hole_reference/yaw_base_deg",
+      "value": -90.0,
+      "unit": "deg_line_yaw_base_at_configured_slot1_ready_pose",
+      "source_literal": -90.0,
+      "fallback": "Loader precedence is yaw_base_rad, then yaw_base_deg converted to radians, then a named error; no cross-slot fallback.",
+      "action_planned": "Later migrate the exact equivalent yaw to the placing entrypoint slot table.",
+      "test": "test_literal_rows_match_current_sources"
+    },
+    {
+      "id": "place.slot2.target.x_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/2/hole_reference",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 2 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; never mirror or infer slot 1.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.slot2.target.y_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/2/hole_reference",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 2 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; never mirror or infer slot 1.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.slot2.target.yaw_deg",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/2/hole_reference",
+      "value": null,
+      "unit": "deg_line_yaw",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 2 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; never mirror or infer slot 1.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.slot5.target.x_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/5/hole_reference",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 5 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; recordings are not silently promoted to a live target.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.slot5.target.y_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/5/hole_reference",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 5 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; recordings are not silently promoted to a live target.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.slot5.target.yaw_deg",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/5/hole_reference",
+      "value": null,
+      "unit": "deg_line_yaw",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 5 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; recordings are not silently promoted to a live target.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.slot6.target.x_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/6/hole_reference",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 6 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; never mirror or infer another slot.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.slot6.target.y_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/6/hole_reference",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 6 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; never mirror or infer another slot.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.slot6.target.yaw_deg",
+      "current_owner": "Box_placing/configs/placing_config.json#/pallet/slots/6/hole_reference",
+      "value": null,
+      "unit": "deg_line_yaw",
+      "source_literal": null,
+      "fallback": "hole_reference is explicitly null; selecting slot 6 refuses before stack/controller construction.",
+      "action_planned": "Keep null until independently demonstrated; never mirror or infer another slot.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.tolerance.x_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/servo/arrival_inner_m (Euclidean XY radius, not an x-axis tolerance)",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "No independent x tolerance exists; JSON radial inner/outer values are 0.010/0.015 m, with PalletServoConfig defaults if omitted.",
+      "action_planned": "Leave unresolved until a later phase preserves or explicitly replaces radial semantics; do not synthesize x.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.tolerance.y_m",
+      "current_owner": "Box_placing/configs/placing_config.json#/servo/arrival_inner_m (Euclidean XY radius, not a y-axis tolerance)",
+      "value": null,
+      "unit": "m",
+      "source_literal": null,
+      "fallback": "No independent y tolerance exists; JSON radial inner/outer values are 0.010/0.015 m, with PalletServoConfig defaults if omitted.",
+      "action_planned": "Leave unresolved until a later phase preserves or explicitly replaces radial semantics; do not synthesize y.",
+      "test": "test_missing_axis_and_branch_values_are_explicit_nulls"
+    },
+    {
+      "id": "place.tolerance.yaw_rad",
+      "current_owner": "Box_placing/configs/placing_config.json#/servo/arrival_yaw_inner_rad",
+      "value": 0.05235987755982989,
+      "unit": "rad_line_yaw",
+      "source_literal": 0.05235987755982989,
+      "fallback": "Selected JSON value wins; if omitted PalletServoConfig defaults to math.radians(3.0); outer hysteresis is 0.08726646259971647 rad.",
+      "action_planned": "Later move only the high-level inner yaw tolerance to Box_placing/box_pallet.py and retain lower-level hysteresis detail.",
+      "test": "test_literal_rows_match_current_sources"
+    }
+  ],
+  "cli_options": [
+    {
+      "id": "cli.pick.config",
+      "parser": "Box_picking/src/parcel_pose_picking/cli.py#build_parser",
+      "option": "--config",
+      "default": "Box_picking/configs/picking_config.json",
+      "affects": [],
+      "fallback": "Explicit path replaces parser default, but current pick selection/target/high-level gate do not read that JSON.",
+      "action_planned": "Retain for calibration/estimator tuning; do not falsely claim current high-level target precedence.",
+      "test": "test_current_cli_and_loader_precedence_is_recorded_truthfully"
+    },
+    {
+      "id": "cli.place.live.config",
+      "parser": "Box_placing/src/parcel_pose_placing/pallet_cli.py#build_parser live",
+      "option": "--config",
+      "default": "Box_placing/configs/placing_config.json",
+      "affects": ["selection.placing_slot", "place.slot*.target.*", "place.tolerance.*"],
+      "fallback": "Explicit path replaces parser default; selected document then supplies default_slot, slot members and servo values.",
+      "action_planned": "Retain; later remove duplicate high-level owners only when the entrypoint migration is implemented.",
+      "test": "test_current_cli_and_loader_precedence_is_recorded_truthfully"
+    },
+    {
+      "id": "cli.place.live.slot",
+      "parser": "Box_placing/src/parcel_pose_placing/pallet_cli.py#build_parser live",
+      "option": "--slot",
+      "default": null,
+      "affects": ["selection.placing_slot", "place.slot*.target.*"],
+      "fallback": "None means selected config pallet.default_slot, then code fallback 1; explicit integer wins now.",
+      "action_planned": "Retain the explicit selector; Phase 0 records current CLI > JSON > code fallback rather than imposing a new entrypoint default.",
+      "test": "test_current_cli_and_loader_precedence_is_recorded_truthfully"
+    }
+  ],
+  "missing_cli_options": [
+    "pick --orientation",
+    "pick/place --target-x",
+    "pick/place --target-y",
+    "pick/place --target-yaw",
+    "pick/place --x-tolerance",
+    "pick/place --y-tolerance",
+    "pick/place --yaw-tolerance"
+  ],
+  "current_precedence": {
+    "pick": [
+      "CLI --config selects estimator JSON only",
+      "box_picking.py supplies only address/power to AutoGrabConfig",
+      "AutoGrabConfig.servo default_factory creates ServoConfig",
+      "ServoConfig code literals therefore own effective horizontal target and radial/yaw gates"
+    ],
+    "place_slot_selection": [
+      "explicit CLI/programmatic slot",
+      "selected JSON pallet.default_slot",
+      "resolve_live_plan code fallback 1"
+    ],
+    "place_target": [
+      "selected config and selected slot hole_reference",
+      "yaw_base_rad if present",
+      "otherwise yaw_base_deg converted to rad",
+      "otherwise named refusal; never another-slot fallback"
+    ],
+    "place_tolerance": [
+      "selected JSON servo field when present",
+      "PalletServoConfig code default when field omitted"
+    ]
+  },
+  "branch_snapshots": {
+    "pick": {
+      "horizontal": {
+        "selection": "horizontal",
+        "status": "current_implicit_entrypoint_default",
+        "target": {"x_m": 0.74, "y_m": 0.0, "yaw_rad": 1.5707963267948966},
+        "high_level_tolerance": {"x_m": null, "y_m": null, "yaw_rad": 0.05235987755982989},
+        "current_gate": {"xy_metric": "euclidean_norm", "xy_inner_m": 0.01, "xy_outer_m": 0.015, "yaw_inner_rad": 0.05235987755982989, "yaw_outer_rad": 0.08726646259971647, "grasp_residual_deg": 8.0}
+      },
+      "vertical": {
+        "selection": null,
+        "status": "missing_entrypoint_branch_and_cli_selector",
+        "target": {"x_m": null, "y_m": null, "yaw_rad": null},
+        "high_level_tolerance": {"x_m": null, "y_m": null, "yaw_rad": null},
+        "current_gate": null
+      }
+    },
+    "place": {
+      "1": {
+        "selection": 1,
+        "status": "current_default_resolves",
+        "target": {"x_m": 0.865, "y_m": 0.139523, "yaw_rad": -1.5707963267948966},
+        "high_level_tolerance": {"x_m": null, "y_m": null, "yaw_rad": 0.05235987755982989},
+        "current_gate": {"xy_metric": "euclidean_norm", "xy_inner_m": 0.01, "xy_outer_m": 0.015, "yaw_inner_rad": 0.05235987755982989, "yaw_outer_rad": 0.08726646259971647}
+      },
+      "2": {
+        "selection": 2,
+        "status": "refused_explicit_null_hole_reference",
+        "target": {"x_m": null, "y_m": null, "yaw_rad": null},
+        "high_level_tolerance": {"x_m": null, "y_m": null, "yaw_rad": 0.05235987755982989},
+        "current_gate": {"constructed": false}
+      },
+      "5": {
+        "selection": 5,
+        "status": "refused_explicit_null_hole_reference",
+        "target": {"x_m": null, "y_m": null, "yaw_rad": null},
+        "high_level_tolerance": {"x_m": null, "y_m": null, "yaw_rad": 0.05235987755982989},
+        "current_gate": {"constructed": false}
+      },
+      "6": {
+        "selection": 6,
+        "status": "refused_explicit_null_hole_reference",
+        "target": {"x_m": null, "y_m": null, "yaw_rad": null},
+        "high_level_tolerance": {"x_m": null, "y_m": null, "yaw_rad": 0.05235987755982989},
+        "current_gate": {"constructed": false}
+      }
+    }
+  }
+}

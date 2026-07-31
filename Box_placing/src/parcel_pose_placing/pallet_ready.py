@@ -330,6 +330,7 @@ def ensure_slot1_ready_from_config(
     *,
     address: str,
     power: str,
+    slot: int | None = None,
     prepare_for_stream: bool = False,
     sdk_module: Any | None = None,
     robot: Any | None = None,
@@ -359,6 +360,7 @@ def ensure_slot1_ready_from_config(
     config = PalletControlConfig.from_root_config(
         root_config,
         address_override=address,
+        slot=slot,
     )
     owned_robot = robot
     primary_exception: BaseException | None = None

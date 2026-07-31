@@ -40,10 +40,9 @@ EXPECTED_ROBOT_VERSION = "1.2"
 
 READY_TORSO_RAD = (0.0, 1.410, -1.514, 0.6295, 0.0, 0.0)
 # Slot-1 loading posture, reverted at the operator's request to the values that
-# every live run up to place_30 used.  The left arm mirrors the right, which
-# negates joints 1, 2, 4 and 6.  The config must carry the same literals;
-# PalletControlConfig refuses a mismatch so an unapproved posture cannot reach
-# the robot.
+# every live run up to place_30 used.  These constants remain the safe default
+# for direct/offline ``PalletControlConfig()`` construction.  Repository config
+# loading consumes the selected slot's independent ``ready_pose_rad`` instead.
 READY_RIGHT_ARM_RAD = (-1.120, -0.383, -0.048, -1.066, -0.824, 1.109, 0.157)
 READY_LEFT_ARM_RAD = (-1.120, 0.383, 0.048, -1.066, 0.824, 1.109, -0.157)
 READY_HEAD_RAD = (0.0, 0.870)
@@ -276,6 +275,7 @@ class PlacePose:
 class PalletControlConfig:
     address: str = "192.168.30.1:50051"
     priority: int = 10
+    selected_slot: int = field(default=1, kw_only=True)
     ready_pose: ReadyPose = field(default_factory=ReadyPose)
     # Operator-requested 2026-07-30: the slot-1 ready one-shot runs in 3 s.
     ready_transition_minimum_time_s: float = 3.0
@@ -362,9 +362,11 @@ class PalletControlConfig:
     ) -> "PalletControlConfig":
         """Build from the repository pallet JSON while preserving hard gates.
 
-        The placement and retreat postures are demonstrated per slot, so they are
-        read from ``pallet.slots.<slot>``.  ``slot`` defaults to
-        ``pallet.default_slot``.
+        Ready, placement and retreat postures are demonstrated per slot, so they
+        are read from ``pallet.slots.<slot>``.  ``slot`` defaults to
+        ``pallet.default_slot``.  The legacy ``robot.ready_pose_rad`` value is
+        deliberately not a fallback: a missing selected-slot posture is an
+        incomplete branch and must fail closed.
         """
 
         if not isinstance(root, Mapping):
@@ -425,16 +427,23 @@ class PalletControlConfig:
                 f"root config robot.version must be {EXPECTED_ROBOT_VERSION!r}"
             )
 
-        ready_raw = robot.get("ready_pose_rad")
+        pallet = section("pallet")
+        selected_slot = int(
+            pallet.get("default_slot", 1) if slot is None else slot
+        )
+        ready_raw = slot_block.get("ready_pose_rad")
         if not isinstance(ready_raw, Mapping):
-            raise ValueError("root config robot.ready_pose_rad must be a mapping")
+            raise ValueError(
+                "root config "
+                f"pallet.slots.{selected_slot}.ready_pose_rad must be a mapping"
+            )
         ready_pose = ReadyPose(
             torso_rad=ready_raw.get("torso", ()),
             right_arm_rad=ready_raw.get("right_arm", ()),
             left_arm_rad=ready_raw.get("left_arm", ()),
             head_rad=ready_raw.get("head", ()),
         )
-        if ready_pose != ReadyPose():
+        if selected_slot == 1 and ready_pose != ReadyPose():
             raise ValueError(
                 "root config ready pose differs from the approved slot-1 pose"
             )
@@ -469,6 +478,7 @@ class PalletControlConfig:
         return cls(
             address=address,
             priority=int(stream.get("priority", defaults.priority)),
+            selected_slot=selected_slot,
             ready_pose=ready_pose,
             ready_transition_minimum_time_s=float(
                 robot.get(
@@ -665,6 +675,12 @@ class PalletControlConfig:
             raise ValueError("address must not be empty")
         if self.priority < 1:
             raise ValueError("priority must be positive")
+        if (
+            not isinstance(self.selected_slot, int)
+            or isinstance(self.selected_slot, bool)
+            or self.selected_slot not in (1, 2, 5, 6)
+        ):
+            raise ValueError("selected_slot must be one of 1, 2, 5, 6")
         for name in (
             "ready_transition_minimum_time_s",
             "ready_tolerance_rad",
@@ -711,8 +727,14 @@ class PalletControlConfig:
                 "ready transition must take at least "
                 f"{READY_TRANSITION_MINIMUM_TIME_FLOOR_S:.1f} seconds"
             )
-        if self.ready_pose != ReadyPose():
+        if not isinstance(self.ready_pose, ReadyPose):
+            raise TypeError("ready_pose must be a ReadyPose")
+        if self.selected_slot == 1 and self.ready_pose != ReadyPose():
             raise ValueError("ready pose must remain the approved slot-1 pose")
+        if self.selected_slot != 1 and self.ready_pose == ReadyPose():
+            raise ValueError(
+                f"slot {self.selected_slot} ready pose must be supplied independently"
+            )
         if self.ready_tolerance_rad > math.radians(1.0) + 1e-12:
             raise ValueError("ready joint tolerance cannot exceed 1 degree")
         if self.arm_tracking_tolerance_rad > math.radians(1.0) + 1e-12:

@@ -21,6 +21,7 @@ stay in the library because they are guarantees, not flow.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os
 from pathlib import Path
 import sys
@@ -33,6 +34,138 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+PLACING_STAGE_ORDER = (
+    "preflight",
+    "authorize",
+    "initialize",
+    "ready",
+    "acquire_perceive_error_align",
+    "place_alignment_stop",
+    "place",
+    "ack_release",
+    "retreat",
+    "teardown",
+)
+
+
+def authorize_slot_operation(slot: int, mode: str):
+    """Return the pure authority verdict for one independently owned slot.
+
+    The import stays lazy so invoking this file directly can install the local
+    ``Common/src`` path in :func:`main` first. Callers must obtain this verdict
+    before importing or constructing any live placing runtime object.
+    """
+
+    from parcel_pose_common.operation_authority import (
+        OperationRequest,
+        authorize_operation,
+    )
+
+    return authorize_operation(OperationRequest.place(slot, mode=mode))
+
+
+def _selected_slot(root_config: Mapping[str, Any], slot: int | None) -> int:
+    """Resolve only the high-level slot selection without runtime imports."""
+
+    if slot is not None:
+        return int(slot)
+    if not isinstance(root_config, Mapping):
+        raise TypeError("root_config must be a mapping")
+    pallet = root_config.get("pallet")
+    if not isinstance(pallet, Mapping):
+        raise ValueError("root config section pallet must be a mapping")
+    return int(pallet.get("default_slot", 1))
+
+
+def _require_matching_controller_slot(controller: Any, selected_slot: int) -> None:
+    """Refuse an injected controller bound to another slot before initialization."""
+
+    if controller is None:
+        return
+    controller_config = getattr(controller, "config", None)
+    controller_slot = getattr(controller_config, "selected_slot", None)
+    if controller_slot != selected_slot:
+        raise ValueError(
+            "injected controller selected_slot "
+            f"{controller_slot} does not match requested slot {selected_slot}"
+        )
+
+
+def _live_stage_kwargs(
+    *,
+    auto_place_slot1: bool,
+    controller: Any,
+    ensure_slot1_ready: bool,
+    execute: bool,
+    headless: bool,
+    log_jsonl: str | Path | None,
+    max_frames: int | None,
+    output_mp4: str | Path | None,
+    plan: Any,
+    robot_address: str,
+    robot_power: str,
+    root_config: Mapping[str, Any],
+    stack: Any,
+    state: Any,
+    window_name: str,
+) -> dict[str, Any]:
+    """Arguments shared by the staged session and the compatibility dry run."""
+
+    return {
+        "controller": controller,
+        "auto_place_slot1": auto_place_slot1,
+        "ensure_slot1_ready": ensure_slot1_ready,
+        "execute": execute,
+        "plan": plan,
+        "state": state,
+        "stack": stack,
+        "headless": headless,
+        "log_jsonl": log_jsonl,
+        "max_frames": max_frames,
+        "output_mp4": output_mp4,
+        "robot_address": robot_address,
+        "robot_power": robot_power,
+        "root_config": root_config,
+        "window_name": window_name,
+    }
+
+
+def _run_authorized_slot1_place(
+    *,
+    stage_kwargs: Mapping[str, Any],
+    open_placing_session: Any,
+    lifecycle_type: Any,
+) -> None:
+    """Run ready -> align -> evidence-gated place/retreat -> teardown."""
+
+    lifecycle = None
+    try:
+        with open_placing_session(**stage_kwargs) as session:
+            lifecycle = lifecycle_type(
+                controller=session.controller,
+                release_alignment=session.release_alignment,
+                prepare=session.prepare,
+            )
+            lifecycle.start()
+            alignment = session.align(lifecycle)
+            if (
+                bool(stage_kwargs["auto_place_slot1"])
+                and alignment.handoff_ready
+                and alignment.place_ready
+                and not alignment.user_cancelled
+            ):
+                stopped = lifecycle.stop_alignment_for_place()
+                placed = lifecycle.execute_place(
+                    stopped,
+                    descent_plan=alignment.descent_plan,
+                    await_release_authorization=session.await_release_authorization,
+                )
+                lifecycle.execute_retreat(placed)
+    finally:
+        if lifecycle is not None:
+            lifecycle.close()
+
 
 
 def _reexec_active_conda_python() -> None:
@@ -69,21 +202,15 @@ def place_box(
     log_jsonl: str | Path | None = None,
     controller: _ControllerLike | None = None,
 ) -> int:
-    """Place one carton in one pallet slot: this is the whole sequence.
+    """Run the standalone post-pick placement sequence for one pallet slot."""
+    selected_slot = _selected_slot(root_config, slot)  # preflight
+    if execute:
+        authorize_slot_operation(selected_slot, "live").require_authorized()
+        _require_matching_controller_slot(controller, selected_slot)
 
-    Execution is a standalone post-pick boundary: the previous process must be
-    stopped, the configured loaded ready posture is verified, and this process
-    becomes the sole combined body/mobility stream owner.
-    """
+    import parcel_pose_placing.pallet_runtime as pallet_runtime
 
-    from parcel_pose_placing.pallet_runtime import (
-        align_and_place,
-        assemble_live_stack,
-        initial_run_state,
-        resolve_live_plan,
-    )
-
-    plan = resolve_live_plan(
+    plan = pallet_runtime.resolve_live_plan(
         auto_place_slot1=auto_place_slot1,
         controller=controller,
         ensure_slot1_ready=ensure_slot1_ready,
@@ -99,32 +226,45 @@ def place_box(
 
     # Imports stay below the standalone execute interlock.  In dry-run this is
     # still pure camera/perception code and cannot import rby1_sdk.
-    stack = assemble_live_stack(
+    stack = pallet_runtime.assemble_live_stack(
         auto_place_slot1=auto_place_slot1,
         root_config=root_config,
         selected_slot=plan.selected_slot,
     )
-    state = initial_run_state(
+    state = pallet_runtime.initial_run_state(
         plan=plan,
         root_config=root_config,
     )
-    align_and_place(
-        controller=controller,
+    stage_kwargs = _live_stage_kwargs(
         auto_place_slot1=auto_place_slot1,
+        controller=controller,
         ensure_slot1_ready=ensure_slot1_ready,
         execute=execute,
-        plan=plan,
-        state=state,
-        stack=stack,
         headless=headless,
         log_jsonl=log_jsonl,
         max_frames=max_frames,
         output_mp4=output_mp4,
+        plan=plan,
         robot_address=robot_address,
         robot_power=robot_power,
         root_config=root_config,
+        stack=stack,
+        state=state,
         window_name=window_name,
     )
+
+    if execute:
+        from parcel_pose_placing.placement_lifecycle import PlacementLifecycleRuntime
+
+        _run_authorized_slot1_place(
+            stage_kwargs=stage_kwargs,
+            open_placing_session=pallet_runtime.open_placing_session,
+            lifecycle_type=PlacementLifecycleRuntime,
+        )
+    else:
+        # Replay/perception-only compatibility remains non-actuating while the
+        # staged session is intentionally limited to the sole live slot-1 branch.
+        pallet_runtime.align_and_place(**stage_kwargs)
 
     # Returning zero never implies the robot was disarmed.  The execute path stays
     # open unless forced cancellation or an acknowledged owner handoff closes it.

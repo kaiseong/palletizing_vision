@@ -8,25 +8,29 @@ may use current base poses without changing estimator or overlay semantics.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 import sys
 import time
-from typing import Any, Mapping, Protocol, TextIO
+from typing import Any, Iterator, Mapping, Protocol, TextIO
 
 import numpy as np
 from numpy.typing import NDArray
 
 from parcel_pose_common.calibration import factory_extrinsics_to_transform
-from .estimator import EstimationEvidence, ParcelPoseEstimator
-from .evaluation import BasePoseDiagnostic, base_pose_from_estimate
-from parcel_pose_common.models import Calibration, CameraIntrinsics
-from .projection import unproject_plane_points
+from parcel_pose_common.models import Calibration, CameraIntrinsics, PoseResult
 from parcel_pose_common.realsense_adapter import D435StreamConfig, RealSenseAdapter
 from parcel_pose_common.transforms import transform_points
 from parcel_pose_common.visualization import project_points_to_pixels
+
+from .box_perception import perceive_box_pose
+from .estimator import EstimationEvidence, ParcelPoseEstimator
+from .evaluation import BasePoseDiagnostic
+from .projection import unproject_plane_points
 
 
 ImageArray = NDArray[np.uint8]
@@ -58,6 +62,61 @@ class LivePoseAutomation(Protocol):
 
     def close(self) -> None:
         """Fail closed, release resources, and disconnect."""
+
+
+def _base_diagnostic_from_pose_result(
+    pose_result: PoseResult,
+) -> BasePoseDiagnostic | None:
+    """Bridge the narrow facade result to the unchanged motion consumer.
+
+    Motion decisions take x, y, and yaw from ``PoseResult``. The richer
+    diagnostic retained by the facade supplies display-only z/top/registration
+    fields so existing overlays and telemetry keep their current shape.
+    """
+
+    if not pose_result.valid:
+        return None
+
+    payload = pose_result.diagnostics.get("base_pose")
+    if not isinstance(payload, Mapping):
+        raise LiveViewUnavailableError(
+            "valid box PoseResult is missing base_pose diagnostics"
+        )
+    try:
+        box_center = payload["box_center_xyz_m"]
+        top_center = payload["top_center_xyz_m"]
+        assert pose_result.x_m is not None
+        assert pose_result.y_m is not None
+        assert pose_result.yaw_rad is not None
+        return BasePoseDiagnostic(
+            box_center_xyz_m=(
+                float(pose_result.x_m),
+                float(pose_result.y_m),
+                float(box_center[2]),
+            ),
+            top_center_xyz_m=(
+                float(top_center[0]),
+                float(top_center[1]),
+                float(top_center[2]),
+            ),
+            yaw_mod_180_deg=math.degrees(float(pose_result.yaw_rad)) % 180.0,
+            yaw_signed_deg=float(payload["long_axis_yaw_base_signed_deg"]),
+            canonical_reference_deg=(
+                None
+                if payload.get("canonical_reference_deg") is None
+                else int(payload["canonical_reference_deg"])
+            ),
+            canonical_residual_deg=(
+                None
+                if payload.get("canonical_residual_deg") is None
+                else float(payload["canonical_residual_deg"])
+            ),
+            registration=str(payload["registration"]),
+        )
+    except (AssertionError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise LiveViewUnavailableError(
+            f"invalid base_pose diagnostics in box PoseResult: {exc}"
+        ) from exc
 
 
 def _cv2() -> Any:
@@ -425,40 +484,168 @@ def resolve_live_view_plan(
 
 @dataclass(frozen=True)
 class LiveViewOutcome:
-    """Nothing yet; the run reports through its artifacts and the automation."""
+    """Legacy compatibility result for a complete watch-and-grab run."""
 
     processed_frames: Any
 
 
-def watch_and_grab(
+@dataclass(frozen=True)
+class AlignmentWatchOutcome:
+    """Result of camera/perception/alignment only; no grasp was executed."""
+
+    processed_frames: int
+    handoff_ready: bool
+    user_cancelled: bool
+
+
+@dataclass
+class AlignmentSession:
+    """A camera/profile/estimator session prepared before robot initialization."""
+
+    camera: Any
+    metadata: Any
+    estimator: Any
+    calibration: Calibration
+    plan: LiveViewPlan
+    color_from_depth: FloatArray | None
+    log_stream: TextIO | None
+    video_writer: Any
+    processed_frames: int
+    handoff_ready: bool
+    user_cancelled: bool
+    headless: bool
+    max_frames: int | None
+    window_name: str
+
+    def watch(self, automation: LivePoseAutomation | None) -> AlignmentWatchOutcome:
+        """Consume frames without starting, stopping, or closing automation."""
+
+        return watch_for_alignment(session=self, automation=automation)
+
+
+def watch_for_alignment(
+    *,
+    session: AlignmentSession,
+    automation: LivePoseAutomation | None,
+) -> AlignmentWatchOutcome:
+    """Run one facade call and at most one x/y/yaw decision per captured frame."""
+
+    try:
+        while (
+            session.max_frames is None
+            or session.processed_frames < session.max_frames
+        ):
+            try:
+                frame = session.camera.capture()
+            except RuntimeError as exc:
+                raise LiveViewUnavailableError(
+                    f"D435 live capture failed: {exc}"
+                ) from exc
+
+            pose_timestamp_s = time.monotonic()
+            estimate_start = time.perf_counter()
+            pose_result = perceive_box_pose(
+                getattr(frame, "raw_color_bgr", None),
+                frame.raw_depth_z16,
+                session.metadata.depth_profile.intrinsics,
+                session.calibration,
+                estimator=session.estimator,
+                depth_scale=session.metadata.depth_scale_m,
+                sensor_timestamp_ms=frame.depth_timestamp_ms,
+                frame_id=frame.depth_frame_number,
+                timestamp_s=pose_timestamp_s,
+            )
+            estimator_ms = 1000.0 * (time.perf_counter() - estimate_start)
+            base_pose = _base_diagnostic_from_pose_result(pose_result)
+
+            if automation is not None:
+                session.handoff_ready = automation.update(
+                    base_pose,
+                    pose_timestamp_s=pose_result.timestamp_s,
+                    now_s=time.monotonic(),
+                )
+
+            overlay: ImageArray | None = None
+            if session.plan.needs_overlay:
+                assert session.plan.cv2 is not None
+                assert session.color_from_depth is not None
+                overlay = draw_live_overlay(
+                    frame.raw_color_bgr,
+                    base_pose,
+                    evidence=session.estimator.last_evidence,
+                    color_from_depth=session.color_from_depth,
+                    color_intrinsics=session.metadata.color_profile.intrinsics,
+                    estimator_latency_ms=estimator_ms,
+                    cv2_module=session.plan.cv2,
+                )
+            if session.video_writer is not None:
+                assert overlay is not None
+                session.video_writer.write(overlay)
+            _write_live_record(
+                session.log_stream,
+                frame_index=session.processed_frames,
+                depth_frame_number=frame.depth_frame_number,
+                depth_timestamp_ms=frame.depth_timestamp_ms,
+                estimator_latency_ms=estimator_ms,
+                base_pose=base_pose,
+                handoff_ready=session.handoff_ready,
+            )
+
+            key = -1
+            if not session.headless:
+                assert session.plan.cv2 is not None and overlay is not None
+                try:
+                    session.plan.cv2.imshow(session.window_name, overlay)
+                    key = int(session.plan.cv2.waitKey(1)) & 0xFF
+                except Exception as exc:
+                    raise LiveViewUnavailableError(
+                        f"OpenCV box-picking display failed: {exc}"
+                    ) from exc
+
+            session.processed_frames += 1
+            if key in {27, ord("q"), ord("Q")}:
+                session.user_cancelled = True
+                session.handoff_ready = False
+                break
+            if session.handoff_ready:
+                break
+    except KeyboardInterrupt:
+        session.user_cancelled = True
+        session.handoff_ready = False
+
+    return AlignmentWatchOutcome(
+        processed_frames=session.processed_frames,
+        handoff_ready=bool(session.handoff_ready),
+        user_cancelled=bool(session.user_cancelled),
+    )
+
+
+@contextmanager
+def open_alignment_session(
     *,
     handoff_ready: Any,
-    handoff_started: Any,
     log_stream: Any,
     processed_frames: Any,
     user_cancelled: Any,
     video_writer: Any,
     window_created: Any,
     plan: LiveViewPlan,
-    automation: Any,
-    calibration: Any,
+    calibration: Calibration,
     estimator_config: Any,
     fullscreen: Any,
     headless: Any,
     max_frames: Any,
     metadata_context: Any,
     window_name: Any,
-) -> LiveViewOutcome:
-    """Open the camera, watch for the box, and hand off to the grab when asked.
+) -> Iterator[AlignmentSession]:
+    """Open and validate perception resources before any robot initialization.
 
-    Every frame estimates the pose, draws, records, and offers the automation a
-    chance to take over.  A wrong grab trigger is diagnosed here.
+    The yielded session performs no robot lifecycle calls. Its caller visibly
+    owns automation start, alignment-stop evidence, grasp, and teardown.
     """
 
-    processed_frames = None
-
+    log_stream = _open_log(plan.log_jsonl_path)
     try:
-        log_stream = _open_log(plan.log_jsonl_path)
         with RealSenseAdapter(plan.stream_config) as camera:
             metadata = camera.session_metadata(**dict(metadata_context))
             _validate_camera_profile(calibration, metadata)
@@ -482,8 +669,6 @@ def watch_and_grab(
                     plan.stream_config.fps,
                     cv2_module=plan.cv2,
                 )
-            if automation is not None:
-                automation.start()
             if not headless:
                 assert plan.cv2 is not None
                 try:
@@ -500,78 +685,22 @@ def watch_and_grab(
                         f"OpenCV could not create the box-picking window: {exc}"
                     ) from exc
 
-            while max_frames is None or processed_frames < max_frames:
-                try:
-                    frame = camera.capture()
-                except RuntimeError as exc:
-                    raise LiveViewUnavailableError(
-                        f"D435 live capture failed: {exc}"
-                    ) from exc
-                pose_timestamp_s = time.monotonic()
-                estimate_start = time.perf_counter()
-                estimate = estimator.estimate(
-                    frame.raw_depth_z16,
-                    depth_scale=metadata.depth_scale_m,
-                    timestamp_ms=frame.depth_timestamp_ms,
-                    frame_id=frame.depth_frame_number,
-                )
-                estimator_ms = 1000.0 * (time.perf_counter() - estimate_start)
-                base_pose = base_pose_from_estimate(estimate, calibration)
-                if automation is not None:
-                    now_s = time.monotonic()
-                    handoff_ready = automation.update(
-                        base_pose,
-                        pose_timestamp_s=pose_timestamp_s,
-                        now_s=now_s,
-                    )
-                overlay: ImageArray | None = None
-                if plan.needs_overlay:
-                    assert plan.cv2 is not None and color_from_depth is not None
-                    overlay = draw_live_overlay(
-                        frame.raw_color_bgr,
-                        base_pose,
-                        evidence=estimator.last_evidence,
-                        color_from_depth=color_from_depth,
-                        color_intrinsics=metadata.color_profile.intrinsics,
-                        estimator_latency_ms=estimator_ms,
-                        cv2_module=plan.cv2,
-                    )
-                if video_writer is not None:
-                    assert overlay is not None
-                    video_writer.write(overlay)
-                _write_live_record(
-                    log_stream,
-                    frame_index=processed_frames,
-                    depth_frame_number=frame.depth_frame_number,
-                    depth_timestamp_ms=frame.depth_timestamp_ms,
-                    estimator_latency_ms=estimator_ms,
-                    base_pose=base_pose,
-                    handoff_ready=handoff_ready,
-                )
-                key = -1
-                if not headless:
-                    assert plan.cv2 is not None and overlay is not None
-                    try:
-                        plan.cv2.imshow(window_name, overlay)
-                        key = int(plan.cv2.waitKey(1)) & 0xFF
-                    except Exception as exc:
-                        raise LiveViewUnavailableError(
-                            f"OpenCV box-picking display failed: {exc}"
-                        ) from exc
-                processed_frames += 1
-                if key in {27, ord("q"), ord("Q")}:
-                    user_cancelled = True
-                    handoff_ready = False
-                    break
-                if handoff_ready:
-                    break
-        if handoff_ready and not user_cancelled and automation is not None:
-            handoff_started = True
-            automation.handoff()
-    except KeyboardInterrupt:
-        user_cancelled = True
-        if handoff_started:
-            raise
+            yield AlignmentSession(
+                camera=camera,
+                metadata=metadata,
+                estimator=estimator,
+                calibration=calibration,
+                plan=plan,
+                color_from_depth=color_from_depth,
+                log_stream=log_stream,
+                video_writer=video_writer,
+                processed_frames=processed_frames,
+                handoff_ready=handoff_ready,
+                user_cancelled=user_cancelled,
+                headless=headless,
+                max_frames=max_frames,
+                window_name=window_name,
+            )
     finally:
         if video_writer is not None:
             video_writer.release()
@@ -585,22 +714,82 @@ def watch_and_grab(
                 destroy_all = getattr(plan.cv2, "destroyAllWindows", None)
                 if callable(destroy_all):
                     destroy_all()
+
+
+def watch_and_grab(
+    *,
+    handoff_ready: Any,
+    handoff_started: Any,
+    log_stream: Any,
+    processed_frames: Any,
+    user_cancelled: Any,
+    video_writer: Any,
+    window_created: Any,
+    plan: LiveViewPlan,
+    automation: Any,
+    calibration: Any,
+    estimator_config: Any,
+    fullscreen: Any,
+    headless: Any,
+    max_frames: Any,
+    metadata_context: Any,
+    window_name: Any,
+) -> LiveViewOutcome:
+    """Compatibility wrapper preserving the existing lifecycle and trace order."""
+
+    outcome = AlignmentWatchOutcome(
+        processed_frames=processed_frames,
+        handoff_ready=bool(handoff_ready),
+        user_cancelled=bool(user_cancelled),
+    )
+    try:
+        with open_alignment_session(
+            handoff_ready=handoff_ready,
+            log_stream=log_stream,
+            processed_frames=processed_frames,
+            user_cancelled=user_cancelled,
+            video_writer=video_writer,
+            window_created=window_created,
+            plan=plan,
+            calibration=calibration,
+            estimator_config=estimator_config,
+            fullscreen=fullscreen,
+            headless=headless,
+            max_frames=max_frames,
+            metadata_context=metadata_context,
+            window_name=window_name,
+        ) as session:
+            if automation is not None:
+                automation.start()
+            outcome = session.watch(automation)
+
+        if (
+            outcome.handoff_ready
+            and not outcome.user_cancelled
+            and automation is not None
+        ):
+            handoff_started = True
+            automation.handoff()
+    except KeyboardInterrupt:
+        if handoff_started:
+            raise
+    finally:
         if automation is not None:
             automation.close()
 
-    return LiveViewOutcome(
-        processed_frames=processed_frames,
-    )
-
-
+    return LiveViewOutcome(processed_frames=outcome.processed_frames)
 
 
 __all__ = [
+    "AlignmentSession",
+    "AlignmentWatchOutcome",
     "DEFAULT_WINDOW_NAME",
     "LivePoseAutomation",
     "LiveViewUnavailableError",
     "draw_live_overlay",
     "live_overlay_lines",
+    "open_alignment_session",
     "resolve_live_view_plan",
     "watch_and_grab",
+    "watch_for_alignment",
 ]

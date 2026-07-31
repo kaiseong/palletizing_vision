@@ -1,20 +1,13 @@
-"""One-command box-picking facade for the RB-Y1 parcel workflow.
+"""Readable orchestration for the authorized RB-Y1 parcel-picking demo.
 
-The sequence lives in pick_box below:
-
-    config      = load_json(...)              # picking_config.json
-    calibration = load_calibration(...)       # picking_calibration.json
-    automation  = AutoGrabRuntime(...)        # owns the grab motion
-    plan        = resolve_live_view_plan(...) # refuse a bad request first
-                  watch_and_grab(...)         # camera, estimate, grab
-
-The grab fires when the box centre is inside the tolerance around the target x,y in
-base coordinates.  To change the grasp, change the posture constants in auto_grab;
-to change when it fires, change AutoGrabRuntime.
+The entrypoint owns branch selection, high-level target/tolerance values, and
+stage order. Lower services retain camera, perception, servo, SDK, stream,
+grasp, and teardown details.
 """
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import sys
@@ -23,19 +16,71 @@ from typing import Any, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+# Migrated unchanged from ServoConfig. XY arrival is one Euclidean radius;
+# independent x/y tolerances do not exist in the demonstrated horizontal path.
+HORIZONTAL_PICK_TARGET_XY_M = (0.740, 0.0)
+HORIZONTAL_PICK_TARGET_LINE_YAW_RAD = math.pi / 2.0
+HORIZONTAL_PICK_ARRIVAL_RADIUS_M = 0.010
+HORIZONTAL_PICK_ARRIVAL_YAW_RAD = math.radians(3.0)
+
+PICKING_STAGE_ORDER = (
+    "preflight",
+    "authorize",
+    "initialize",
+    "ready",
+    "acquire_perceive_error_align",
+    "grasp_lift",
+    "teardown",
+)
+
+
+class _PickExecutionError(RuntimeError):
+    """Expected live-service failure reported by the operator entrypoint."""
+
+
+class _PreparedHorizontalPick:
+    """Prepared collaborators kept dependency-neutral at entrypoint scope."""
+
+    __slots__ = (
+        "automation",
+        "calibration",
+        "estimator_config",
+        "metadata_context",
+        "open_alignment_session",
+        "plan",
+        "service_errors",
+    )
+
+    def __init__(
+        self,
+        *,
+        automation: Any,
+        calibration: Any,
+        estimator_config: Any,
+        metadata_context: Any,
+        open_alignment_session: Any,
+        plan: Any,
+        service_errors: tuple[type[BaseException], ...],
+    ) -> None:
+        self.automation = automation
+        self.calibration = calibration
+        self.estimator_config = estimator_config
+        self.metadata_context = metadata_context
+        self.open_alignment_session = open_alignment_session
+        self.plan = plan
+        self.service_errors = service_errors
+
 
 def _reexec_active_conda_python() -> None:
     """Honor the activated conda environment even if PATH shadows python3.12."""
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if not conda_prefix:
         return
-
     conda_python = Path(conda_prefix) / "bin" / "python"
     if not conda_python.is_file():
         return
     if conda_python.resolve() == Path(sys.executable).resolve():
         return
-
     os.execv(
         str(conda_python),
         [str(conda_python), str(Path(__file__).resolve()), *sys.argv[1:]],
@@ -50,38 +95,42 @@ def _ensure_source_tree_imports() -> None:
             sys.path.insert(0, source_entry)
 
 
-def pick_box(args: Any) -> int:
-    """Pick one box: this is the whole sequence."""
+def _horizontal_auto_grab_config(
+    args: Any,
+    *,
+    auto_grab_config_type: Any,
+    servo_config_type: Any,
+) -> Any:
+    """Resolve entrypoint values while retaining lower safety/tuning defaults."""
+    servo = servo_config_type(
+        target_xy_m=HORIZONTAL_PICK_TARGET_XY_M,
+        target_long_axis_yaw_rad=HORIZONTAL_PICK_TARGET_LINE_YAW_RAD,
+        arrival_inner_m=HORIZONTAL_PICK_ARRIVAL_RADIUS_M,
+        arrival_yaw_inner_rad=HORIZONTAL_PICK_ARRIVAL_YAW_RAD,
+    )
+    return auto_grab_config_type(
+        address=args.robot_address,
+        power=args.robot_power,
+        servo=servo,
+    )
 
-    _ensure_source_tree_imports()
+
+def _prepare_horizontal_pick(args: Any) -> _PreparedHorizontalPick:
+    """Initialize pure plan/config first, then the authorized servo runtime."""
     from parcel_pose_common.calibration import load_calibration, load_json
+    from parcel_pose_common.mobile_servo import ServoConfig
     from parcel_pose_common.realsense_adapter import RealSenseUnavailableError
-
     from parcel_pose_picking.auto_grab import AutoGrabConfig, AutoGrabError, AutoGrabRuntime
     from parcel_pose_picking.cli import _estimator_config, _recording_context
     from parcel_pose_picking.realtime import (
         LiveViewUnavailableError,
+        open_alignment_session,
         resolve_live_view_plan,
-        watch_and_grab,
     )
 
-    config = load_json(args.config)
-    calibration = load_calibration(args.calibration)
-    automation = AutoGrabRuntime(
-        AutoGrabConfig(
-            address=args.robot_address,
-            power=args.robot_power,
-        ),
-        execute=True,
-    )
-    if not calibration.absolute_base_validated:
-        print(
-            "warning: base coordinates use nominal_unverified camera registration "
-            "with an empirical +0.050 m y correction; automatic RB-Y1 motion "
-            "is enabled by the box_picking entrypoint",
-            file=sys.stderr,
-        )
     try:
+        config = load_json(args.config)
+        calibration = load_calibration(args.calibration)
         plan = resolve_live_view_plan(
             calibration=calibration,
             fullscreen=args.fullscreen,
@@ -92,28 +141,108 @@ def pick_box(args: Any) -> int:
             warmup_frames=args.warmup_frames,
             window_name=args.window_name,
         )
-        watch_and_grab(
-            plan=plan,
-            automation=automation,
-            calibration=calibration,
-            estimator_config=_estimator_config(config),
-            metadata_context=_recording_context(config, {}),
-            fullscreen=args.fullscreen,
-            handoff_ready=plan.handoff_ready,
-            handoff_started=plan.handoff_started,
-            headless=args.headless,
-            log_stream=plan.log_stream,
-            max_frames=args.max_frames,
-            processed_frames=plan.processed_frames,
-            user_cancelled=plan.user_cancelled,
-            video_writer=plan.video_writer,
-            window_created=plan.window_created,
-            window_name=args.window_name,
+        estimator_config = _estimator_config(config)
+        metadata_context = _recording_context(config, {})
+        automation = AutoGrabRuntime(
+            _horizontal_auto_grab_config(
+                args,
+                auto_grab_config_type=AutoGrabConfig,
+                servo_config_type=ServoConfig,
+            ),
+            execute=True,
         )
     except (LiveViewUnavailableError, RealSenseUnavailableError, AutoGrabError) as exc:
+        raise _PickExecutionError(str(exc)) from exc
+
+    if not calibration.absolute_base_validated:
+        print(
+            "warning: base coordinates use nominal_unverified camera registration "
+            "with an empirical +0.050 m y correction; automatic RB-Y1 motion "
+            "is enabled by the box_picking entrypoint",
+            file=sys.stderr,
+        )
+    return _PreparedHorizontalPick(
+        automation=automation,
+        calibration=calibration,
+        estimator_config=estimator_config,
+        metadata_context=metadata_context,
+        open_alignment_session=open_alignment_session,
+        plan=plan,
+        service_errors=(
+            LiveViewUnavailableError,
+            RealSenseUnavailableError,
+            AutoGrabError,
+        ),
+    )
+
+
+def _alignment_session_kwargs(
+    prepared: _PreparedHorizontalPick,
+    args: Any,
+) -> dict[str, Any]:
+    plan = prepared.plan
+    return {
+        "plan": plan,
+        "calibration": prepared.calibration,
+        "estimator_config": prepared.estimator_config,
+        "metadata_context": prepared.metadata_context,
+        "fullscreen": args.fullscreen,
+        "headless": args.headless,
+        "max_frames": args.max_frames,
+        "window_name": args.window_name,
+        "handoff_ready": plan.handoff_ready,
+        "processed_frames": plan.processed_frames,
+        "user_cancelled": plan.user_cancelled,
+        "log_stream": plan.log_stream,
+        "video_writer": plan.video_writer,
+        "window_created": plan.window_created,
+    }
+
+
+def _run_authorized_horizontal_pick(args: Any) -> int:
+    """Run initialize → ready → align → evidence/grasp → teardown."""
+    prepared = _prepare_horizontal_pick(args)
+    automation = prepared.automation
+    try:
+        try:
+            # Prepare and close camera/profile resources before the body handoff.
+            with prepared.open_alignment_session(
+                **_alignment_session_kwargs(prepared, args)
+            ) as session:
+                automation.start()  # ready
+                outcome = session.watch(automation)  # acquire/perceive/x-y-yaw align
+
+            if outcome.handoff_ready and not outcome.user_cancelled:
+                evidence = automation.stop_alignment_for_grasp()
+                automation.execute_grasp(evidence)  # grasp/lift
+        finally:
+            automation.close()  # teardown is lower-service-owned and idempotent
+    except prepared.service_errors as exc:
         print(str(exc), file=sys.stderr)
         return 2
     return 0
+
+
+def pick_box(args: Any) -> int:
+    """Preflight and authorize one branch before constructing live services."""
+    _ensure_source_tree_imports()
+    from parcel_pose_common.operation_authority import (
+        OperationMode,
+        OperationRequest,
+        authorize_operation,
+    )
+
+    request = OperationRequest.pick(args.orientation, mode=OperationMode.LIVE)
+    verdict = authorize_operation(request)
+    if not verdict.allowed:
+        print(verdict.reason, file=sys.stderr)
+        return 2
+    verdict.require_authorized()
+    try:
+        return _run_authorized_horizontal_pick(args)
+    except _PickExecutionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 def _run_box_picking(argv: Sequence[str]) -> int:
@@ -122,7 +251,6 @@ def _run_box_picking(argv: Sequence[str]) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
-    # The picking sequence lives in this file, so hand it to the handler.
     args.pick_box = pick_box
     return int(run_handler(parser, args))
 

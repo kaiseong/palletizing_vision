@@ -1,0 +1,3379 @@
+{
+  "T_base_from_depth_diagnostic": [
+    [
+      0.002356989,
+      -0.983760885,
+      0.179469301,
+      0.648384395
+    ],
+    [
+      -0.999975145,
+      -0.00351184,
+      -0.00611737,
+      0.023632004
+    ],
+    [
+      0.006648297,
+      -0.179450425,
+      -0.983744649,
+      1.091801991
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "actuation": {
+    "authority_reason": "slot 5 place replay authorized for offline_perception_only",
+    "controller_construction_count": 0,
+    "motion_authorized": false,
+    "offline_perception_permitted": true,
+    "place_actuation_count": 0,
+    "ready_posture_construction_count": 0,
+    "retreat_actuation_count": 0,
+    "robot_connection_count": 0,
+    "sequencer_construction_count": 0,
+    "stream_construction_count": 0
+  },
+  "artifact_sha256": "7a72ff7dae7e6e18c92ee58eae6449849c4a958fb65c37e9142a4752c47c0c15",
+  "artifact_type": "slot5_deterministic_replay_diagnostic",
+  "candidate_policy": {
+    "diagnostic_candidates_grant_motion_authority": false,
+    "facade_result_required_reason": "slot_5_pose_unavailable",
+    "live_reference_validated": false,
+    "place_pose_available": false,
+    "retreat_pose_available": false
+  },
+  "config_sha256": "b1e211d47b085298c61a11f88a930c1b64576ffebdaa0bd26335acf731d0a9fb",
+  "frames": [
+    {
+      "color_frame_number": 36,
+      "depth_frame_number": 10,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 6563.0,
+          "stack_plane_p95_residual_m": 0.007356994,
+          "stack_plane_point_count": 4258.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 0,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400263.64915
+    },
+    {
+      "color_frame_number": 39,
+      "depth_frame_number": 13,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 6499.0,
+          "stack_plane_p95_residual_m": 0.007464846,
+          "stack_plane_point_count": 6801.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 1,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400263.74661
+    },
+    {
+      "color_frame_number": 42,
+      "depth_frame_number": 16,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8195.0,
+          "stack_plane_p95_residual_m": 0.007510543,
+          "stack_plane_point_count": 6557.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 2,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400263.843903
+    },
+    {
+      "color_frame_number": 45,
+      "depth_frame_number": 19,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8320.0,
+          "stack_plane_p95_residual_m": 0.007638373,
+          "stack_plane_point_count": 7401.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 3,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400263.941049
+    },
+    {
+      "color_frame_number": 47,
+      "depth_frame_number": 21,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8262.0,
+          "stack_plane_p95_residual_m": 0.007567955,
+          "stack_plane_point_count": 6862.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 4,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.005764
+    },
+    {
+      "color_frame_number": 50,
+      "depth_frame_number": 24,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8311.0,
+          "stack_plane_p95_residual_m": 0.007667035,
+          "stack_plane_point_count": 7373.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 5,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.102807
+    },
+    {
+      "color_frame_number": 53,
+      "depth_frame_number": 27,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8289.0,
+          "stack_plane_p95_residual_m": 0.007560085,
+          "stack_plane_point_count": 6916.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 6,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.199847
+    },
+    {
+      "color_frame_number": 56,
+      "depth_frame_number": 30,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8353.0,
+          "stack_plane_p95_residual_m": 0.007577358,
+          "stack_plane_point_count": 7125.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 7,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.29692
+    },
+    {
+      "color_frame_number": 59,
+      "depth_frame_number": 33,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8292.0,
+          "stack_plane_p95_residual_m": 0.007599877,
+          "stack_plane_point_count": 7465.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 8,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.394049
+    },
+    {
+      "color_frame_number": 62,
+      "depth_frame_number": 36,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8292.0,
+          "stack_plane_p95_residual_m": 0.007581775,
+          "stack_plane_point_count": 6915.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 9,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.491256
+    },
+    {
+      "color_frame_number": 65,
+      "depth_frame_number": 39,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8349.0,
+          "stack_plane_p95_residual_m": 0.007562143,
+          "stack_plane_point_count": 7376.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 10,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.588554
+    },
+    {
+      "color_frame_number": 68,
+      "depth_frame_number": 42,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8327.0,
+          "stack_plane_p95_residual_m": 0.007598641,
+          "stack_plane_point_count": 7339.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 11,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.68581
+    },
+    {
+      "color_frame_number": 71,
+      "depth_frame_number": 45,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8337.0,
+          "stack_plane_p95_residual_m": 0.007664394,
+          "stack_plane_point_count": 7006.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 12,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.782727
+    },
+    {
+      "color_frame_number": 74,
+      "depth_frame_number": 48,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8241.0,
+          "stack_plane_p95_residual_m": 0.007598905,
+          "stack_plane_point_count": 6909.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 13,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.879305
+    },
+    {
+      "color_frame_number": 77,
+      "depth_frame_number": 51,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8309.0,
+          "stack_plane_p95_residual_m": 0.007641982,
+          "stack_plane_point_count": 6897.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 14,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400264.975544
+    },
+    {
+      "color_frame_number": 80,
+      "depth_frame_number": 54,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8259.0,
+          "stack_plane_p95_residual_m": 0.007570657,
+          "stack_plane_point_count": 6940.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 15,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400265.071445
+    },
+    {
+      "color_frame_number": 83,
+      "depth_frame_number": 57,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8323.0,
+          "stack_plane_p95_residual_m": 0.007604408,
+          "stack_plane_point_count": 6884.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 16,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400265.167006
+    },
+    {
+      "color_frame_number": 86,
+      "depth_frame_number": 60,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8231.0,
+          "stack_plane_p95_residual_m": 0.007643811,
+          "stack_plane_point_count": 6961.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 17,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400265.262229
+    },
+    {
+      "color_frame_number": 89,
+      "depth_frame_number": 63,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8292.0,
+          "stack_plane_p95_residual_m": 0.007584615,
+          "stack_plane_point_count": 6920.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 18,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400265.357113
+    },
+    {
+      "color_frame_number": 92,
+      "depth_frame_number": 66,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8270.0,
+          "stack_plane_p95_residual_m": 0.00757401,
+          "stack_plane_point_count": 6898.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 19,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400265.451657
+    },
+    {
+      "color_frame_number": 95,
+      "depth_frame_number": 69,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8238.0,
+          "stack_plane_p95_residual_m": 0.007594156,
+          "stack_plane_point_count": 7305.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 20,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400265.547871
+    },
+    {
+      "color_frame_number": 98,
+      "depth_frame_number": 72,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8261.0,
+          "stack_plane_p95_residual_m": 0.007585396,
+          "stack_plane_point_count": 7184.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 21,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400265.647852
+    },
+    {
+      "color_frame_number": 108,
+      "depth_frame_number": 82,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8273.0,
+          "stack_plane_p95_residual_m": 0.007588822,
+          "stack_plane_point_count": 7434.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 22,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400265.981154
+    },
+    {
+      "color_frame_number": 111,
+      "depth_frame_number": 85,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8255.0,
+          "stack_plane_p95_residual_m": 0.007562695,
+          "stack_plane_point_count": 7372.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 23,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.081153
+    },
+    {
+      "color_frame_number": 114,
+      "depth_frame_number": 88,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8279.0,
+          "stack_plane_p95_residual_m": 0.007559615,
+          "stack_plane_point_count": 7010.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 24,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.181157
+    },
+    {
+      "color_frame_number": 117,
+      "depth_frame_number": 91,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8247.0,
+          "stack_plane_p95_residual_m": 0.007585187,
+          "stack_plane_point_count": 7044.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 25,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.281165
+    },
+    {
+      "color_frame_number": 120,
+      "depth_frame_number": 94,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8232.0,
+          "stack_plane_p95_residual_m": 0.007495346,
+          "stack_plane_point_count": 7163.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 26,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.381177
+    },
+    {
+      "color_frame_number": 123,
+      "depth_frame_number": 97,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8298.0,
+          "stack_plane_p95_residual_m": 0.007613668,
+          "stack_plane_point_count": 6846.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 27,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.481194
+    },
+    {
+      "color_frame_number": 126,
+      "depth_frame_number": 100,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8281.0,
+          "stack_plane_p95_residual_m": 0.00761327,
+          "stack_plane_point_count": 6907.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 28,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.58116
+    },
+    {
+      "color_frame_number": 129,
+      "depth_frame_number": 103,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8328.0,
+          "stack_plane_p95_residual_m": 0.007573188,
+          "stack_plane_point_count": 7292.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 29,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.681097
+    },
+    {
+      "color_frame_number": 132,
+      "depth_frame_number": 106,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8288.0,
+          "stack_plane_p95_residual_m": 0.007499726,
+          "stack_plane_point_count": 7382.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 30,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.781029
+    },
+    {
+      "color_frame_number": 135,
+      "depth_frame_number": 109,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8308.0,
+          "stack_plane_p95_residual_m": 0.00762069,
+          "stack_plane_point_count": 6826.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 31,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.880957
+    },
+    {
+      "color_frame_number": 138,
+      "depth_frame_number": 112,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8381.0,
+          "stack_plane_p95_residual_m": 0.007630224,
+          "stack_plane_point_count": 6831.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 32,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400266.980881
+    },
+    {
+      "color_frame_number": 141,
+      "depth_frame_number": 115,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8329.0,
+          "stack_plane_p95_residual_m": 0.007599115,
+          "stack_plane_point_count": 7449.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 33,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.080801
+    },
+    {
+      "color_frame_number": 144,
+      "depth_frame_number": 118,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8427.0,
+          "stack_plane_p95_residual_m": 0.007667289,
+          "stack_plane_point_count": 6901.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 34,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.180716
+    },
+    {
+      "color_frame_number": 147,
+      "depth_frame_number": 121,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8456.0,
+          "stack_plane_p95_residual_m": 0.007589637,
+          "stack_plane_point_count": 6852.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 35,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.280628
+    },
+    {
+      "color_frame_number": 150,
+      "depth_frame_number": 124,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8341.0,
+          "stack_plane_p95_residual_m": 0.007591843,
+          "stack_plane_point_count": 7314.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 36,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.380535
+    },
+    {
+      "color_frame_number": 153,
+      "depth_frame_number": 127,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8398.0,
+          "stack_plane_p95_residual_m": 0.007633801,
+          "stack_plane_point_count": 7486.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 37,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.480438
+    },
+    {
+      "color_frame_number": 156,
+      "depth_frame_number": 130,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8430.0,
+          "stack_plane_p95_residual_m": 0.007559666,
+          "stack_plane_point_count": 6914.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 38,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.580419
+    },
+    {
+      "color_frame_number": 159,
+      "depth_frame_number": 133,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8357.0,
+          "stack_plane_p95_residual_m": 0.00762506,
+          "stack_plane_point_count": 6918.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 39,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.680443
+    },
+    {
+      "color_frame_number": 162,
+      "depth_frame_number": 136,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8419.0,
+          "stack_plane_p95_residual_m": 0.007553393,
+          "stack_plane_point_count": 7489.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 40,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.78047
+    },
+    {
+      "color_frame_number": 165,
+      "depth_frame_number": 139,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8436.0,
+          "stack_plane_p95_residual_m": 0.00754689,
+          "stack_plane_point_count": 7083.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 41,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.880499
+    },
+    {
+      "color_frame_number": 168,
+      "depth_frame_number": 142,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8373.0,
+          "stack_plane_p95_residual_m": 0.007658037,
+          "stack_plane_point_count": 7426.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 42,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400267.980531
+    },
+    {
+      "color_frame_number": 171,
+      "depth_frame_number": 145,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8355.0,
+          "stack_plane_p95_residual_m": 0.007615871,
+          "stack_plane_point_count": 6922.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 43,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.080566
+    },
+    {
+      "color_frame_number": 174,
+      "depth_frame_number": 148,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8466.0,
+          "stack_plane_p95_residual_m": 0.007608421,
+          "stack_plane_point_count": 7431.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 44,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.180604
+    },
+    {
+      "color_frame_number": 177,
+      "depth_frame_number": 151,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8425.0,
+          "stack_plane_p95_residual_m": 0.007602894,
+          "stack_plane_point_count": 6943.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 45,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.280644
+    },
+    {
+      "color_frame_number": 180,
+      "depth_frame_number": 154,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8411.0,
+          "stack_plane_p95_residual_m": 0.007605935,
+          "stack_plane_point_count": 6884.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 46,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.380688
+    },
+    {
+      "color_frame_number": 183,
+      "depth_frame_number": 157,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8413.0,
+          "stack_plane_p95_residual_m": 0.007577876,
+          "stack_plane_point_count": 7353.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 47,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.480734
+    },
+    {
+      "color_frame_number": 186,
+      "depth_frame_number": 160,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8355.0,
+          "stack_plane_p95_residual_m": 0.007575675,
+          "stack_plane_point_count": 7013.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 48,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.580949
+    },
+    {
+      "color_frame_number": 189,
+      "depth_frame_number": 163,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8402.0,
+          "stack_plane_p95_residual_m": 0.007550466,
+          "stack_plane_point_count": 6906.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 49,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.681266
+    },
+    {
+      "color_frame_number": 192,
+      "depth_frame_number": 166,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8435.0,
+          "stack_plane_p95_residual_m": 0.007598457,
+          "stack_plane_point_count": 6878.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 50,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.781603
+    },
+    {
+      "color_frame_number": 195,
+      "depth_frame_number": 169,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8392.0,
+          "stack_plane_p95_residual_m": 0.007562311,
+          "stack_plane_point_count": 6958.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 51,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.881959
+    },
+    {
+      "color_frame_number": 198,
+      "depth_frame_number": 172,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8379.0,
+          "stack_plane_p95_residual_m": 0.007607715,
+          "stack_plane_point_count": 6902.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 52,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400268.982335
+    },
+    {
+      "color_frame_number": 201,
+      "depth_frame_number": 175,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8461.0,
+          "stack_plane_p95_residual_m": 0.007609787,
+          "stack_plane_point_count": 7036.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 53,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.08273
+    },
+    {
+      "color_frame_number": 204,
+      "depth_frame_number": 178,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8428.0,
+          "stack_plane_p95_residual_m": 0.007633825,
+          "stack_plane_point_count": 6921.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 54,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.183145
+    },
+    {
+      "color_frame_number": 207,
+      "depth_frame_number": 181,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8435.0,
+          "stack_plane_p95_residual_m": 0.007622702,
+          "stack_plane_point_count": 7088.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 55,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.283579
+    },
+    {
+      "color_frame_number": 210,
+      "depth_frame_number": 184,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8407.0,
+          "stack_plane_p95_residual_m": 0.00760466,
+          "stack_plane_point_count": 6987.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 56,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.384033
+    },
+    {
+      "color_frame_number": 213,
+      "depth_frame_number": 187,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8399.0,
+          "stack_plane_p95_residual_m": 0.007581919,
+          "stack_plane_point_count": 6981.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 57,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.484506
+    },
+    {
+      "color_frame_number": 216,
+      "depth_frame_number": 190,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8436.0,
+          "stack_plane_p95_residual_m": 0.007542642,
+          "stack_plane_point_count": 7389.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 58,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.584761
+    },
+    {
+      "color_frame_number": 219,
+      "depth_frame_number": 193,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8373.0,
+          "stack_plane_p95_residual_m": 0.007582901,
+          "stack_plane_point_count": 7315.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 59,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.68491
+    },
+    {
+      "color_frame_number": 222,
+      "depth_frame_number": 196,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8397.0,
+          "stack_plane_p95_residual_m": 0.007533635,
+          "stack_plane_point_count": 7349.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 60,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.785065
+    },
+    {
+      "color_frame_number": 225,
+      "depth_frame_number": 199,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8390.0,
+          "stack_plane_p95_residual_m": 0.007558719,
+          "stack_plane_point_count": 7282.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 61,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.885226
+    },
+    {
+      "color_frame_number": 228,
+      "depth_frame_number": 202,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8372.0,
+          "stack_plane_p95_residual_m": 0.007571853,
+          "stack_plane_point_count": 7321.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 62,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400269.985394
+    },
+    {
+      "color_frame_number": 232,
+      "depth_frame_number": 206,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8405.0,
+          "stack_plane_p95_residual_m": 0.007624847,
+          "stack_plane_point_count": 6979.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 63,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.11896
+    },
+    {
+      "color_frame_number": 235,
+      "depth_frame_number": 209,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8417.0,
+          "stack_plane_p95_residual_m": 0.007582626,
+          "stack_plane_point_count": 6987.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 64,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.219142
+    },
+    {
+      "color_frame_number": 238,
+      "depth_frame_number": 212,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8387.0,
+          "stack_plane_p95_residual_m": 0.007598036,
+          "stack_plane_point_count": 7351.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 65,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.319331
+    },
+    {
+      "color_frame_number": 241,
+      "depth_frame_number": 215,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8422.0,
+          "stack_plane_p95_residual_m": 0.007607918,
+          "stack_plane_point_count": 6830.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 66,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.419525
+    },
+    {
+      "color_frame_number": 244,
+      "depth_frame_number": 218,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8423.0,
+          "stack_plane_p95_residual_m": 0.007566097,
+          "stack_plane_point_count": 7343.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 67,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.519725
+    },
+    {
+      "color_frame_number": 247,
+      "depth_frame_number": 221,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8407.0,
+          "stack_plane_p95_residual_m": 0.007629443,
+          "stack_plane_point_count": 7006.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 68,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.619799
+    },
+    {
+      "color_frame_number": 250,
+      "depth_frame_number": 224,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8399.0,
+          "stack_plane_p95_residual_m": 0.007567025,
+          "stack_plane_point_count": 7433.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 69,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.719874
+    },
+    {
+      "color_frame_number": 253,
+      "depth_frame_number": 227,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8443.0,
+          "stack_plane_p95_residual_m": 0.007613735,
+          "stack_plane_point_count": 6876.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 70,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.819948
+    },
+    {
+      "color_frame_number": 257,
+      "depth_frame_number": 231,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8411.0,
+          "stack_plane_p95_residual_m": 0.007576441,
+          "stack_plane_point_count": 6934.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 71,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400270.953381
+    },
+    {
+      "color_frame_number": 260,
+      "depth_frame_number": 234,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8433.0,
+          "stack_plane_p95_residual_m": 0.007568428,
+          "stack_plane_point_count": 7003.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 72,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.053456
+    },
+    {
+      "color_frame_number": 263,
+      "depth_frame_number": 237,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8428.0,
+          "stack_plane_p95_residual_m": 0.007559743,
+          "stack_plane_point_count": 7457.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 73,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.15353
+    },
+    {
+      "color_frame_number": 266,
+      "depth_frame_number": 240,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8370.0,
+          "stack_plane_p95_residual_m": 0.007529492,
+          "stack_plane_point_count": 7460.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 74,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.253605
+    },
+    {
+      "color_frame_number": 269,
+      "depth_frame_number": 243,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8385.0,
+          "stack_plane_p95_residual_m": 0.007601722,
+          "stack_plane_point_count": 6977.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 75,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.35368
+    },
+    {
+      "color_frame_number": 272,
+      "depth_frame_number": 246,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8362.0,
+          "stack_plane_p95_residual_m": 0.007630626,
+          "stack_plane_point_count": 6959.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 76,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.453755
+    },
+    {
+      "color_frame_number": 276,
+      "depth_frame_number": 250,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8386.0,
+          "stack_plane_p95_residual_m": 0.007631423,
+          "stack_plane_point_count": 6965.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 77,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.587184
+    },
+    {
+      "color_frame_number": 279,
+      "depth_frame_number": 253,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8387.0,
+          "stack_plane_p95_residual_m": 0.007615021,
+          "stack_plane_point_count": 6897.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 78,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.687253
+    },
+    {
+      "color_frame_number": 282,
+      "depth_frame_number": 256,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8351.0,
+          "stack_plane_p95_residual_m": 0.007533822,
+          "stack_plane_point_count": 6970.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 79,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.787323
+    },
+    {
+      "color_frame_number": 285,
+      "depth_frame_number": 259,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8419.0,
+          "stack_plane_p95_residual_m": 0.00754784,
+          "stack_plane_point_count": 7002.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 80,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.887391
+    },
+    {
+      "color_frame_number": 288,
+      "depth_frame_number": 262,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8405.0,
+          "stack_plane_p95_residual_m": 0.007589362,
+          "stack_plane_point_count": 6923.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 81,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400271.98746
+    },
+    {
+      "color_frame_number": 292,
+      "depth_frame_number": 266,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8358.0,
+          "stack_plane_p95_residual_m": 0.007580296,
+          "stack_plane_point_count": 6893.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 82,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.120885
+    },
+    {
+      "color_frame_number": 295,
+      "depth_frame_number": 269,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8437.0,
+          "stack_plane_p95_residual_m": 0.00757284,
+          "stack_plane_point_count": 6971.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 83,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.220953
+    },
+    {
+      "color_frame_number": 298,
+      "depth_frame_number": 272,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8398.0,
+          "stack_plane_p95_residual_m": 0.007602734,
+          "stack_plane_point_count": 6974.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 84,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.321022
+    },
+    {
+      "color_frame_number": 301,
+      "depth_frame_number": 275,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8409.0,
+          "stack_plane_p95_residual_m": 0.00762336,
+          "stack_plane_point_count": 6938.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 85,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.42109
+    },
+    {
+      "color_frame_number": 304,
+      "depth_frame_number": 278,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8438.0,
+          "stack_plane_p95_residual_m": 0.007608586,
+          "stack_plane_point_count": 7148.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 86,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.521158
+    },
+    {
+      "color_frame_number": 308,
+      "depth_frame_number": 282,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8408.0,
+          "stack_plane_p95_residual_m": 0.007588482,
+          "stack_plane_point_count": 6992.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 87,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.654583
+    },
+    {
+      "color_frame_number": 311,
+      "depth_frame_number": 285,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8463.0,
+          "stack_plane_p95_residual_m": 0.007554609,
+          "stack_plane_point_count": 7346.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 88,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.754651
+    },
+    {
+      "color_frame_number": 314,
+      "depth_frame_number": 288,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8416.0,
+          "stack_plane_p95_residual_m": 0.007570715,
+          "stack_plane_point_count": 7316.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 89,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.854719
+    },
+    {
+      "color_frame_number": 317,
+      "depth_frame_number": 291,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8430.0,
+          "stack_plane_p95_residual_m": 0.007539368,
+          "stack_plane_point_count": 7191.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 90,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400272.954787
+    },
+    {
+      "color_frame_number": 320,
+      "depth_frame_number": 294,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8474.0,
+          "stack_plane_p95_residual_m": 0.00755662,
+          "stack_plane_point_count": 7023.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 91,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400273.054854
+    },
+    {
+      "color_frame_number": 324,
+      "depth_frame_number": 298,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8417.0,
+          "stack_plane_p95_residual_m": 0.007632055,
+          "stack_plane_point_count": 6968.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 92,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400273.188278
+    },
+    {
+      "color_frame_number": 327,
+      "depth_frame_number": 301,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8431.0,
+          "stack_plane_p95_residual_m": 0.007563748,
+          "stack_plane_point_count": 6983.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 93,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400273.288346
+    },
+    {
+      "color_frame_number": 330,
+      "depth_frame_number": 304,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8374.0,
+          "stack_plane_p95_residual_m": 0.007601115,
+          "stack_plane_point_count": 7039.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 94,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400273.388413
+    },
+    {
+      "color_frame_number": 333,
+      "depth_frame_number": 307,
+      "diagnostic_candidate": {
+        "available": false,
+        "axis_branch": null,
+        "calibration_status": "nominal_ready_assumed",
+        "center_base_xyz_m": null,
+        "quality": {
+          "held_selection_excluded_point_count": 8414.0,
+          "stack_plane_p95_residual_m": 0.007599832,
+          "stack_plane_point_count": 7039.0
+        },
+        "reason": "inner_opening_not_found",
+        "rejection_reasons": [
+          "inner_opening_not_found"
+        ],
+        "stack_se2_source": null,
+        "status": "diagnostic_only_not_a_live_reference",
+        "yaw_base_rad": null
+      },
+      "frame_index": 95,
+      "pose_result": {
+        "frame": "base",
+        "reason": "slot_5_pose_unavailable",
+        "valid": false,
+        "x_m": null,
+        "y_m": null,
+        "yaw_rad": null
+      },
+      "state": "rejected:inner_opening_not_found",
+      "timestamp_s": 1785400273.488481
+    }
+  ],
+  "manifest": {
+    "all_manifest_frames_loaded": true,
+    "camera_serial": "250122079439",
+    "color_profile": {
+      "format": "bgr8",
+      "fps": 30,
+      "height": 480,
+      "intrinsics": {
+        "coeffs": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "cx": 317.040283203125,
+        "cy": 242.75582885742188,
+        "distortion_model": "distortion.inverse_brown_conrady",
+        "fps": 30,
+        "fx": 607.1729736328125,
+        "fy": 607.2507934570312,
+        "height": 480,
+        "width": 640
+      },
+      "stream": "color",
+      "width": 640
+    },
+    "color_to_depth": {
+      "convention": "active_column_vector_target_from_source",
+      "rotation": [
+        0.9999751448631287,
+        0.003511840244755149,
+        0.00611736997961998,
+        -0.0034803308080881834,
+        0.9999806880950928,
+        -0.005153866484761238,
+        -0.006135351490229368,
+        0.005132447928190231,
+        0.9999679923057556
+      ],
+      "rotation_storage": "column_major",
+      "source_stream": "color",
+      "target_stream": "depth",
+      "translation_m": [
+        -0.014865799807012081,
+        -0.00015547328803222626,
+        -0.00033003115095198154
+      ]
+    },
+    "complete": true,
+    "depth_profile": {
+      "format": "z16",
+      "fps": 30,
+      "height": 480,
+      "intrinsics": {
+        "coeffs": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "cx": 318.92108154296875,
+        "cy": 235.8085479736328,
+        "distortion_model": "distortion.brown_conrady",
+        "fps": 30,
+        "fx": 389.24041748046875,
+        "fy": 389.24041748046875,
+        "height": 480,
+        "width": 640
+      },
+      "stream": "depth",
+      "width": 640
+    },
+    "depth_scale_m": 0.001000000047,
+    "depth_to_color": {
+      "convention": "active_column_vector_target_from_source",
+      "rotation": [
+        0.9999751448631287,
+        -0.0034803308080881834,
+        -0.006135351490229368,
+        0.003511840244755149,
+        0.9999806880950928,
+        0.005132447928190231,
+        0.00611736997961998,
+        -0.005153866484761238,
+        0.9999679923057556
+      ],
+      "rotation_storage": "column_major",
+      "source_stream": "depth",
+      "target_stream": "color",
+      "translation_m": [
+        0.014867995865643024,
+        0.00010203145211562514,
+        0.0002396116469753906
+      ]
+    },
+    "duration_s": 9.839330322,
+    "expected_frame_count": 96,
+    "extrinsics_inverse_max_abs_error": 5.1605e-08,
+    "extrinsics_validated": true,
+    "first_color_timestamp_ms": 1785400263649.1677,
+    "first_depth_timestamp_ms": 1785400263649.1501,
+    "frame_numbers_strictly_increasing": true,
+    "intrinsics_validated": true,
+    "last_color_timestamp_ms": 1785400273488.4985,
+    "last_depth_timestamp_ms": 1785400273488.4805,
+    "loaded_frame_count": 96,
+    "manifest_frame_count": 96,
+    "manifest_sha256": "fbe7a8a73db957fbd40d1118b4042e54080efb8cff378362aac8f5bac9f33ef0",
+    "maximum_rgb_depth_timestamp_skew_ms": 0.018066406,
+    "requested_frame_count": 96,
+    "timestamp_limit_ms": 50.0,
+    "timestamps_strictly_increasing": true
+  },
+  "operation_mode": "replay",
+  "purpose": "offline_perception_candidate_not_motion_replay",
+  "registration": {
+    "E_color_from_depth_source": "recorded_active_profile",
+    "T_base_from_head_source": "root_config_ready_audit",
+    "T_head_from_color_source": "root_config_matrix",
+    "absolute_base_validated": false,
+    "base_translation_correction_applied_once": true,
+    "base_translation_correction_m": [
+      0.0,
+      0.05,
+      0.0
+    ],
+    "calibration_status": "nominal_ready_assumed",
+    "configured_extrinsics_match_recording": true
+  },
+  "schema_version": 1,
+  "session_name": "pallet_slot5",
+  "slot": 5,
+  "stability": {
+    "center_std_xyz_m": null,
+    "diagnostic_candidate_count": 0,
+    "diagnostic_candidate_ratio": 0.0,
+    "longest_diagnostic_candidate_run": 0,
+    "maximum_consecutive_candidate_center_jump_m": null,
+    "processed_frame_count": 96,
+    "rejection_histogram": {
+      "inner_opening_not_found": 96
+    },
+    "state_histogram": {
+      "rejected:inner_opening_not_found": 96
+    },
+    "state_run_count": 1,
+    "state_transition_count": 0,
+    "yaw_std_rad": null
+  },
+  "state_runs": [
+    {
+      "end_frame": 95,
+      "frame_count": 96,
+      "start_frame": 0,
+      "state": "rejected:inner_opening_not_found"
+    }
+  ]
+}

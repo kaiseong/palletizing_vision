@@ -29,6 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", type=Path, default=_default_config_path())
     parser.add_argument("--calibration", type=Path, default=_default_calibration_path())
+    parser.add_argument(
+        "--orientation",
+        choices=("horizontal", "vertical"),
+        default="horizontal",
+        help=(
+            "box orientation branch to request; vertical currently fails closed "
+            "until its perception and demonstrated poses are complete"
+        ),
+    )
     parser.add_argument("--warmup-frames", type=int, default=30)
     parser.add_argument("--max-frames", type=int)
     parser.add_argument(
@@ -84,7 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibrate.set_defaults(handler=_run_calibrate_plane)
 
-    replay = subparsers.add_parser("replay", help="validate and deterministically replay a session")
+    replay = subparsers.add_parser(
+        "replay", help="validate and deterministically replay a session"
+    )
     replay.add_argument("session_pos", type=Path, nargs="?")
     replay.add_argument("--session", dest="session_opt", type=Path)
     replay.add_argument("--config", type=Path, default=_default_config_path())
@@ -199,7 +210,12 @@ def _run_calibrate_plane(args: argparse.Namespace) -> int:
         robot_state_override=robot_state,
     )
     save_calibration(args.output, calibration)
-    print(dumps_strict({"calibration": calibration.to_dict(), "output": args.output}, indent=2))
+    print(
+        dumps_strict(
+            {"calibration": calibration.to_dict(), "output": args.output},
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -241,10 +257,17 @@ def _run_replay(args: argparse.Namespace) -> int:
     lines = [dumps_strict(record) for record in records]
     if args.output_jsonl is not None:
         args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
-        args.output_jsonl.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        args.output_jsonl.write_text(
+            "\n".join(lines) + ("\n" if lines else ""),
+            encoding="utf-8",
+        )
         print(
             dumps_strict(
-                {"output": args.output_jsonl, "frame_count": len(lines), "status": "replayed"},
+                {
+                    "output": args.output_jsonl,
+                    "frame_count": len(lines),
+                    "status": "replayed",
+                },
                 indent=2,
             )
         )
@@ -279,7 +302,6 @@ def _run_box_picking(args: argparse.Namespace) -> int:
     The sequence is not here: it is in box_picking.py, which attaches it so the
     dependency points from the entry point into the library and not back.
     """
-
     pick_box = getattr(args, "pick_box", None)
     if pick_box is None:  # pragma: no cover - box_picking.py always supplies it
         raise RuntimeError(
@@ -289,12 +311,7 @@ def _run_box_picking(args: argparse.Namespace) -> int:
 
 
 def run_handler(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
-    """Run one parsed subcommand and turn faults into the right exit code.
-
-    Separate from main so box_picking.py can parse, attach the sequence it owns, and
-    still get identical error handling.
-    """
-
+    """Run one parsed subcommand and turn faults into the right exit code."""
     try:
         return int(args.handler(args))
     except KeyboardInterrupt:
